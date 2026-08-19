@@ -1,0 +1,96 @@
+# ---------------------------------------------------------------------------
+# Root .gitignore — covers .NET, Node, Python, Flutter and editor/OS files.
+# ---------------------------------------------------------------------------
+
+# ---------- Secrets & environment ----------
+.env
+*.env
+.env.*
+!.env.example
+appsettings.Development.json
+appsettings.*.Development.json
+secrets.json
+
+# ---------- .NET / ASP.NET Core (api/) ----------
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+TestResults/
+*.user
+*.suo
+*.userprefs
+*.nupkg
+*.snupkg
+project.lock.json
+artifacts/
+.vs/
+
+# ---------- Node / React / Vite (web/) ----------
+node_modules/
+dist/
+dist-ssr/
+build/
+.vite/
+.parcel-cache/
+coverage/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+
+# ---------- Python / FastAPI agent (agent/) ----------
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---------- Flutter / Dart (mobile/) ----------
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+*.iml
+**/ios/Pods/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Generated.xcconfig
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+*.jks
+*.keystore
+
+# Never commit built app binaries.
+*.apk
+*.aab
+*.ipa
+*.app
+
+# ---------- IDE / editor ----------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+*.swp
+*.swo
+*~
+
+# ---------- OS ----------
+.DS_Store
+Thumbs.db

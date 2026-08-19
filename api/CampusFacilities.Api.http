@@ -1,0 +1,22 @@
+@CampusFacilities.Api_HostAddress = http://localhost:5138
+
+### Health check
+GET {{CampusFacilities.Api_HostAddress}}/health
+Accept: application/json
+
+### List buildings
+GET {{CampusFacilities.Api_HostAddress}}/api/buildings
+Accept: application/json
+
+### Create a building
+POST {{CampusFacilities.Api_HostAddress}}/api/buildings
+Content-Type: application/json
+
+{
+  "name": "Library Block",
+  "code": "LIB"
+}
+
+### List rooms in a building
+GET {{CampusFacilities.Api_HostAddress}}/api/rooms?buildingId=1
+Accept: application/json

@@ -6,15 +6,17 @@ labels: ""
 assignees: ""
 ---
 
-**Problem**
+**Context**
 
-<!-- What's missing or broken today? Why does it matter? -->
+<!-- What's missing today, or what does this unblock? One or two lines. -->
 
 **Proposal**
 
-<!-- What should be built. Keep it small enough to explain in one paragraph. -->
+<!-- What to build or change. Small enough to explain in one paragraph. -->
 
 **Acceptance criteria**
+
+<!-- Observable outcomes a reviewer can check — not "code is written". -->
 
 - [ ]
 - [ ]
@@ -22,4 +24,8 @@ assignees: ""
 
 **Out of scope**
 
-<!-- Optional. Anything deliberately excluded, and why. -->
+<!-- Optional. Deliberate omissions, so a reviewer doesn't flag them as gaps. -->
+
+**Related**
+
+<!-- Optional. Blocked by #, blocks #, or the ADR/doc this came from. -->

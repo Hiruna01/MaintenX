@@ -1,7 +1,15 @@
+using System.Text;
+using System.Text.Json.Serialization;
 using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Middleware;
+using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -9,6 +17,9 @@ var builder = WebApplication.CreateBuilder(args);
 // ---------------------------------------------------------------------------
 // Logging (Serilog)
 // ---------------------------------------------------------------------------
+// Serilog logs request METADATA only — method, path, status, duration. It never reads
+// the request body, so passwords in a login or register payload are never written to a
+// log sink. Do not add body logging here; see UseSerilogRequestLogging below.
 builder.Host.UseSerilog((context, loggerConfiguration) =>
     loggerConfiguration
         .ReadFrom.Configuration(context.Configuration)
@@ -46,6 +57,72 @@ builder.Services.AddCors(options =>
 });
 
 // ---------------------------------------------------------------------------
+// Authentication (JWT bearer)
+// Secret, issuer and audience all come from configuration — never a literal here.
+// Falls back to the JWT_* names used by the root .env.example.
+// ---------------------------------------------------------------------------
+var jwtSettings = new JwtSettings
+{
+    Secret = builder.Configuration["Jwt:Secret"]
+        ?? builder.Configuration["JWT_SECRET"]
+        ?? throw new InvalidOperationException(
+            "No JWT signing secret configured. Set Jwt:Secret or the JWT_SECRET environment variable."),
+    Issuer = builder.Configuration["Jwt:Issuer"]
+        ?? builder.Configuration["JWT_ISSUER"]
+        ?? throw new InvalidOperationException(
+            "No JWT issuer configured. Set Jwt:Issuer or the JWT_ISSUER environment variable."),
+    Audience = builder.Configuration["Jwt:Audience"]
+        ?? builder.Configuration["JWT_AUDIENCE"]
+        ?? throw new InvalidOperationException(
+            "No JWT audience configured. Set Jwt:Audience or the JWT_AUDIENCE environment variable.")
+};
+
+// HMAC-SHA256 needs at least a 256-bit key. Fail at startup with a clear message rather
+// than at the first login with an opaque one.
+if (Encoding.UTF8.GetByteCount(jwtSettings.Secret) < 32)
+{
+    throw new InvalidOperationException(
+        "The JWT signing secret must be at least 32 characters (256 bits) for HMAC-SHA256.");
+}
+
+builder.Services.AddSingleton(jwtSettings);
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        // Keep the claim names exactly as issued: sub, email, role. Without this, the
+        // handler helpfully renames them to long WS-Federation URIs and lookups by "sub" fail.
+        options.MapInboundClaims = false;
+
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtSettings.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtSettings.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.Secret)),
+            ValidateLifetime = true,
+            // Default is a 5-minute grace period; expiry should mean expiry.
+            ClockSkew = TimeSpan.Zero,
+            NameClaimType = JwtRegisteredClaimNames.Email,
+            RoleClaimType = "role"
+        };
+    });
+
+// ---------------------------------------------------------------------------
+// Authorization — one policy per Role enum member, so a typo is a compile error
+// rather than a policy that silently never matches.
+// ---------------------------------------------------------------------------
+builder.Services.AddAuthorization(options =>
+{
+    foreach (var role in Enum.GetNames<Role>())
+    {
+        options.AddPolicy(role, policy => policy.RequireRole(role));
+    }
+});
+
+// ---------------------------------------------------------------------------
 // Application services
 //
 // AddScoped, never AddSingleton: these services depend on AppDbContext, which is
@@ -59,12 +136,54 @@ builder.Services.AddScoped<IBuildingService, BuildingService>();
 // Rooms
 builder.Services.AddScoped<IRoomService, RoomService>();
 
+// Auth
+builder.Services.AddScoped<IAuthService, AuthService>();
+
+// The password hasher is stateless and thread-safe and holds no DbContext, so unlike the
+// services above it is genuinely safe as a singleton.
+builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
+
 // ---------------------------------------------------------------------------
 // MVC + Swagger
 // ---------------------------------------------------------------------------
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Send and accept enums by NAME, so the JSON contract reads {"role":"FacilitiesManager"}
+        // rather than {"role":2}. This matches how the database and the JWT role claim store
+        // it, and means the React and Flutter clients never hardcode magic numbers whose
+        // meaning would silently change if a new Role member were inserted in the middle.
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    });
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    // Puts an Authorize button in the Swagger UI so a token can be pasted in during a demo.
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Paste the token returned by /api/auth/login (no Bearer prefix needed)."
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 var app = builder.Build();
 
@@ -75,7 +194,14 @@ var app = builder.Build();
 // First in the pipeline so it wraps everything after it.
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
-app.UseSerilogRequestLogging();
+app.UseSerilogRequestLogging(options =>
+{
+    // RequestPath excludes the query string, and nothing here touches the body, so a
+    // password can never reach a log line. Only add fields to this list that are safe
+    // to write to a log sink in plain text.
+    options.MessageTemplate =
+        "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+});
 
 if (app.Environment.IsDevelopment())
 {
@@ -87,6 +213,9 @@ app.UseHttpsRedirection();
 
 app.UseCors("Clients");
 
+// Authentication must come before authorization: work out WHO the caller is, then
+// decide WHAT they may do. Reversed, every [Authorize] endpoint returns 401.
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
@@ -104,12 +233,13 @@ if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher<User>>();
     var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
         .CreateLogger("DbSeeder");
 
     try
     {
-        await DbSeeder.SeedAsync(db, app.Configuration, logger);
+        await DbSeeder.SeedAsync(db, app.Configuration, passwordHasher, logger);
     }
     catch (Exception ex)
     {
@@ -120,3 +250,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.Run();
+
+// Exposed so the xUnit project can boot this exact pipeline through WebApplicationFactory.
+public partial class Program { }

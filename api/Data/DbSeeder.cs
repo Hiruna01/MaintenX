@@ -13,11 +13,12 @@ public static class DbSeeder
     public static async Task SeedAsync(
         AppDbContext db,
         IConfiguration configuration,
+        IPasswordHasher<User> passwordHasher,
         ILogger logger,
         CancellationToken cancellationToken = default)
     {
         await SeedBuildingsAndRoomsAsync(db, cancellationToken);
-        await SeedUsersAsync(db, configuration, logger, cancellationToken);
+        await SeedUsersAsync(db, configuration, passwordHasher, logger, cancellationToken);
     }
 
     private static async Task SeedBuildingsAndRoomsAsync(
@@ -73,6 +74,7 @@ public static class DbSeeder
     private static async Task SeedUsersAsync(
         AppDbContext db,
         IConfiguration configuration,
+        IPasswordHasher<User> passwordHasher,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -85,8 +87,6 @@ public static class DbSeeder
             (Email: "manager@campus.test", FullName: "Demo Facilities Manager", Role: Role.FacilitiesManager, Key: "Seed:Passwords:FacilitiesManager"),
             (Email: "admin@campus.test", FullName: "Demo Admin", Role: Role.Admin, Key: "Seed:Passwords:Admin")
         };
-
-        var hasher = new PasswordHasher<User>();
 
         foreach (var demo in demoUsers)
         {
@@ -112,7 +112,7 @@ public static class DbSeeder
                 FullName = demo.FullName,
                 Role = demo.Role
             };
-            user.PasswordHash = hasher.HashPassword(user, password);
+            user.PasswordHash = passwordHasher.HashPassword(user, password);
 
             db.Users.Add(user);
             logger.LogInformation("Seeding demo user {Email} with role {Role}.", demo.Email, demo.Role);

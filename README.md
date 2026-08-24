@@ -71,7 +71,82 @@ All variables are listed in [`.env.example`](.env.example) with empty values.
 | `SUPABASE_SERVICE_KEY` | api     | Supabase service role key — server-side only          |
 
 Never place `SUPABASE_SERVICE_KEY`, `LLM_API_KEY`, or `JWT_SECRET` in the web or mobile
-client. Local API secrets belong in `appsettings.Development.json`, which is git-ignored.
+client.
+
+## First-time API setup
+
+`appsettings.Development.json` is git-ignored, so a fresh clone has no database password,
+no signing key and no seed passwords. Everyone sets their own — the repo commits the
+*shape* of the configuration, never the values.
+
+Use `dotnet user-secrets`. It stores values in your home directory, outside the repository,
+so they cannot be committed even by accident. Run these once after cloning, substituting
+your own values:
+
+```bash
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=localhost;Port=5432;Database=campusfacilities;Username=postgres;Password=YOUR_POSTGRES_PASSWORD" --project api
+```
+
+```bash
+dotnet user-secrets set "Jwt:Secret" "a-long-random-string-of-at-least-32-characters" --project api
+dotnet user-secrets set "Jwt:Issuer" "CampusFacilities.Api" --project api
+dotnet user-secrets set "Jwt:Audience" "CampusFacilities.Clients" --project api
+```
+
+The four demo accounts are only created if you give them passwords. Any value works
+locally; a blank one simply skips that user:
+
+```bash
+dotnet user-secrets set "Seed:Passwords:Reporter" "DevPass123" --project api
+dotnet user-secrets set "Seed:Passwords:Technician" "DevPass123" --project api
+dotnet user-secrets set "Seed:Passwords:FacilitiesManager" "DevPass123" --project api
+dotnet user-secrets set "Seed:Passwords:Admin" "DevPass123" --project api
+```
+
+Not a secret, but the API rejects browser calls from the React dev server without it:
+
+```bash
+dotnet user-secrets set "Cors:AllowedOrigins:0" "http://localhost:5173" --project api
+```
+
+Check what you have set at any time — this reads the local store, not the repo:
+
+```bash
+dotnet user-secrets list --project api
+```
+
+Then create the schema and start the API. Seeding happens automatically on startup in
+Development and is idempotent, so restarting never duplicates data:
+
+```bash
+dotnet ef database update --project api
+```
+
+```bash
+dotnet run --project api
+```
+
+You should see four `Seeding demo user ... with role ...` lines on the first run and none
+on later runs. The demo accounts are `reporter@`, `technician@`, `manager@` and `admin@`
+`campus.test`, each with the password you set above.
+
+### Other ways to supply the same values
+
+Configuration is layered, each level overriding the one before:
+
+```
+appsettings.json  <  appsettings.Development.json  <  user secrets  <  environment variables
+```
+
+So any of these work. Environment variables use `__` (double underscore) where the config
+key has a `:` — that form is what [`.env.example`](.env.example) documents and what CI uses:
+
+```bash
+export Seed__Passwords__Reporter="DevPass123"
+```
+
+The API also accepts the flat `DATABASE_URL`, `JWT_SECRET`, `JWT_ISSUER` and `JWT_AUDIENCE`
+names from `.env.example` as fallbacks, so either naming style is fine.
 
 ## Running each service
 

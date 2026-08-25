@@ -20,10 +20,16 @@ var builder = WebApplication.CreateBuilder(args);
 // Serilog logs request METADATA only — method, path, status, duration. It never reads
 // the request body, so passwords in a login or register payload are never written to a
 // log sink. Do not add body logging here; see UseSerilogRequestLogging below.
+//
+// writeToProviders: true means log events also reach any ILoggerProvider registered in
+// DI, instead of Serilog swallowing them. That is what lets an integration test assert
+// "this call wrote a warning" — the allow-list rejection in InternalToolsController is
+// a security control, so the log line is part of the behaviour under test, not decoration.
 builder.Host.UseSerilog((context, loggerConfiguration) =>
     loggerConfiguration
         .ReadFrom.Configuration(context.Configuration)
-        .WriteTo.Console());
+        .WriteTo.Console(),
+    writeToProviders: true);
 
 // ---------------------------------------------------------------------------
 // Database (EF Core + Npgsql)
@@ -87,6 +93,24 @@ if (Encoding.UTF8.GetByteCount(jwtSettings.Secret) < 32)
 
 builder.Services.AddSingleton(jwtSettings);
 
+// ---------------------------------------------------------------------------
+// Agent service (machine-to-machine)
+//
+// The Python agent authenticates to /api/internal/tools/* with a shared secret header,
+// not a JWT — there is no user behind those calls and no role to check. Falls back to the
+// AGENT_SHARED_SECRET name used by the root .env.example.
+//
+// Unlike the JWT settings this does not throw when unset: the API must still boot for
+// team members who are not working on the agent. It fails CLOSED instead — an empty
+// secret makes AgentSecretFilter reject every call — and warns loudly at startup below.
+// ---------------------------------------------------------------------------
+builder.Services.AddSingleton(new AgentSettings
+{
+    SharedSecret = builder.Configuration["Agent:SharedSecret"]
+        ?? builder.Configuration["AGENT_SHARED_SECRET"]
+        ?? string.Empty
+});
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -139,6 +163,22 @@ builder.Services.AddScoped<IRoomService, RoomService>();
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
 
+// Agent workflows
+builder.Services.AddScoped<IWorkflowService, WorkflowService>();
+
+// The queue holds a Channel<int> and nothing else — no DbContext, no scoped dependency —
+// so unlike the services above it is genuinely safe as a singleton. It has to be one:
+// the controller and the background runner must see the same queue.
+builder.Services.AddSingleton<IWorkflowQueue, WorkflowQueue>();
+
+// The background half of "POST /api/workflows returns 202". Registered here so the host
+// starts it at boot; it opens its own DI scope per workflow.
+builder.Services.AddHostedService<WorkflowRunner>();
+
+// Applied to InternalToolsController with [ServiceFilter], which needs the filter itself
+// in the container so it can be constructed with its dependencies injected.
+builder.Services.AddScoped<AgentSecretFilter>();
+
 // The password hasher is stateless and thread-safe and holds no DbContext, so unlike the
 // services above it is genuinely safe as a singleton.
 builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
@@ -190,6 +230,15 @@ var app = builder.Build();
 // ---------------------------------------------------------------------------
 // HTTP pipeline
 // ---------------------------------------------------------------------------
+
+// A missing agent secret is not fatal, but it does silently disable the agent's only way
+// into this API, so say so once at startup rather than leaving someone to debug 401s.
+if (string.IsNullOrEmpty(app.Services.GetRequiredService<AgentSettings>().SharedSecret))
+{
+    app.Logger.LogWarning(
+        "No agent shared secret configured (Agent:SharedSecret / AGENT_SHARED_SECRET). " +
+        "Every call to /api/internal/tools/* will be rejected with 401.");
+}
 
 // First in the pipeline so it wraps everything after it.
 app.UseMiddleware<ExceptionHandlingMiddleware>();

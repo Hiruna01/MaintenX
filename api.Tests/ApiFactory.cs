@@ -1,10 +1,12 @@
 using CampusFacilities.Api.Data;
+using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace api.Tests;
 
@@ -20,6 +22,12 @@ public class ApiFactory : WebApplicationFactory<Program>
 {
     private readonly SqliteConnection _connection;
 
+    /// <summary>The secret tests send in the X-Agent-Secret header. Test-only value.</summary>
+    public const string AgentSharedSecret = "test-agent-shared-secret";
+
+    /// <summary>Log entries written during the test, for asserting on warnings.</summary>
+    public RecordingLoggerProvider Logs { get; } = new();
+
     public ApiFactory()
     {
         // Configuration is supplied through environment variables because Program.cs reads
@@ -29,6 +37,7 @@ public class ApiFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("Jwt__Secret", "test-signing-key-that-is-definitely-long-enough");
         Environment.SetEnvironmentVariable("Jwt__Issuer", "CampusFacilities.Api.Tests");
         Environment.SetEnvironmentVariable("Jwt__Audience", "CampusFacilities.Tests");
+        Environment.SetEnvironmentVariable("Agent__SharedSecret", AgentSharedSecret);
 
         // An in-memory SQLite database exists only while a connection to it is open,
         // so this one is held open for the lifetime of the factory.
@@ -42,8 +51,21 @@ public class ApiFactory : WebApplicationFactory<Program>
         // starts from an empty database and creates exactly the users it needs.
         builder.UseEnvironment("Testing");
 
+        builder.ConfigureLogging(logging => logging.AddProvider(Logs));
+
         builder.ConfigureServices(services =>
         {
+            // The workflow runner is a background writer, and every DbContext here shares
+            // the one SQLite connection below — a runner writing while a test request
+            // reads would make results depend on timing. It is removed so tests are
+            // deterministic; what the POST test actually asserts is the hand-off, by
+            // reading the id straight off IWorkflowQueue.
+            var runner = services.SingleOrDefault(d => d.ImplementationType == typeof(WorkflowRunner));
+            if (runner is not null)
+            {
+                services.Remove(runner);
+            }
+
             services.RemoveAll<DbContextOptions<AppDbContext>>();
             services.RemoveAll<DbContextOptions>();
             services.RemoveAll<AppDbContext>();

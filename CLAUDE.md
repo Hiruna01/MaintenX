@@ -1,5 +1,4 @@
-# CLAUDE.md
-
+# CLAUDE.m
 Conventions for this repository. These apply to **all** future sessions — read this file
 before writing any code, and follow it over any general-purpose habit or "best practice"
 that contradicts it. Where this file says "exactly", it means exactly.
@@ -85,6 +84,32 @@ docs/                Design docs, ADRs, diagrams, report material
 - Request logging (Serilog) must never capture request bodies — only method/path/status/
   duration — specifically so a login or register payload's password never reaches a log
   sink. Don't add body logging to `UseSerilogRequestLogging`.
+
+---
+
+## AGENT WORKFLOWS — background orchestration, not a blocking call
+
+- `AgentWorkflow` (one row per objective) and `AgentStep` (one row per agent action) live in
+  `Models/`, same layer rule as everything else. `CurrentState` is a C# enum
+  (`WorkflowState`) persisted as a string, same as `Role`.
+- `PlanJson`, `ToolCallsJson` and `PayloadJson` are PostgreSQL **`jsonb`** columns, not
+  `text` — configured in `AppDbContext`. Index `AgentStep.WorkflowId`.
+- **`POST /api/workflows` must never block on the agent service.** It creates the row,
+  returns **202 Accepted** with the id, and hands the id to `IWorkflowQueue` (an in-process
+  `Channel<int>`). `WorkflowRunner`, an `IHostedService`, drains the queue and does the
+  actual work in the background, opening its own DI scope per item — the `DbContext` and
+  `IWorkflowService` are scoped, so a singleton hosted service cannot hold them directly.
+  Clients poll `GET /api/workflows/{id}` for progress. Do not add a synchronous HTTP call
+  to the agent service inside a controller action.
+- **`POST /api/internal/tools/{toolName}`** is how the agent calls back into the API. It is
+  authenticated by a **shared-secret header** (`AGENT_SHARED_SECRET`), not a JWT — there is
+  no user behind these calls, so no role to check. Missing or wrong secret → 401.
+- **The tool allow-list is a hardcoded `Dictionary<string, ...>` in C#**, never sourced from
+  configuration or from the caller. A tool name not in the dictionary returns 404 and logs a
+  warning. Keep it hardcoded; it's a viva question — the allow-list must not be describable,
+  let alone changeable, by anything the model outputs.
+- Every call to `/api/internal/tools/{toolName}` — allowed or rejected — writes an
+  `AgentStep` row, so the audit trail is complete even for rejected calls.
 
 ---
 

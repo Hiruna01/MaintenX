@@ -281,6 +281,85 @@ remembers where the user was heading and sends them back there after sign-in.
 
 ---
 
+## MOBILE — Flutter, `mobile/`
+
+Flutter + Riverpod + go_router. Targets **Android and iOS**; the platform folders are
+generated with `flutter create` and otherwise left alone. Run everything from `mobile/`:
+`flutter analyze`, `flutter test`, `flutter run`.
+
+```
+mobile/lib/core/       env, api_client, token_storage, infrastructure providers
+mobile/lib/router/     go_router with the redirect guard
+mobile/lib/widgets/    LoadingView, EmptyView, ErrorView, AppFormField, AppDropdownField
+mobile/lib/features/<name>/   screens, that feature's API class and its providers
+```
+
+- **Screens never call `http`.** A screen calls a feature API class (`AuthApi`,
+  `ReportsApi`), which calls the single `ApiClient`. Same separation as the web client's
+  UI / hooks / services split.
+- **State:** `useState`-equivalent local state in a `ConsumerStatefulWidget`; **Riverpod**
+  providers for anything app-wide — the session and the API client. Providers only, no
+  codegen and no `build_runner`; adding one is a new `Provider` line, not a generated file.
+- **Forms use a `validate()` returning a map of field name to message**, and the field
+  wrappers render it. That is deliberately the same shape the React client uses, so the two
+  clients do not drift apart.
+- **Every screen that waits on the API renders all of its states** — `LoadingView`,
+  `ErrorView`, `EmptyView`, success. A blank screen while loading is a bug, and an empty
+  list is not a failure and must not look like one.
+- **Enums are matched by NAME, never by ordinal** — `Roles` in `features/auth/auth_state.dart`
+  holds the same strings the API sends and accepts.
+
+### The token lives in flutter_secure_storage — this is the point, not a detail
+
+- **Never SharedPreferences.** It is an unencrypted XML file on Android and a plist on iOS,
+  sitting in the app sandbox: readable on a rooted or jailbroken device and extractable from
+  an `adb backup`. `TokenStorage` uses the iOS Keychain and Android's
+  `EncryptedSharedPreferences` instead. That is the entire reason the dependency is there,
+  and it is a viva question — do not "simplify" it away.
+- Access token only, 12-hour lifetime, no refresh token, same scope decision as the API:
+  one value to store and nothing to rotate.
+- The base URL comes from a **compile-time `--dart-define`** (`String.fromEnvironment` in
+  `core/env.dart`), so no `.env` ships inside the app bundle. Nothing secret goes in it: a
+  `--dart-define` is readable from the compiled app, exactly like a `VITE_` variable is
+  readable in the web bundle.
+
+### A 401 ends the session without anything knowing about navigation
+
+`ApiClient` clears `TokenStorage` when a request that **carried a token** comes back 401.
+`TokenStorage` is a `ChangeNotifier`, so `AuthController` sees the token disappear and moves
+the session to signed-out; go_router's `refreshListenable` fires and the redirect sends the
+user to login. Keep that chain: the client must not import a screen or a router.
+
+A 401 on a request that carried **no** token — a wrong password — is an ordinary failed
+sign-in, not a session expiry, and is reported differently.
+
+### Routing
+
+One `redirect` in `router/app_router.dart` is the whole guard: an unauthenticated user can
+reach `/login` and nothing else, and an authenticated user is bounced off it. Do not add
+per-screen checks — there would be one to forget. While secure storage is being read the
+status is `unknown` and `main.dart` shows a spinner, so a returning user is never flashed
+the login screen before their stored token has been checked.
+
+### There is no chat interface here either
+
+When the agent needs more detail, its clarification questions are rendered as a **form with
+bounded inputs** — pickers, yes/no, short text — never as a message thread. The note is kept
+in `SubmitReportScreen` as well as here.
+
+### Known gap: `POST /api/reports`
+
+`ReportsApi.submit()` posts `{ description, roomId }` to `/api/reports`, which **does not
+exist yet** — there is no `ReportsController`, and `StartWorkflowRequest.ReportId` is
+commented "reports are a later feature". Submitting returns 404 until it lands. The call is
+isolated in that one method so nothing else changes when it does. The room picker reads
+`GET /api/rooms`, which does exist.
+
+Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
+visible rather than hidden, so the finished shape of the form stays obvious.
+
+---
+
 ## PROJECT RULES
 
 - **All deterministic business rules live in C#, never in an AI prompt.** That includes:

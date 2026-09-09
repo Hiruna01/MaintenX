@@ -1,0 +1,334 @@
+/* Plain CSS, one stylesheet. No Tailwind and no component library — presentation is not
+   what this project is marked on. */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --border: #d8dce3;
+  --text: #1c2430;
+  --muted: #5b6675;
+  --accent: #1d4ed8;
+  --accent-dark: #1a3fae;
+  --danger: #b42318;
+  --danger-bg: #fdf1f0;
+
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background-color: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+}
+
+a {
+  color: var(--accent);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------- layout ---------- */
+
+.app__main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.page h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+}
+
+.page--narrow {
+  max-width: 26rem;
+}
+
+.page__lead {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+}
+
+.placeholder {
+  padding: 2rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty {
+  padding: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+/* ---------- navbar ---------- */
+
+.navbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.navbar__brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.navbar__links {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+}
+
+.navlink {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.25rem 0;
+  border-bottom: 2px solid transparent;
+}
+
+.navlink--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.auth-status {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.auth-status--anonymous {
+  color: var(--muted);
+}
+
+.auth-status__role {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: var(--accent-dark);
+  font-size: 0.75rem;
+}
+
+/* ---------- forms ---------- */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.form__field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.form__field input,
+.filters__field input,
+.filters__field select {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  background: var(--surface);
+}
+
+.form__field input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.form__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button--primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.button--secondary {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* ---------- filters ---------- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.filters__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 15rem;
+}
+
+.filters__field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.filters__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* ---------- table ---------- */
+
+.table-scroll {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.table th,
+.table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.state {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: var(--accent-dark);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.state--Failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.state--Closed,
+.state--Completed {
+  background: #eaf7ef;
+  color: #17643a;
+}
+
+/* ---------- pagination ---------- */
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.pagination__status {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ---------- loading & error states ---------- */
+
+.spinner {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 1.5rem;
+  color: var(--muted);
+}
+
+.spinner__disc {
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner__disc {
+    animation: none;
+  }
+}
+
+.error-message {
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid #f0c2bd;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.error-message__body {
+  margin: 0.25rem 0 0;
+  color: var(--text);
+  font-size: 0.9rem;
+}

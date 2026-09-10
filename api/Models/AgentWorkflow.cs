@@ -12,9 +12,13 @@ public class AgentWorkflow
     public int Id { get; set; }
 
     /// <summary>
-    /// The maintenance report this workflow was raised for. Nullable for now — reports
-    /// are a later feature, and a workflow can be started from a bare objective until
-    /// then. Becomes a real foreign key when the Report entity lands.
+    /// The maintenance report this workflow was raised for — a real foreign key now that
+    /// Report exists (see AppDbContext).
+    ///
+    /// Still nullable, because the two ways a workflow is created differ: one raised by
+    /// ReportService always carries a report id, while POST /api/workflows may still
+    /// start one from a bare objective. Null means "no report", not "a report that got
+    /// lost" — a non-null value is guaranteed by the database to name a real row.
     /// </summary>
     public int? ReportId { get; set; }
 

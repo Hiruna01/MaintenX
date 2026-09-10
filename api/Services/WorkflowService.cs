@@ -17,10 +17,19 @@ public class WorkflowService : IWorkflowService
         _db = db;
     }
 
-    public async Task<WorkflowSummaryDto> StartAsync(
+    public async Task<WorkflowSummaryDto?> StartAsync(
         StartWorkflowRequest dto,
         CancellationToken cancellationToken = default)
     {
+        // ReportId is a foreign key, so a bad one has to be caught here to be a 400
+        // rather than a 500. Null is legitimate — a workflow may be started from a bare
+        // objective — so only a supplied value is checked.
+        if (dto.ReportId is not null
+            && !await _db.Reports.AnyAsync(r => r.Id == dto.ReportId, cancellationToken))
+        {
+            return null;
+        }
+
         var workflow = new AgentWorkflow
         {
             ReportId = dto.ReportId,
@@ -167,6 +176,40 @@ public class WorkflowService : IWorkflowService
         workflow.CurrentState = WorkflowState.Failed;
         workflow.Outcome = reason;
         workflow.CompletedAt = DateTime.UtcNow;
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public async Task<bool> CompleteClarificationAsync(
+        int workflowId,
+        int questionCount,
+        CancellationToken cancellationToken = default)
+    {
+        var workflow = await _db.AgentWorkflows
+            .FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
+
+        if (workflow is null)
+        {
+            return false;
+        }
+
+        if (questionCount > 0)
+        {
+            // There is something to ask the reporter, so the workflow waits for it. The
+            // questions themselves are recorded on the AgentStep; nothing collects the
+            // answers yet, which is why this is a resting state and not a step towards one.
+            workflow.CurrentState = WorkflowState.AwaitingClarification;
+            workflow.Outcome =
+                $"The clarifier asked {questionCount} question(s) about this report.";
+        }
+        else
+        {
+            // Nothing needed clarifying — a valid and meaningful answer. The workflow stays
+            // in Diagnosing, waiting on the diagnostician agent that does not exist yet.
+            // Deliberately NOT marked Completed: no diagnosis has been made.
+            workflow.Outcome = "The clarifier found nothing that needed clarifying.";
+        }
 
         await _db.SaveChangesAsync(cancellationToken);
         return true;

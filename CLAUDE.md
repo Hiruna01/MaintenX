@@ -15,6 +15,18 @@ docs/                Design docs, ADRs, diagrams, report material
 .github/workflows/   CI
 ```
 
+**CI runs on every push and pull request to `main`** — `.github/workflows/ci.yml`, four
+independent jobs: `api` (build, then xUnit against a **PostgreSQL 16 service container**
+with the migrations applied), `agent` (pytest in `STUB_MODE`), `web` (`npm ci` +
+`npm run build`) and `mobile` (`flutter analyze`).
+
+**The workflow contains no secrets and needs none** — the agent job runs stubbed so no LLM
+key is required, and the api job's database is a throwaway container reachable only from
+that job. If a job ever needs a real credential it goes in GitHub repository secrets as
+`${{ secrets.NAME }}`, never in the file.
+
+Not yet covered by CI, so still run by hand: `flutter test`, `npm run lint`.
+
 ---
 
 ## BACKEND — follow this structure exactly
@@ -199,10 +211,25 @@ agent/config.py        settings read from the environment
   compiled into the API itself.
 - Integration tests boot the real pipeline via `WebApplicationFactory<Program>`. This
   requires one line at the end of `api/Program.cs`: `public partial class Program { }`.
-- Test database is **SQLite in-memory, not the EF Core in-memory provider.** The EF
-  in-memory provider does not enforce unique indexes/constraints, so a test like
-  "duplicate email returns 409" would pass even if the unique index were deleted. SQLite
-  enforces it for real.
+- **Never the EF Core in-memory provider.** It does not enforce unique indexes or
+  constraints, so "duplicate email returns 409" would pass there even with the index
+  deleted. `ApiFactory` runs against one of two real databases instead, chosen by the
+  `TEST_DATABASE_URL` environment variable:
+  - **unset (a developer's machine) — SQLite in-memory**, built from the model with
+    `EnsureCreated()`. Fast and needs nothing installed.
+  - **set (CI) — a real PostgreSQL server.** Each test class's factory creates its own
+    uniquely named database, runs `db.Database.Migrate()` on it, and drops it afterwards.
+    The value is an Npgsql key/value connection string, not a `postgres://` URL.
+- **The PostgreSQL mode is not redundant.** It is the only one that executes the
+  **migrations** — `EnsureCreated()` builds the schema from the model and never runs a
+  migration, so a broken or out-of-step migration is invisible on SQLite. It is also the
+  only mode where the `jsonb` columns are really `jsonb` (`AppDbContext` falls back to
+  `TEXT` on SQLite) and where `timestamp with time zone` behaves as it will in production.
+- A database **per factory**, not one shared database: xUnit gives each test class its own
+  `ApiFactory`, and no class should be able to see another's rows. That is the isolation
+  the SQLite mode gets for free, preserved deliberately for PostgreSQL.
+- `WorkflowRunner` is removed from the container in **both** modes, so a background writer
+  never races a test's assertions and a test behaves identically on a laptop and in CI.
 - `ApiFactory` sets `Jwt:*` and `ConnectionStrings:DefaultConnection` via environment
   variables (Program.cs reads them while the builder is still being constructed) and uses
   `UseEnvironment("Testing")` so the Development-only demo seeder never runs in tests —
@@ -286,6 +313,15 @@ remembers where the user was heading and sends them back there after sign-in.
 Flutter + Riverpod + go_router. Targets **Android and iOS**; the platform folders are
 generated with `flutter create` and otherwise left alone. Run everything from `mobile/`:
 `flutter analyze`, `flutter test`, `flutter run`.
+
+- **`android/` and `ios/` are the only platform folders that belong in the repo.** A
+  desktop or web runner (`macos/`, `web/`) generated locally to get a quick look at the UI
+  is a personal convenience — regenerate it with `flutter create .` when you want it, and
+  do not commit it. They are not product targets, they need toolchains the team does not
+  all have, and a hand-edited entitlement or manifest in one of them rots unnoticed.
+- **HTTP to a local API needs one flag on Android.** Android 9+ blocks cleartext traffic,
+  so `http://10.0.2.2:5138` from an emulator fails with what looks like the API being down
+  until `android:usesCleartextTraffic="true"` is set on the debug manifest.
 
 ```
 mobile/lib/core/       env, api_client, token_storage, infrastructure providers
@@ -378,6 +414,14 @@ visible rather than hidden, so the finished shape of the form stays obvious.
 Never commit real values. `.env`, `*.env` and `appsettings.Development.json` are
 git-ignored. Add any new configuration key to `.env.example` with an empty value and a
 one-line comment.
+
+**Nothing loads the root `.env` automatically, and the two services differ.** The agent
+service reads it, because pydantic-settings does that itself. **The ASP.NET Core API does
+not** — it has no dotenv package, so `builder.Configuration["DATABASE_URL"]` reads a real
+*environment variable*, and a value sitting in `.env` reaches the API only if the shell
+exported it first (`set -a; source .env; set +a`) or a tool like Docker Compose loaded it.
+Editing `.env` and restarting the API on its own changes nothing. This is worth knowing
+before debugging a "the API is ignoring my configuration" problem.
 
 For the API specifically, local secrets go through `dotnet user-secrets` (already
 initialised on `api/CampusFacilities.Api.csproj` — the `<UserSecretsId>` in that file is

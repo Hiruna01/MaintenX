@@ -38,6 +38,12 @@ public class WorkflowsController : ControllerBase
     {
         var created = await _workflowService.StartAsync(dto, cancellationToken);
 
+        if (created is null)
+        {
+            ModelState.AddModelError(nameof(dto.ReportId), $"Report {dto.ReportId} does not exist.");
+            return ValidationProblem(ModelState);
+        }
+
         // Not cancellationToken: the request's token is cancelled the moment this response
         // is written, which would abort the very hand-off we just promised the client.
         await _workflowQueue.EnqueueAsync(created.Id, CancellationToken.None);

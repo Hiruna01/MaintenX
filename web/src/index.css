@@ -332,3 +332,106 @@ a {
   color: var(--text);
   font-size: 0.9rem;
 }
+
+/* ---------- workflow detail ---------- */
+
+.page__back {
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.detail {
+  margin: 1rem 0 2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.25rem 1rem;
+}
+
+.detail__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail__row:last-child {
+  border-bottom: none;
+}
+
+.detail dt {
+  flex: 0 0 8rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.detail dd {
+  margin: 0;
+  flex: 1 1 12rem;
+  font-size: 0.9rem;
+}
+
+/* ---------- workflow steps ---------- */
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.steps__item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.steps__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.steps__agent {
+  font-size: 0.9rem;
+}
+
+.steps__meta,
+.steps__tools {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.steps__tools {
+  margin: 0.5rem 0 0;
+}
+
+.steps__error {
+  margin: 0.5rem 0 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+/* ---------- clarifying questions (read-only, never a form) ---------- */
+
+.questions {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.questions__text {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.questions__meta {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}

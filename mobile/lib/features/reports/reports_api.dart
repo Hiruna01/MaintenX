@@ -23,12 +23,12 @@ class ReportsApi {
         .toList(growable: false);
   }
 
-  /// POST /api/reports.
+  /// POST /api/reports -> 201 with the created report.
   ///
-  /// NOTE: this endpoint does not exist in `api/` yet — there is no ReportsController, and
-  /// StartWorkflowRequest.ReportId is commented "Optional for now; reports are a later
-  /// feature". Submitting will return 404 until it lands. It is written against the shape
-  /// the form produces so that only this one method changes when it does.
+  /// The reporter is NOT sent: the API reads it from the `sub` claim of the bearer token
+  /// ApiClient attaches, so a client cannot file a report as somebody else. Filing also
+  /// raises the agent workflow on the server, but that happens in the background — this
+  /// call returns as soon as the report is stored, not when the agent has finished.
   Future<void> submit({required String description, required int roomId}) async {
     await _client.post(
       '/api/reports',

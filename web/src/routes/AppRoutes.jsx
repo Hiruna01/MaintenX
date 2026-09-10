@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import LoginPage from '../features/auth/pages/LoginPage';
 import { MANAGER_ROLES } from '../features/auth/services/roles';
 import DashboardPage from '../features/dashboard/pages/DashboardPage';
+import WorkflowDetailPage from '../features/workflows/pages/WorkflowDetailPage';
 import WorkflowsPage from '../features/workflows/pages/WorkflowsPage';
 import NotFoundPage from './NotFoundPage';
 import ProtectedRoute from './ProtectedRoute';
@@ -22,6 +23,7 @@ export function AppRoutes() {
       {/* Signed in as a manager. A Reporter gets the "not authorised" page, not a blank one. */}
       <Route element={<ProtectedRoute allowedRoles={MANAGER_ROLES} />}>
         <Route path="/workflows" element={<WorkflowsPage />} />
+        <Route path="/workflows/:id" element={<WorkflowDetailPage />} />
       </Route>
 
       {/* Catch-all. */}

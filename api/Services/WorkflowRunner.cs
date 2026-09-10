@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json;
+using CampusFacilities.Api.Dtos;
 
 namespace CampusFacilities.Api.Services;
 
@@ -53,14 +53,48 @@ public class WorkflowRunner : BackgroundService
         _logger.LogInformation("Workflow runner stopped.");
     }
 
+    /// <summary>
+    /// Writes the one AGENT-LEVEL step for this run.
+    ///
+    /// Exactly one, and only agent-level: the tool calls the agent made on its way here
+    /// already wrote their own AgentStep rows from InternalToolsController, which sees
+    /// every call including the ones it rejects. Recording the agent's returned tool_calls
+    /// here as well would double every tool call in the audit trail, so ToolCallsJson is
+    /// the empty array and the controller stays the single owner of those rows.
+    /// </summary>
+    private static async Task RecordAgentStepAsync(
+        IWorkflowService workflows,
+        int workflowId,
+        AgentCallResult call,
+        CancellationToken cancellationToken)
+    {
+        var succeeded = call.Ok && call.Response is not null && !call.Response.IsSafeFailure;
+
+        await workflows.RecordStepAsync(
+            workflowId,
+            agentName: call.Response?.Agent ?? "clarifier",
+            toolCallsJson: "[]",
+            // The agent's output verbatim, into the jsonb column that exists for exactly
+            // this. Note what is NOT written: AgentWorkflow.PlanJson stays null, because
+            // the clarifier produces questions and questions are not a plan. Putting them
+            // there would mislabel them for every reader of that column.
+            payloadJson: call.Response is null
+                ? null
+                : JsonSerializer.Serialize(call.Response.Output),
+            durationMs: call.DurationMs,
+            validationResult: succeeded ? "Ok" : call.Ok ? "SafeFailure" : "CallFailed",
+            errorMessage: call.Error ?? call.Response?.Error,
+            cancellationToken);
+    }
+
     private async Task ProcessAsync(int workflowId, CancellationToken cancellationToken)
     {
         // One scope per workflow: AppDbContext and IWorkflowService are scoped, and a
         // DbContext must never be shared across concurrent units of work.
         using var scope = _scopeFactory.CreateScope();
         var workflows = scope.ServiceProvider.GetRequiredService<IWorkflowService>();
-
-        var stopwatch = Stopwatch.StartNew();
+        var reports = scope.ServiceProvider.GetRequiredService<IReportService>();
+        var agent = scope.ServiceProvider.GetRequiredService<IAgentClient>();
 
         try
         {
@@ -74,27 +108,64 @@ public class WorkflowRunner : BackgroundService
                 return;
             }
 
-            // ---------------------------------------------------------------------
-            // This is where the call to the Python agent service will go: post the
-            // objective, then let the agent call back into /api/internal/tools/* for
-            // any data it needs. Until that service exists the runner only records the
-            // hand-off, so the workflow parks in Diagnosing and the polling contract
-            // (202, then GET) is already exercisable end to end.
-            // ---------------------------------------------------------------------
-            stopwatch.Stop();
+            var workflow = await workflows.GetByIdAsync(workflowId, cancellationToken);
 
-            await workflows.RecordStepAsync(
-                workflowId,
-                agentName: "orchestrator",
-                toolCallsJson: "[]",
-                payloadJson: JsonSerializer.Serialize(new
-                {
-                    message = "Workflow accepted and handed off for diagnosis."
-                }),
-                durationMs: (int)stopwatch.ElapsedMilliseconds,
-                validationResult: "Ok",
-                errorMessage: null,
+            if (workflow is null)
+            {
+                // Deleted between BeginProcessingAsync and here. Nothing to fail against.
+                _logger.LogWarning("Workflow {WorkflowId} disappeared while starting.", workflowId);
+                return;
+            }
+
+            // The room gives the clarifier somewhere to look: it is what the agent passes
+            // to the get_room tool. A workflow started from a bare objective has no report
+            // and therefore no room, which is fine — the agent works from the text alone.
+            var report = workflow.ReportId is null
+                ? null
+                : await reports.GetByIdAsync(workflow.ReportId.Value, cancellationToken);
+
+            var call = await agent.RunAsync(
+                new AgentRunRequest(
+                    WorkflowId: workflowId,
+                    Description: workflow.Objective,
+                    RoomId: report?.RoomId,
+                    // The clarifier can look a building up, but nothing here knows which
+                    // one: a report names a room, and resolving room -> building would be
+                    // a query this runner has no reason to make. The agent can call
+                    // get_room and read buildingId off the result if it needs it.
+                    BuildingId: null),
                 cancellationToken);
+
+            await RecordAgentStepAsync(workflows, workflowId, call, cancellationToken);
+
+            // Two different failures, one outcome. A call that never completed (timeout,
+            // refused connection, bad body) and a call that completed with the agent
+            // reporting it could not produce output both leave the workflow unable to
+            // proceed, so both move it to Failed with the reason on the row rather than
+            // leaving it parked in Diagnosing forever.
+            if (!call.Ok || call.Response is null)
+            {
+                // call.Error is already a complete sentence from AgentClient; prefixing it
+                // here produced "The agent service could not be reached: Could not reach
+                // the agent service: ...", which a user reads on the workflow page.
+                await workflows.FailAsync(
+                    workflowId,
+                    call.Error ?? "The agent service call failed for an unknown reason.",
+                    cancellationToken);
+                return;
+            }
+
+            if (call.Response.IsSafeFailure)
+            {
+                await workflows.FailAsync(
+                    workflowId,
+                    $"The clarifier could not produce questions: {call.Response.Error ?? "no reason given"}",
+                    cancellationToken);
+                return;
+            }
+
+            await workflows.CompleteClarificationAsync(
+                workflowId, call.Response.QuestionCount, cancellationToken);
         }
         catch (Exception ex)
         {

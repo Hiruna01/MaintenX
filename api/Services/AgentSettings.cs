@@ -19,4 +19,23 @@ public class AgentSettings
     public const string SecretHeaderName = "X-Agent-Secret";
 
     public string SharedSecret { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Base URL of the Python agent service, e.g. http://localhost:8000. Empty disables
+    /// the outbound call: the runner records why and fails the workflow rather than
+    /// throwing, so an API running without the agent is degraded, not broken.
+    /// From configuration (Agent:BaseUrl, or AGENT_SERVICE_URL from the root .env).
+    /// </summary>
+    public string BaseUrl { get; init; } = string.Empty;
+
+    /// <summary>
+    /// How long the API waits for one POST /run before giving up.
+    ///
+    /// Generous on purpose. A measured clarifier run against a real provider takes about
+    /// ten seconds, and the agent's own LLM timeout is 30s with one retry, so a slow-but-
+    /// working run can legitimately approach a minute. This timeout exists to stop a
+    /// wedged agent pinning a background worker forever — not to second-guess a slow one,
+    /// which is why it is deliberately longer than anything the agent should ever need.
+    /// </summary>
+    public double TimeoutSeconds { get; init; } = 60;
 }

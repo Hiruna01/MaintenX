@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+
 import { workflowStateLabel } from '../services/workflowsService';
 
 function formatDate(value) {
@@ -24,7 +26,9 @@ export function WorkflowTable({ workflows }) {
         <tbody>
           {workflows.map((workflow) => (
             <tr key={workflow.id}>
-              <td>{workflow.id}</td>
+              <td>
+                <Link to={`/workflows/${workflow.id}`}>{workflow.id}</Link>
+              </td>
               <td>{workflow.objective}</td>
               <td>
                 <span className={`state state--${workflow.currentState}`}>

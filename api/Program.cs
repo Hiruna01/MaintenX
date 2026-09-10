@@ -104,12 +104,20 @@ builder.Services.AddSingleton(jwtSettings);
 // team members who are not working on the agent. It fails CLOSED instead — an empty
 // secret makes AgentSecretFilter reject every call — and warns loudly at startup below.
 // ---------------------------------------------------------------------------
-builder.Services.AddSingleton(new AgentSettings
+var agentSettings = new AgentSettings
 {
     SharedSecret = builder.Configuration["Agent:SharedSecret"]
         ?? builder.Configuration["AGENT_SHARED_SECRET"]
-        ?? string.Empty
-});
+        ?? string.Empty,
+    BaseUrl = builder.Configuration["Agent:BaseUrl"]
+        ?? builder.Configuration["AGENT_SERVICE_URL"]
+        ?? string.Empty,
+    TimeoutSeconds = builder.Configuration.GetValue<double?>("Agent:TimeoutSeconds")
+        ?? builder.Configuration.GetValue<double?>("AGENT_TIMEOUT_SECONDS")
+        ?? 60
+};
+
+builder.Services.AddSingleton(agentSettings);
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -160,6 +168,9 @@ builder.Services.AddScoped<IBuildingService, BuildingService>();
 // Rooms
 builder.Services.AddScoped<IRoomService, RoomService>();
 
+// Reports
+builder.Services.AddScoped<IReportService, ReportService>();
+
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
 
@@ -170,6 +181,24 @@ builder.Services.AddScoped<IWorkflowService, WorkflowService>();
 // so unlike the services above it is genuinely safe as a singleton. It has to be one:
 // the controller and the background runner must see the same queue.
 builder.Services.AddSingleton<IWorkflowQueue, WorkflowQueue>();
+
+// The API's outbound call to the agent service. A typed HttpClient, so the timeout and
+// base address are configured once here rather than at every call site, and the handler
+// is pooled instead of a new HttpClient being constructed per workflow.
+//
+// Registered as a typed client (transient), not a singleton: it holds no DbContext, and
+// the background runner resolves it from the scope it opens per workflow.
+builder.Services.AddHttpClient<IAgentClient, AgentClient>(client =>
+{
+    if (!string.IsNullOrWhiteSpace(agentSettings.BaseUrl))
+    {
+        client.BaseAddress = new Uri(agentSettings.BaseUrl);
+    }
+
+    // The runner must never wait forever on a wedged agent. AgentClient turns the
+    // resulting TaskCanceledException into a plain failure result.
+    client.Timeout = TimeSpan.FromSeconds(agentSettings.TimeoutSeconds);
+});
 
 // The background half of "POST /api/workflows returns 202". Registered here so the host
 // starts it at boot; it opens its own DI scope per workflow.
@@ -233,11 +262,21 @@ var app = builder.Build();
 
 // A missing agent secret is not fatal, but it does silently disable the agent's only way
 // into this API, so say so once at startup rather than leaving someone to debug 401s.
-if (string.IsNullOrEmpty(app.Services.GetRequiredService<AgentSettings>().SharedSecret))
+if (string.IsNullOrEmpty(agentSettings.SharedSecret))
 {
     app.Logger.LogWarning(
         "No agent shared secret configured (Agent:SharedSecret / AGENT_SHARED_SECRET). " +
         "Every call to /api/internal/tools/* will be rejected with 401.");
+}
+
+// Same reasoning in the other direction: without a URL the runner cannot call the agent,
+// so every workflow it picks up will end in Failed. Say so once rather than leaving it to
+// be discovered one failed workflow at a time.
+if (string.IsNullOrEmpty(agentSettings.BaseUrl))
+{
+    app.Logger.LogWarning(
+        "No agent service URL configured (Agent:BaseUrl / AGENT_SERVICE_URL). " +
+        "Every workflow the background runner picks up will fail.");
 }
 
 // First in the pipeline so it wraps everything after it.

@@ -12,6 +12,7 @@ public class AppDbContext : DbContext
     public DbSet<User> Users => Set<User>();
     public DbSet<Building> Buildings => Set<Building>();
     public DbSet<Room> Rooms => Set<Room>();
+    public DbSet<Report> Reports => Set<Report>();
     public DbSet<AgentWorkflow> AgentWorkflows => Set<AgentWorkflow>();
     public DbSet<AgentStep> AgentSteps => Set<AgentStep>();
 
@@ -46,6 +47,32 @@ public class AppDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
         });
 
+        modelBuilder.Entity<Report>(entity =>
+        {
+            // Same reasoning as Role and WorkflowState: the database reads "Submitted",
+            // not "0", so a manual query during a demo is readable and inserting a new
+            // enum member in the middle cannot silently re-label existing rows.
+            entity.Property(r => r.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            entity.HasIndex(r => r.RoomId);
+
+            // Restrict, not Cascade: a report is the head of an audit trail (its workflow
+            // and that workflow's steps), so deleting the room or the user out from under
+            // it must fail loudly rather than quietly taking the trail with it.
+            entity.HasOne(r => r.Room)
+                  .WithMany()
+                  .HasForeignKey(r => r.RoomId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(r => r.Reporter)
+                  .WithMany()
+                  .HasForeignKey(r => r.ReporterId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
         modelBuilder.Entity<AgentWorkflow>(entity =>
         {
             // Same reasoning as Role: the database reads "AwaitingManagerApproval", not "4",
@@ -60,6 +87,18 @@ public class AppDbContext : DbContext
             entity.HasIndex(w => w.CurrentState);
 
             entity.Property(w => w.PlanJson).HasColumnType(JsonColumnType);
+
+            entity.HasIndex(w => w.ReportId);
+
+            // A real foreign key now that Report exists. No navigation property on either
+            // side: nothing reads a workflow through its report or vice versa, and adding
+            // one would only invite a lazy include. Restrict for the same reason as above
+            // — a workflow must not outlive the report it exists to explain, and it must
+            // not be silently deleted with it either.
+            entity.HasOne<Report>()
+                  .WithMany()
+                  .HasForeignKey(w => w.ReportId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AgentStep>(entity =>
@@ -108,7 +147,9 @@ public class AppDbContext : DbContext
 
         foreach (var entry in ChangeTracker.Entries())
         {
-            if (entry.Entity is not (User or Building or Room or AgentWorkflow or AgentStep))
+            // Every timestamped entity must be named here. A new one that is left off
+            // this list compiles, runs, and silently keeps CreatedAt/UpdatedAt at default.
+            if (entry.Entity is not (User or Building or Room or Report or AgentWorkflow or AgentStep))
             {
                 continue;
             }

@@ -114,6 +114,18 @@ Not yet covered by CI, so still run by hand: `flutter test`, `npm run lint`.
   `IWorkflowService` are scoped, so a singleton hosted service cannot hold them directly.
   Clients poll `GET /api/workflows/{id}` for progress. Do not add a synchronous HTTP call
   to the agent service inside a controller action.
+- **The runner's outbound call is `IAgentClient`**, a typed `HttpClient` with its own
+  timeout (`Agent:TimeoutSeconds`, default 60s). It **never throws**: a timeout, a refused
+  connection, a non-200 or an unreadable body all come back as a result the runner turns
+  into `Failed` with the reason on the row. A background exception has no request to
+  surface on, so a workflow must never be left parked because the agent was down.
+- **The runner records ONE agent-level step per run**, with `ToolCallsJson` empty. Tool
+  calls are recorded by `InternalToolsController` alone — recording the agent's returned
+  `tool_calls` here as well would double every tool call in the audit trail.
+- **`AgentWorkflow.PlanJson` is still never populated.** The clarifier produces questions,
+  and questions are not a plan, so they go in `AgentStep.PayloadJson` where step output
+  belongs. Do not render `PlanJson` in a client until an agent actually produces one — an
+  always-null field on a page is worse than no field.
 - **`POST /api/internal/tools/{toolName}`** is how the agent calls back into the API. It is
   authenticated by a **shared-secret header** (`AGENT_SHARED_SECRET`), not a JWT — there is
   no user behind these calls, so no role to check. Missing or wrong secret → 401.
@@ -383,13 +395,20 @@ When the agent needs more detail, its clarification questions are rendered as a 
 bounded inputs** — pickers, yes/no, short text — never as a message thread. The note is kept
 in `SubmitReportScreen` as well as here.
 
-### Known gap: `POST /api/reports`
+### `POST /api/reports` — landed
 
-`ReportsApi.submit()` posts `{ description, roomId }` to `/api/reports`, which **does not
-exist yet** — there is no `ReportsController`, and `StartWorkflowRequest.ReportId` is
-commented "reports are a later feature". Submitting returns 404 until it lands. The call is
-isolated in that one method so nothing else changes when it does. The room picker reads
-`GET /api/rooms`, which does exist.
+`ReportsApi.submit()` posts `{ description, roomId }` to `/api/reports`, which now exists.
+It returns **201** with the created report and raises the agent workflow as a side effect
+(`ReportService`), so the client is not waiting on an agent run — the non-blocking property
+comes from `IWorkflowQueue`, not from a 202. The room picker reads `GET /api/rooms`.
+
+The reporter is taken from the JWT `sub` claim and **`CreateReportDto` has no `ReporterId`
+field**, so a client cannot file a report as someone else. The description is capped at
+1000 characters on both sides, matching `AgentWorkflow.Objective`, which it becomes
+verbatim; the 10-character floor mirrors the Flutter form's own `validate()`.
+
+Nothing collects the clarifier's answers. The questions are stored on an `AgentStep` and
+displayed read-only; there is no follow-up round and no chat interface — see above.
 
 Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
 visible rather than hidden, so the finished shape of the form stays obvious.

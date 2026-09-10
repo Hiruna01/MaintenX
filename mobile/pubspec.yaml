@@ -1,0 +1,32 @@
+name: maintenx_mobile
+description: MaintenX campus facilities maintenance — Flutter client.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management. Providers only — no codegen, no build_runner.
+  flutter_riverpod: ^2.5.1
+
+  # Declarative routing with a redirect guard.
+  go_router: ^14.2.0
+
+  # The JWT is stored here, NOT in SharedPreferences: this is Keychain on iOS and
+  # EncryptedSharedPreferences on Android, so the token is not readable as plain
+  # text from the app sandbox or an adb backup.
+  flutter_secure_storage: ^9.2.2
+
+  http: ^1.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

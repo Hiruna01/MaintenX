@@ -13,6 +13,9 @@ public class AppDbContext : DbContext
     public DbSet<Building> Buildings => Set<Building>();
     public DbSet<Room> Rooms => Set<Room>();
     public DbSet<Report> Reports => Set<Report>();
+    public DbSet<AssetCategory> AssetCategories => Set<AssetCategory>();
+    public DbSet<Asset> Assets => Set<Asset>();
+    public DbSet<ServiceRecord> ServiceRecords => Set<ServiceRecord>();
     public DbSet<AgentWorkflow> AgentWorkflows => Set<AgentWorkflow>();
     public DbSet<AgentStep> AgentSteps => Set<AgentStep>();
 
@@ -45,6 +48,69 @@ public class AppDbContext : DbContext
                   .WithMany(b => b.Rooms)
                   .HasForeignKey(r => r.BuildingId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AssetCategory>(entity =>
+        {
+            entity.HasIndex(c => c.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<Asset>(entity =>
+        {
+            // The QR payload. Unique across the estate, because a scan yields nothing but
+            // this string and must identify exactly one piece of equipment.
+            entity.HasIndex(a => a.AssetTag).IsUnique();
+
+            // Both filters on the list endpoint, so both get an index.
+            entity.HasIndex(a => a.RoomId);
+            entity.HasIndex(a => a.AssetCategoryId);
+
+            // Same reasoning as Role and WorkflowState: the database reads "UnderMaintenance",
+            // not "1", and inserting a new enum member in the middle cannot silently
+            // re-label existing rows.
+            entity.Property(a => a.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            // Restrict, not Cascade: an asset carries a service history the diagnostic
+            // agent reads, so deleting the room or category out from under it must fail
+            // loudly rather than quietly taking that history with it. Equipment that
+            // leaves the estate is marked Retired, not deleted.
+            entity.HasOne(a => a.Category)
+                  .WithMany(c => c.Assets)
+                  .HasForeignKey(a => a.AssetCategoryId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(a => a.Room)
+                  .WithMany()
+                  .HasForeignKey(a => a.RoomId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ServiceRecord>(entity =>
+        {
+            // Every read of an asset's history filters by this column.
+            entity.HasIndex(s => s.AssetId);
+
+            // And the agent reads history as a time series — "what happened to this
+            // machine, in order", and "what was serviced in this period".
+            entity.HasIndex(s => s.ServicedOn);
+
+            entity.Property(s => s.Outcome)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            // Restrict for the same reason as above: history outlives the working life of
+            // the machine it describes.
+            entity.HasOne(s => s.Asset)
+                  .WithMany(a => a.ServiceRecords)
+                  .HasForeignKey(s => s.AssetId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            // WorkOrderId is intentionally a plain int? with no foreign key: the WorkOrder
+            // table does not exist yet (Component C). It becomes a real key then.
         });
 
         modelBuilder.Entity<Report>(entity =>
@@ -149,7 +215,9 @@ public class AppDbContext : DbContext
         {
             // Every timestamped entity must be named here. A new one that is left off
             // this list compiles, runs, and silently keeps CreatedAt/UpdatedAt at default.
-            if (entry.Entity is not (User or Building or Room or Report or AgentWorkflow or AgentStep))
+            if (entry.Entity is not (User or Building or Room or Report
+                or AssetCategory or Asset or ServiceRecord
+                or AgentWorkflow or AgentStep))
             {
                 continue;
             }

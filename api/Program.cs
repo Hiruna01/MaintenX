@@ -171,6 +171,9 @@ builder.Services.AddScoped<IRoomService, RoomService>();
 // Reports
 builder.Services.AddScoped<IReportService, ReportService>();
 
+// Asset registry
+builder.Services.AddScoped<IAssetService, AssetService>();
+
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
 

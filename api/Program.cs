@@ -174,6 +174,9 @@ builder.Services.AddScoped<IReportService, ReportService>();
 // Asset registry
 builder.Services.AddScoped<IAssetService, AssetService>();
 
+// Clarification questions and answers
+builder.Services.AddScoped<IClarificationService, ClarificationService>();
+
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
 

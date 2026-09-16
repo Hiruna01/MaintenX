@@ -87,6 +87,53 @@ public class WorkflowRunner : BackgroundService
             cancellationToken);
     }
 
+    /// <summary>
+    /// Writes the clarifier's questions as ClarificationQuestion rows — the working data
+    /// beside the AgentStep audit row.
+    ///
+    /// A workflow with no report writes none. That is not a failure: POST /api/workflows
+    /// can still start a run from a bare objective, and a question about nothing has
+    /// nobody to ask and nowhere to appear. The AgentStep still records what was asked, so
+    /// the run is not invisible.
+    /// </summary>
+    private async Task RecordClarificationQuestionsAsync(
+        IClarificationService clarifications,
+        int? reportId,
+        int workflowId,
+        AgentRunResponse response,
+        CancellationToken cancellationToken)
+    {
+        if (reportId is null)
+        {
+            if (response.QuestionCount > 0)
+            {
+                _logger.LogInformation(
+                    "Workflow {WorkflowId} has no report, so its {QuestionCount} clarifier "
+                    + "question(s) were recorded on the agent step only.",
+                    workflowId, response.QuestionCount);
+            }
+
+            return;
+        }
+
+        var questions = response.ParseQuestions();
+
+        // ParseQuestions skips anything malformed rather than throwing, so a shortfall here
+        // is the only sign that it happened. Worth a warning: the agent validates its own
+        // output against a Pydantic schema before sending it, so this should be impossible
+        // and means the two contracts have drifted apart.
+        if (questions.Count != response.QuestionCount)
+        {
+            _logger.LogWarning(
+                "Workflow {WorkflowId}: the agent returned {ReturnedCount} question(s) but only "
+                + "{ParsedCount} could be read. The full payload is on the agent step.",
+                workflowId, response.QuestionCount, questions.Count);
+        }
+
+        await clarifications.RecordQuestionsAsync(
+            reportId.Value, workflowId, questions, cancellationToken);
+    }
+
     private async Task ProcessAsync(int workflowId, CancellationToken cancellationToken)
     {
         // One scope per workflow: AppDbContext and IWorkflowService are scoped, and a
@@ -94,6 +141,7 @@ public class WorkflowRunner : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var workflows = scope.ServiceProvider.GetRequiredService<IWorkflowService>();
         var reports = scope.ServiceProvider.GetRequiredService<IReportService>();
+        var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
         var agent = scope.ServiceProvider.GetRequiredService<IAgentClient>();
 
         try
@@ -163,6 +211,14 @@ public class WorkflowRunner : BackgroundService
                     cancellationToken);
                 return;
             }
+
+            // The questions are now written TWICE, on purpose and to two different ends.
+            // RecordAgentStepAsync above stored the agent's payload verbatim: that is the
+            // audit trail and it is never edited. This stores the same questions as rows
+            // the application can actually use — queried per report, ordered, rendered as
+            // a form and answered. Neither replaces the other.
+            await RecordClarificationQuestionsAsync(
+                clarifications, workflow.ReportId, workflowId, call.Response, cancellationToken);
 
             await workflows.CompleteClarificationAsync(
                 workflowId, call.Response.QuestionCount, cancellationToken);

@@ -85,5 +85,6 @@ public class ReportService : IReportService
     }
 
     private static ReportDto ToDto(Report r) =>
-        new(r.Id, r.ReporterId, r.RoomId, r.Description, r.Status, r.CreatedAt, r.UpdatedAt);
+        new(r.Id, r.ReporterId, r.RoomId, r.AssetId, r.Description, r.Status, r.PhotoUrl,
+            r.CreatedAt, r.UpdatedAt);
 }

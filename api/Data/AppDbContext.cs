@@ -18,6 +18,8 @@ public class AppDbContext : DbContext
     public DbSet<ServiceRecord> ServiceRecords => Set<ServiceRecord>();
     public DbSet<AgentWorkflow> AgentWorkflows => Set<AgentWorkflow>();
     public DbSet<AgentStep> AgentSteps => Set<AgentStep>();
+    public DbSet<ClarificationQuestion> ClarificationQuestions => Set<ClarificationQuestion>();
+    public DbSet<ClarificationAnswer> ClarificationAnswers => Set<ClarificationAnswer>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -137,6 +139,15 @@ public class AppDbContext : DbContext
                   .WithMany()
                   .HasForeignKey(r => r.ReporterId)
                   .OnDelete(DeleteBehavior.Restrict);
+
+            // Nullable, so most reports name no asset. Restrict for the same reason as
+            // the two above, and because an asset carries the service history the
+            // diagnostic agent reads — it must not be deletable out from under a report
+            // that blames it.
+            entity.HasOne(r => r.Asset)
+                  .WithMany()
+                  .HasForeignKey(r => r.AssetId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AgentWorkflow>(entity =>
@@ -180,6 +191,69 @@ public class AppDbContext : DbContext
             entity.Property(s => s.ToolCallsJson).HasColumnType(JsonColumnType);
             entity.Property(s => s.PayloadJson).HasColumnType(JsonColumnType);
         });
+
+        modelBuilder.Entity<ClarificationQuestion>(entity =>
+        {
+            // Both are read paths in their own right: "what was this report asked?" and
+            // "what did this run ask?", so both get an index.
+            entity.HasIndex(q => q.ReportId);
+            entity.HasIndex(q => q.WorkflowId);
+
+            // Same reasoning as Role and WorkflowState: the column reads "SingleSelect",
+            // not "1", and inserting a new member in the middle of the enum cannot
+            // silently re-label the rows already stored.
+            entity.Property(q => q.AnswerType)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            entity.Property(q => q.OptionsJson).HasColumnType(JsonColumnType);
+
+            // Restrict on both, matching Report's own foreign keys: a question is part of
+            // the record of what was asked about a fault, so deleting the report or the
+            // run out from under it must fail loudly rather than quietly taking it along.
+            entity.HasOne(q => q.Report)
+                  .WithMany(r => r.ClarificationQuestions)
+                  .HasForeignKey(q => q.ReportId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(q => q.Workflow)
+                  .WithMany()
+                  .HasForeignKey(q => q.WorkflowId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ClarificationAnswer>(entity =>
+        {
+            // ONE answer per question, enforced by the database rather than by whichever
+            // service happens to write one. A unique index is the whole "at most one"
+            // rule: a second insert for the same question fails instead of leaving two
+            // rows for a reader to pick between. Note that the EF in-memory provider does
+            // not enforce unique indexes, which is exactly why the tests never use it.
+            entity.HasIndex(a => a.ClarificationQuestionId).IsUnique();
+
+            // One caveat worth knowing before writing the submit-answers endpoint: inside a
+            // single DbContext that has ALREADY LOADED the existing answer, EF resolves the
+            // conflict itself rather than letting the database see it — the relationship is
+            // a required one-to-one, so the old dependent is marked Deleted and the save
+            // succeeds by REPLACING the answer. The index is what stops a writer that only
+            // knows a question id. A service that means "reject a re-answer" has to check
+            // for one and say so; it will not get an exception for free.
+
+            // Cascade, unlike everything else here: an answer says nothing on its own —
+            // without its question there is no way to know what it answers — so it cannot
+            // meaningfully outlive one. Questions are not deleted in practice; this only
+            // says what would happen if one ever were.
+            entity.HasOne(a => a.Question)
+                  .WithOne(q => q.Answer)
+                  .HasForeignKey<ClarificationAnswer>(a => a.ClarificationQuestionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(a => a.AnsweredBy)
+                  .WithMany()
+                  .HasForeignKey(a => a.AnsweredByUserId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
     }
 
     /// <summary>
@@ -217,7 +291,8 @@ public class AppDbContext : DbContext
             // this list compiles, runs, and silently keeps CreatedAt/UpdatedAt at default.
             if (entry.Entity is not (User or Building or Room or Report
                 or AssetCategory or Asset or ServiceRecord
-                or AgentWorkflow or AgentStep))
+                or AgentWorkflow or AgentStep
+                or ClarificationQuestion or ClarificationAnswer))
             {
                 continue;
             }

@@ -119,6 +119,33 @@ var agentSettings = new AgentSettings
 
 builder.Services.AddSingleton(agentSettings);
 
+// ---------------------------------------------------------------------------
+// Approval routing
+//
+// The cost above which a work order needs a manager's decision. From configuration, never
+// a literal in a service — see ApprovalSettings for why. Falls back to the
+// APPROVAL_COST_THRESHOLD name used by the root .env.example, then to the class's own
+// default, so the number is written down in exactly one place.
+// ---------------------------------------------------------------------------
+var approvalSettings = new ApprovalSettings
+{
+    CostThreshold = builder.Configuration.GetValue<decimal?>("Approval:CostThreshold")
+        ?? builder.Configuration.GetValue<decimal?>("APPROVAL_COST_THRESHOLD")
+        ?? ApprovalSettings.DefaultCostThreshold
+};
+
+// A negative threshold is meaningless and a zero one sends every trivial job to a manager,
+// which is how an approval step gets ignored. Fail at startup with a clear message rather
+// than quietly routing every work order — or none of them — for the life of the deployment.
+if (approvalSettings.CostThreshold <= 0)
+{
+    throw new InvalidOperationException(
+        "The work order approval threshold (Approval:CostThreshold / APPROVAL_COST_THRESHOLD) " +
+        "must be greater than zero.");
+}
+
+builder.Services.AddSingleton(approvalSettings);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {

@@ -20,6 +20,9 @@ public class AppDbContext : DbContext
     public DbSet<AgentStep> AgentSteps => Set<AgentStep>();
     public DbSet<ClarificationQuestion> ClarificationQuestions => Set<ClarificationQuestion>();
     public DbSet<ClarificationAnswer> ClarificationAnswers => Set<ClarificationAnswer>();
+    public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
+    public DbSet<ScheduledSlot> ScheduledSlots => Set<ScheduledSlot>();
+    public DbSet<ClassScheduleSlot> ClassScheduleSlots => Set<ClassScheduleSlot>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -111,8 +114,24 @@ public class AppDbContext : DbContext
                   .HasForeignKey(s => s.AssetId)
                   .OnDelete(DeleteBehavior.Restrict);
 
-            // WorkOrderId is intentionally a plain int? with no foreign key: the WorkOrder
-            // table does not exist yet (Component C). It becomes a real key then.
+            // WorkOrderId was a plain int? with no foreign key while the WorkOrder table
+            // did not exist. It exists now, so this is a real key — with no navigation
+            // property on either side, the same as AgentWorkflow -> Report: nothing reads
+            // a record through its order or an order through its records, and adding one
+            // would only invite a lazy include.
+            //
+            // Restrict, like every other key into the registry: the completed order is
+            // what explains this row, so deleting it must fail loudly rather than quietly
+            // taking the history with it.
+            //
+            // Still NULLABLE, and legitimately so: seeded rows and any history imported
+            // from before the system existed were never produced by a work order. The
+            // migration that added this key clears orphaned values first — see
+            // AddWorkOrders.
+            entity.HasOne<WorkOrder>()
+                  .WithMany()
+                  .HasForeignKey(s => s.WorkOrderId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<Report>(entity =>
@@ -254,6 +273,103 @@ public class AppDbContext : DbContext
                   .HasForeignKey(a => a.AnsweredByUserId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
+
+        modelBuilder.Entity<WorkOrder>(entity =>
+        {
+            // All four are read paths in their own right: a report's orders, an asset's
+            // orders, a technician's queue, and a manager's "what is waiting on me".
+            entity.HasIndex(w => w.ReportId);
+            entity.HasIndex(w => w.AssetId);
+            entity.HasIndex(w => w.AssignedTechnicianId);
+            entity.HasIndex(w => w.Status);
+
+            // Same reasoning as Role and ReportStatus: the database reads "AwaitingApproval",
+            // not "1", and inserting a new enum member in the middle cannot silently
+            // re-label the rows already stored.
+            entity.Property(w => w.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            entity.Property(w => w.Strategy)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            // MONEY IS decimal, AND ITS PRECISION IS STATED RATHER THAN INHERITED.
+            // Left undeclared, EF maps decimal to an unqualified PostgreSQL `numeric`,
+            // whose scale is whatever each value happens to arrive with — so the column
+            // would silently accept 4999.999999 and hand it back to a threshold comparison
+            // that is supposed to be reasoning about rupees and cents. 18,2 fixes the scale
+            // at the database, which is the only place every writer has to go through.
+            //
+            // NOTE for the SQLite test mode: that provider has no decimal type and stores
+            // these as TEXT, so a comparison or an ORDER BY translated into SQLite SQL
+            // would compare them as strings. Any approval-threshold query must therefore
+            // be evaluated in C# (after the rows are materialised), which is where the
+            // rule belongs anyway — see ApprovalSettings.
+            entity.Property(w => w.EstimatedCost).HasPrecision(18, 2);
+            entity.Property(w => w.ActualCost).HasPrecision(18, 2);
+
+            // Restrict on all four, matching every other key into the registry: a work
+            // order is the record of money authorised and work carried out on a specific
+            // machine for a specific fault, so deleting the report, the asset or either
+            // user out from under it must fail loudly rather than quietly taking it along.
+            entity.HasOne(w => w.Report)
+                  .WithMany()
+                  .HasForeignKey(w => w.ReportId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(w => w.Asset)
+                  .WithMany()
+                  .HasForeignKey(w => w.AssetId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(w => w.AssignedTechnician)
+                  .WithMany()
+                  .HasForeignKey(w => w.AssignedTechnicianId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(w => w.ApprovedBy)
+                  .WithMany()
+                  .HasForeignKey(w => w.ApprovedByUserId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ScheduledSlot>(entity =>
+        {
+            // Cascade, unlike most of this model and for the same reason as
+            // ClarificationAnswer: a booking says nothing without the work order it books
+            // time for, so it cannot meaningfully outlive one. Work orders are not deleted
+            // in practice — Cancelled is how one ends without being carried out — so this
+            // only states what would happen if one ever were.
+            entity.HasOne(s => s.WorkOrder)
+                  .WithMany(w => w.ScheduledSlots)
+                  .HasForeignKey(s => s.WorkOrderId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClassScheduleSlot>(entity =>
+        {
+            // The conflict check reads "what is on in this room, around this time", so
+            // both halves of that question get an index.
+            entity.HasIndex(c => c.RoomId);
+            entity.HasIndex(c => c.StartsAt);
+
+            // Unique, and that is what makes a re-sync idempotent rather than additive:
+            // the same class pulled twice updates its row instead of appearing as a second
+            // lecture in the same room at the same time — which would read as a conflict
+            // that does not exist and push maintenance out of a room that was free.
+            entity.HasIndex(c => c.ExternalEventId).IsUnique();
+
+            // Restrict, matching Asset and Report: deleting a room out from under its
+            // timetable must fail loudly rather than quietly leaving the room looking
+            // permanently free.
+            entity.HasOne(c => c.Room)
+                  .WithMany()
+                  .HasForeignKey(c => c.RoomId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
     }
 
     /// <summary>
@@ -292,7 +408,8 @@ public class AppDbContext : DbContext
             if (entry.Entity is not (User or Building or Room or Report
                 or AssetCategory or Asset or ServiceRecord
                 or AgentWorkflow or AgentStep
-                or ClarificationQuestion or ClarificationAnswer))
+                or ClarificationQuestion or ClarificationAnswer
+                or WorkOrder or ScheduledSlot or ClassScheduleSlot))
             {
                 continue;
             }

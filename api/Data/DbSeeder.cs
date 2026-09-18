@@ -1,4 +1,5 @@
 using CampusFacilities.Api.Models;
+using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,12 +15,17 @@ public static class DbSeeder
         AppDbContext db,
         IConfiguration configuration,
         IPasswordHasher<User> passwordHasher,
+        VerificationSettings verificationSettings,
         ILogger logger,
         CancellationToken cancellationToken = default)
     {
         await SeedBuildingsAndRoomsAsync(db, cancellationToken);
         await SeedAssetRegistryAsync(db, cancellationToken);
+
+        // Users before work orders: a work order hangs off a report, and a report needs a
+        // reporter. The verification seeder checks for one and backs out if it is absent.
         await SeedUsersAsync(db, configuration, passwordHasher, logger, cancellationToken);
+        await SeedVerificationAsync(db, verificationSettings, logger, cancellationToken);
     }
 
     private static async Task SeedBuildingsAndRoomsAsync(
@@ -329,6 +335,320 @@ public static class DbSeeder
 
         await db.SaveChangesAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// Completed work orders and the verification checks raised against them.
+    ///
+    /// THIS DATA IS LOAD-BEARING TOO. The verification sweep and the metrics endpoint
+    /// cannot be developed or demonstrated against an empty table, and they cannot be
+    /// developed against a table where every check says the same thing — a confirmation
+    /// rate of 100% looks identical whether the code is right or the query is wrong.
+    /// So the seeded set deliberately contains an answer of each kind, plus three checks
+    /// that are already overdue so the sweep has something to pick up the first time it
+    /// runs.
+    ///
+    /// The Reopened one sits on PRJ-MAB101-01 ON PURPOSE. That is the projector whose
+    /// service history carries the planted repeat-failure pattern, so the reopened check
+    /// is the same fault surfacing once more — this time caught by the verification loop
+    /// rather than by a fourth person reporting it. An escalation rule written against
+    /// this data has a real case to find rather than an invented one.
+    ///
+    /// Idempotent like the rest of the seeder: each entry is guarded on its report's
+    /// description, which is unique across this data set. A work order has no natural key
+    /// of its own — the honest consequence of it being a row somebody raises rather than a
+    /// thing with a name — so the report it hangs off is what identifies the triple.
+    /// </summary>
+    private static async Task SeedVerificationAsync(
+        AppDbContext db,
+        VerificationSettings verificationSettings,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        // Every seeded work order hangs off a report, and Report.ReporterId is not
+        // nullable. If demo users were skipped because no passwords are configured, there
+        // is nobody to file them — so this backs out with a warning rather than failing
+        // the whole seed run, the same way a missing password skips one user.
+        var reporterId = await db.Users
+            .Where(u => u.Email == "reporter@campus.test")
+            .Select(u => (int?)u.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (reporterId is null)
+        {
+            logger.LogWarning(
+                "Skipping work order and verification seeding: no demo reporter exists. " +
+                "Configure Seed:Passwords:Reporter and run again.");
+            return;
+        }
+
+        // Both nullable on WorkOrder, so a missing demo user leaves the column null rather
+        // than blocking the seed.
+        var technicianId = await db.Users
+            .Where(u => u.Email == "technician@campus.test")
+            .Select(u => (int?)u.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var managerId = await db.Users
+            .Where(u => u.Email == "manager@campus.test")
+            .Select(u => (int?)u.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var assets = await db.Assets
+            .Select(a => new { a.Id, a.AssetTag, a.RoomId })
+            .ToDictionaryAsync(a => a.AssetTag, a => a, cancellationToken);
+
+        var now = DateTime.UtcNow;
+
+        // Completion dates run from 6 to 20 days ago. The nearest is six rather than two
+        // because DueAt is completion plus the configured delay (5 days by default): a work
+        // order finished two days ago is not yet due, and could not be one of the three
+        // overdue checks this data has to provide. See the note on DaysAgoCompleted.
+        var seeds = new[]
+        {
+            // --- Confirmed: the repair held ------------------------------------
+            new VerificationSeed(
+                AssetTag: "PRJ-MAB102-01",
+                DaysAgoCompleted: 20,
+                Strategy: WorkOrderStrategy.KnownFix,
+                EstimatedCost: 8_500m,
+                ActualCost: 8_500m,
+                Approved: false,
+                ReportDescription: "Projector in Lecture Hall B shows no picture, just a blue screen, since Monday.",
+                ResolutionNote: "hdmi input board reseated + cable swapped. tested 30min w/ laptop and doc cam, picture stable.",
+                CheckStatus: VerificationStatus.Confirmed,
+                DaysAgoResponded: 14,
+                ReporterComment: "Working fine all week, thanks.",
+                AgentOutcome: null,
+                AgentReason: null),
+
+            new VerificationSeed(
+                AssetTag: "ACU-MAB101-01",
+                DaysAgoCompleted: 18,
+                Strategy: WorkOrderStrategy.SingleJob,
+                EstimatedCost: 12_000m,
+                ActualCost: 11_400m,
+                Approved: false,
+                ReportDescription: "AC in Lecture Hall A rattles loudly enough to drown out the lecturer.",
+                ResolutionNote: "fan blade loose on spindle. tightened + rebalanced, filters washed while open. no noise on 20min test.",
+                CheckStatus: VerificationStatus.Confirmed,
+                DaysAgoResponded: 12,
+                ReporterComment: "Much quieter now.",
+                AgentOutcome: null,
+                AgentReason: null),
+
+            // --- Reopened: the repair did NOT hold -----------------------------
+            // On the projector with the planted repeat-failure history. This is that same
+            // thermal fault coming back a fourth time, caught here instead of by another
+            // report from the room.
+            new VerificationSeed(
+                AssetTag: "PRJ-MAB101-01",
+                DaysAgoCompleted: 15,
+                Strategy: WorkOrderStrategy.SingleJob,
+                EstimatedCost: 9_500m,
+                ActualCost: 9_500m,
+                Approved: false,
+                ReportDescription: "Lecture Hall A projector keeps cutting out about ten minutes into every lecture.",
+                ResolutionNote: "filter cleaned again + thermal paste redone on lamp housing. ran 40min continuous, no cutout on test.",
+                CheckStatus: VerificationStatus.Reopened,
+                DaysAgoResponded: 9,
+                ReporterComment: "Cut out twice again this week. Same as before.",
+                AgentOutcome: "repeat_failure",
+                AgentReason: "Third thermal-related intervention on this unit in five months; two prior visits recorded as temporary fixes and one as no fault found. Cleaning is not holding. Recommend replacement assessment rather than a fourth clean."),
+
+            // --- Pending, and already overdue: the sweep's first work ----------
+            new VerificationSeed(
+                AssetTag: "ACU-ENG101-01",
+                DaysAgoCompleted: 12,
+                Strategy: WorkOrderStrategy.SingleJob,
+                EstimatedCost: 22_000m,
+                ActualCost: 24_500m,
+                // Above the default 15,000 threshold, so a manager had to decide before
+                // this one was scheduled.
+                Approved: true,
+                ReportDescription: "Computer Lab 1 AC is not cooling at all, the room is unusable after midday.",
+                ResolutionNote: "start capacitor + contactor replaced. cooling to 24c on test, gas pressure ok.",
+                CheckStatus: VerificationStatus.Pending,
+                DaysAgoResponded: null,
+                ReporterComment: null,
+                AgentOutcome: null,
+                AgentReason: null),
+
+            new VerificationSeed(
+                AssetTag: "PMP-ENG301-01",
+                DaysAgoCompleted: 9,
+                Strategy: WorkOrderStrategy.KnownFix,
+                EstimatedCost: 6_000m,
+                ActualCost: 6_000m,
+                Approved: false,
+                ReportDescription: "Water pump in the Electronics Lab is noisy and pressure keeps dropping.",
+                ResolutionNote: "bearing replaced + coupling re-aligned. back to 2.4 bar, ran 15min no noise.",
+                CheckStatus: VerificationStatus.Pending,
+                DaysAgoResponded: null,
+                ReporterComment: null,
+                AgentOutcome: null,
+                AgentReason: null),
+
+            new VerificationSeed(
+                AssetTag: "WKS-ENG101-01",
+                DaysAgoCompleted: 6,
+                Strategy: WorkOrderStrategy.SingleJob,
+                EstimatedCost: 15_500m,
+                ActualCost: 15_500m,
+                // Also above the default threshold, and only just — a useful row to have
+                // when checking that the comparison is > and not >=.
+                Approved: true,
+                ReportDescription: "Workstation 01 in Computer Lab 1 restarts by itself during lab sessions.",
+                ResolutionNote: "psu replaced (450w -> 550w). stress tested 1hr under load, no restart.",
+                CheckStatus: VerificationStatus.Pending,
+                DaysAgoResponded: null,
+                ReporterComment: null,
+                AgentOutcome: null,
+                AgentReason: null)
+        };
+
+        var seeded = 0;
+
+        foreach (var seed in seeds)
+        {
+            if (!assets.TryGetValue(seed.AssetTag, out var asset))
+            {
+                logger.LogWarning(
+                    "Skipping seeded work order: asset {AssetTag} does not exist.", seed.AssetTag);
+                continue;
+            }
+
+            var description = seed.ReportDescription;
+            if (await db.Reports.AnyAsync(r => r.Description == description, cancellationToken))
+            {
+                continue;
+            }
+
+            var completedAt = now.AddDays(-seed.DaysAgoCompleted);
+
+            var report = new Report
+            {
+                ReporterId = reporterId.Value,
+                RoomId = asset.RoomId,
+                // Filled in at triage — which is exactly the path Report.AssetId exists for.
+                AssetId = asset.Id,
+                Description = seed.ReportDescription,
+                // A confirmed repair closes the fault. A reopened or still-unanswered one
+                // does not: the work order was raised and the fault is not settled yet.
+                Status = seed.CheckStatus == VerificationStatus.Confirmed
+                    ? ReportStatus.Closed
+                    : ReportStatus.WorkOrderRaised
+            };
+
+            var workOrder = new WorkOrder
+            {
+                Report = report,
+                AssetId = asset.Id,
+                AssignedTechnicianId = technicianId,
+                Status = WorkOrderStatus.Completed,
+                Strategy = seed.Strategy,
+                EstimatedCost = seed.EstimatedCost,
+                ActualCost = seed.ActualCost,
+                ResolutionNote = seed.ResolutionNote,
+                CompletedAt = completedAt,
+                ApprovedByUserId = seed.Approved ? managerId : null,
+                ApprovedAt = seed.Approved && managerId is not null
+                    ? completedAt.AddDays(-2)
+                    : null
+            };
+
+            // NOTE: a real completion also appends a ServiceRecord against the asset — see
+            // the note on ServiceRecord. This seeder deliberately does not, because the
+            // service history on PRJ-MAB101-01 is the planted pattern the diagnostic agent
+            // is written against, and quietly adding rows to it would change what that
+            // agent is being developed and demonstrated against.
+            var check = new VerificationCheck
+            {
+                WorkOrder = workOrder,
+                AssetId = asset.Id,
+                // The same rule the service applies: completion plus the configured delay.
+                // Read from settings rather than hardcoded, so seeded rows agree with what
+                // the running system would have produced.
+                DueAt = completedAt.AddDays(verificationSettings.DelayDays),
+                Status = seed.CheckStatus,
+                // null for Pending, true for Confirmed, false for Reopened — the whole
+                // reason this column is a bool? rather than a bool.
+                ReporterConfirmed = seed.CheckStatus switch
+                {
+                    VerificationStatus.Confirmed => true,
+                    VerificationStatus.Reopened => false,
+                    _ => null
+                },
+                ReporterComment = seed.ReporterComment,
+                ReporterRespondedAt = seed.DaysAgoResponded is null
+                    ? null
+                    : now.AddDays(-seed.DaysAgoResponded.Value),
+                AgentOutcome = seed.AgentOutcome,
+                AgentReason = seed.AgentReason,
+                // Answered checks were asked by a sweep at some point; the still-Pending
+                // ones have never been touched by one, which is what makes them its first
+                // job. Leaving this null on them is the point, not an omission.
+                ProcessedAt = seed.DaysAgoResponded is null
+                    ? null
+                    : now.AddDays(-seed.DaysAgoResponded.Value).AddHours(-1)
+            };
+
+            db.Reports.Add(report);
+            db.WorkOrders.Add(workOrder);
+            db.VerificationChecks.Add(check);
+            seeded++;
+        }
+
+        if (seeded == 0)
+        {
+            return;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        var overdue = await db.VerificationChecks.CountAsync(
+            v => v.Status == VerificationStatus.Pending && v.DueAt <= now, cancellationToken);
+
+        logger.LogInformation(
+            "Seeded {Count} completed work order(s) with verification checks. " +
+            "{Overdue} check(s) are already due with a delay of {DelayDays} day(s).",
+            seeded,
+            overdue,
+            verificationSettings.DelayDays);
+
+        // A generous configured delay can push the intentionally-overdue rows into the
+        // future, which would leave the sweep with nothing to do and no clue why.
+        if (overdue == 0)
+        {
+            logger.LogWarning(
+                "No seeded verification check is due yet: Verification:DelayDays is {DelayDays}, " +
+                "but the most recent seeded work order completed 6 days ago. Lower the delay to " +
+                "see the sweep pick anything up.",
+                verificationSettings.DelayDays);
+        }
+    }
+
+    /// <summary>
+    /// One seeded completed work order and the verification check raised against it.
+    /// A record rather than a tuple purely for readability — there are twelve fields, and
+    /// positional tuple elements stop being self-explanatory well before that.
+    /// </summary>
+    private sealed record VerificationSeed(
+        string AssetTag,
+        // Days before "now" that the work order was completed. DueAt is derived from this
+        // plus the configured delay, so anything completed more recently than the delay is
+        // legitimately not yet due.
+        int DaysAgoCompleted,
+        WorkOrderStrategy Strategy,
+        decimal EstimatedCost,
+        decimal ActualCost,
+        bool Approved,
+        string ReportDescription,
+        string ResolutionNote,
+        VerificationStatus CheckStatus,
+        int? DaysAgoResponded,
+        string? ReporterComment,
+        string? AgentOutcome,
+        string? AgentReason);
 
     private static async Task SeedUsersAsync(
         AppDbContext db,

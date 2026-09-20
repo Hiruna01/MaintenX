@@ -1,0 +1,40 @@
+using CampusFacilities.Api.Models;
+
+namespace CampusFacilities.Api.Dtos;
+
+/// <summary>
+/// One verification check with everything a reader needs: which machine, what the
+/// technician said they did, what the reporter said afterwards, and what the agent made
+/// of the two.
+///
+/// Asset is a resolved object rather than an id because the reader of a single check is a
+/// human looking at a screen. WorkOrderResolutionNote and WorkOrderCompletedAt are carried
+/// across from the work order because the whole question being asked is "did THAT hold?" —
+/// the answer is unreadable without the claim it is answering.
+/// </summary>
+public record VerificationDetailDto(
+    int Id,
+    int WorkOrderId,
+    AssetDto Asset,
+
+    // What the technician recorded on completion, and when. Null resolution note is
+    // possible on older work orders; CompleteWorkOrderDto requires one going forward.
+    string? WorkOrderResolutionNote,
+    DateTime? WorkOrderCompletedAt,
+
+    DateTime DueAt,
+    VerificationStatus Status,
+
+    bool? ReporterConfirmed,
+    string? ReporterComment,
+    DateTime? ReporterRespondedAt,
+
+    // The agent's own label and reasoning, shown as an opinion beside the reporter's
+    // answer rather than in place of it. Status is never set from these — see
+    // VerificationCheck.AgentOutcome.
+    string? AgentOutcome,
+    string? AgentReason,
+
+    DateTime? ProcessedAt,
+    DateTime CreatedAt,
+    DateTime UpdatedAt);

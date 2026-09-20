@@ -146,6 +146,43 @@ if (approvalSettings.CostThreshold <= 0)
 
 builder.Services.AddSingleton(approvalSettings);
 
+// ---------------------------------------------------------------------------
+// Verification
+//
+// How long after a work order completes before the reporter is asked whether the repair
+// held, and how often the sweep looks for checks that have come due. From configuration,
+// never literals in a service — see VerificationSettings. Falls back to the VERIFICATION_*
+// names used by the root .env.example, then to the class's own defaults.
+// ---------------------------------------------------------------------------
+var verificationSettings = new VerificationSettings
+{
+    DelayDays = builder.Configuration.GetValue<int?>("Verification:DelayDays")
+        ?? builder.Configuration.GetValue<int?>("VERIFICATION_DELAY_DAYS")
+        ?? VerificationSettings.DefaultDelayDays,
+    SweepIntervalMinutes = builder.Configuration.GetValue<int?>("Verification:SweepIntervalMinutes")
+        ?? builder.Configuration.GetValue<int?>("VERIFICATION_SWEEP_INTERVAL_MINUTES")
+        ?? VerificationSettings.DefaultSweepIntervalMinutes
+};
+
+// A zero or negative delay defeats the whole component: asked the same afternoon, every
+// reporter says yes, and the confirmation rate becomes a number that always reads well and
+// means nothing. A zero sweep interval would spin. Fail at startup with a clear message.
+if (verificationSettings.DelayDays <= 0)
+{
+    throw new InvalidOperationException(
+        "The verification delay (Verification:DelayDays / VERIFICATION_DELAY_DAYS) must be " +
+        "greater than zero — a check with no delay confirms faults that have not had time to recur.");
+}
+
+if (verificationSettings.SweepIntervalMinutes <= 0)
+{
+    throw new InvalidOperationException(
+        "The verification sweep interval (Verification:SweepIntervalMinutes / " +
+        "VERIFICATION_SWEEP_INTERVAL_MINUTES) must be greater than zero.");
+}
+
+builder.Services.AddSingleton(verificationSettings);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -203,6 +240,9 @@ builder.Services.AddScoped<IAssetService, AssetService>();
 
 // Clarification questions and answers
 builder.Services.AddScoped<IClarificationService, ClarificationService>();
+
+// Verification — did the repair actually hold?
+builder.Services.AddScoped<IVerificationService, VerificationService>();
 
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -360,7 +400,8 @@ if (app.Environment.IsDevelopment())
 
     try
     {
-        await DbSeeder.SeedAsync(db, app.Configuration, passwordHasher, logger);
+        await DbSeeder.SeedAsync(
+            db, app.Configuration, passwordHasher, verificationSettings, logger);
     }
     catch (Exception ex)
     {

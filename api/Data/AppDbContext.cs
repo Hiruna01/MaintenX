@@ -23,6 +23,7 @@ public class AppDbContext : DbContext
     public DbSet<WorkOrder> WorkOrders => Set<WorkOrder>();
     public DbSet<ScheduledSlot> ScheduledSlots => Set<ScheduledSlot>();
     public DbSet<ClassScheduleSlot> ClassScheduleSlots => Set<ClassScheduleSlot>();
+    public DbSet<VerificationCheck> VerificationChecks => Set<VerificationCheck>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -370,6 +371,49 @@ public class AppDbContext : DbContext
                   .HasForeignKey(c => c.RoomId)
                   .OnDelete(DeleteBehavior.Restrict);
         });
+
+        modelBuilder.Entity<VerificationCheck>(entity =>
+        {
+            // "What has been asked about this repair?"
+            entity.HasIndex(v => v.WorkOrderId);
+
+            // THE SWEEP'S QUERY, AND THE REASON THIS IS COMPOSITE RATHER THAN TWO INDEXES.
+            // It asks for Pending checks whose DueAt has passed — equality on the first
+            // column, a range on the second — which is exactly the shape a composite index
+            // serves. Two separate indexes would make the database pick one and filter the
+            // rest by hand.
+            //
+            // Status leads because it is the equality test; a range column first would
+            // leave the equality unable to use the index. Being leftmost also means this
+            // one index answers "everything Pending" on its own, so no separate index on
+            // Status is needed.
+            entity.HasIndex(v => new { v.Status, v.DueAt });
+
+            // Same reasoning as Role and WorkOrderStatus: the database reads
+            // "AwaitingReporterResponse", not "1", and inserting a new enum member in the
+            // middle cannot silently re-label the rows already stored.
+            entity.Property(v => v.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(50)
+                  .IsRequired();
+
+            // Restrict on both, matching every other key into the registry: a check is the
+            // record of whether a repair held, so deleting the work order or the asset out
+            // from under it must fail loudly rather than quietly taking the evidence along.
+            //
+            // No navigation back from WorkOrder: nothing reads an order through its checks,
+            // and a collection there would only invite a lazy include on the order's own
+            // detail read.
+            entity.HasOne(v => v.WorkOrder)
+                  .WithMany()
+                  .HasForeignKey(v => v.WorkOrderId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(v => v.Asset)
+                  .WithMany()
+                  .HasForeignKey(v => v.AssetId)
+                  .OnDelete(DeleteBehavior.Restrict);
+        });
     }
 
     /// <summary>
@@ -409,7 +453,8 @@ public class AppDbContext : DbContext
                 or AssetCategory or Asset or ServiceRecord
                 or AgentWorkflow or AgentStep
                 or ClarificationQuestion or ClarificationAnswer
-                or WorkOrder or ScheduledSlot or ClassScheduleSlot))
+                or WorkOrder or ScheduledSlot or ClassScheduleSlot
+                or VerificationCheck))
             {
                 continue;
             }

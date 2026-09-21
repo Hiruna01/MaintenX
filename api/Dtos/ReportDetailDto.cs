@@ -25,4 +25,13 @@ public record ReportDetailDto(
     string? PhotoUrl,
     DateTime CreatedAt,
     DateTime UpdatedAt,
-    IReadOnlyList<ClarificationQuestionDto> ClarificationQuestions);
+    IReadOnlyList<ClarificationQuestionDto> ClarificationQuestions,
+
+    // Every agent action taken on this report's behalf, oldest first, across every workflow
+    // raised for it. THE AUDIT TRAIL, shown as it was recorded and never edited: what ran,
+    // how long it took, whether its output validated, and what it produced.
+    //
+    // Flat rather than grouped by workflow because it is read as a timeline — "what has the
+    // system done about my fault" — and a report has one run in almost every case. Each step
+    // carries its WorkflowId, so a second run is still tellable apart.
+    IReadOnlyList<AgentStepDto> AgentSteps);

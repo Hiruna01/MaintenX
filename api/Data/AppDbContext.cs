@@ -145,7 +145,19 @@ public class AppDbContext : DbContext
                   .HasMaxLength(50)
                   .IsRequired();
 
+            // Every one of these is a read path GET /api/reports filters or orders on, so
+            // every one gets an index — the same reasoning as WorkOrder's four.
+            //
+            // ReporterId is the one that matters most: it is not an optional filter but the
+            // VISIBILITY SCOPE, applied to every list and detail read a Reporter makes, so
+            // it is on the hot path of the most common request this table serves.
+            entity.HasIndex(r => r.ReporterId);
             entity.HasIndex(r => r.RoomId);
+            entity.HasIndex(r => r.AssetId);
+            entity.HasIndex(r => r.Status);
+
+            // The default sort, and the dateFrom/dateTo range filter.
+            entity.HasIndex(r => r.CreatedAt);
 
             // Restrict, not Cascade: a report is the head of an audit trail (its workflow
             // and that workflow's steps), so deleting the room or the user out from under

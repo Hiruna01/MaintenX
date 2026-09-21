@@ -806,10 +806,31 @@ verbatim; the 10-character floor mirrors the Flutter form's own `validate()`.
 
 The clarifier's questions are now real `ClarificationQuestion` rows as well as an
 `AgentStep` payload — see CLARIFICATION above — so a client can read a report's questions
-back in order. **Nothing collects the answers yet.** `SubmitAnswersRequest` exists as a DTO
-but no endpoint is behind it, so the questions are still displayed read-only. When that
-endpoint lands it takes the whole form in ONE request and the exchange is over: there is no
-follow-up round and no chat interface.
+back in order, and **`POST /api/reports/{id}/clarifications` now collects the answers** —
+the whole form in ONE request, 204, and the exchange is over: no follow-up round and no
+chat interface. `GET /api/reports/{id}/clarifications` is the read beside it, returning each
+question with its answer once one is given. **The Flutter form is still read-only**; nothing
+on the client posts to this endpoint yet.
+
+Every check the POST makes is C# in `ClarificationService.SubmitAnswersAsync`, in a fixed
+order — 404 for an unknown report, 403 for anyone but the original reporter, 409 for a
+report that is not `AwaitingClarification`, 400 for a question id that is not this report's,
+for a question left unanswered and for a `SingleSelect` answer that was never offered, then
+409 for a question already answered. Identity before state, state before content, so a
+stranger learns nothing about what the report is carrying. **None of them may be delegated
+to the agent**: the agent decides what to ask and nothing at all about what comes back.
+
+That last check is a real query, not the unique index doing its job — the service has loaded
+each question's answer to look at it, so EF would resolve the one-to-one conflict itself and
+succeed by replacing. See "The unique index will not save a writer that has already loaded
+the answer" above.
+
+Success writes the answers, moves the report to `Clarified` and the workflow to `Diagnosing`
+in ONE `SaveChanges`, then re-queues the workflow id on `IWorkflowQueue`. **The runner skips
+that item today**, with a warning: `BeginProcessingAsync` only starts a workflow in
+`Submitted`, and the clarifier handed an answered report would ask the same questions again.
+The hand-off is made anyway so the resume point sits where it belongs — the runner branches
+on `CurrentState` when the diagnostician lands.
 
 Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
 visible rather than hidden, so the finished shape of the form stays obvious.

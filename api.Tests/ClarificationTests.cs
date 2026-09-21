@@ -8,6 +8,7 @@ using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace api.Tests;
@@ -322,6 +323,354 @@ public class ClarificationTests : IClassFixture<ApiFactory>
     }
 
     // ---------------------------------------------------------------------------
+    // Submitting the answers — POST/GET /api/reports/{id}/clarifications.
+    //
+    // Over HTTP, unlike the persistence tests above, because the ORDER of the checks and
+    // the STATUS CODE each one produces are the contract this endpoint owes its clients.
+    // Every one of them is a C# rule; none is delegated to the agent.
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task GetClarifications_WithoutAToken_Is401()
+    {
+        var anonymous = _factory.CreateClient();
+        var (_, reportId, _, _, _) = await CreateAwaitingClarificationReportAsync();
+
+        var response = await anonymous.GetAsync($"/api/reports/{reportId}/clarifications");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_WithoutAToken_Is401NotAnyOfTheOtherRefusals()
+    {
+        // 401 and 403 stay distinct: no token is "who are you?", and it is answered before
+        // anything about the report is looked at.
+        var anonymous = _factory.CreateClient();
+        var (_, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        var response = await anonymous.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications", AnswerAll(questions), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetClarifications_ForAReportWithNoQuestions_Is200AndEmptyNotA404()
+    {
+        // An empty list and a missing report are different answers. A report nobody has
+        // clarified yet has nothing to show, and that is not a failure.
+        var (client, _) = await CreateAuthenticatedClientAsync();
+        var (reportId, _, _) = await CreateReportWithWorkflowAsync();
+
+        var response = await client.GetAsync($"/api/reports/{reportId}/clarifications");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var questions = await response.Content
+            .ReadFromJsonAsync<List<ClarificationQuestionDto>>(JsonOptions);
+
+        Assert.Empty(questions!);
+    }
+
+    [Fact]
+    public async Task GetClarifications_ForAReportThatDoesNotExist_Is404()
+    {
+        var (client, _) = await CreateAuthenticatedClientAsync();
+
+        var response = await client.GetAsync("/api/reports/999999/clarifications");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_WritesTheAnswers_ClarifiesTheReportAndResumesTheWorkflow()
+    {
+        var (client, reportId, workflowId, userId, questions) =
+            await CreateAwaitingClarificationReportAsync();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications", AnswerAll(questions), JsonOptions);
+
+        // 204: the answers are recorded and the exchange is over. Nothing is returned
+        // because there is no next turn to describe.
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        // The same questions read back, now carrying their answers — the form the client
+        // rendered, not a transcript.
+        var answered = await client.GetFromJsonAsync<List<ClarificationQuestionDto>>(
+            $"/api/reports/{reportId}/clarifications", JsonOptions);
+
+        Assert.Equal(2, answered!.Count);
+        Assert.Equal("Yes", answered[0].AnswerText);
+        Assert.Equal("Today", answered[1].AnswerText);
+        Assert.All(answered, q => Assert.NotNull(q.AnsweredAt));
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // The fault is no longer waiting on its reporter. A C# transition, written in the
+        // same SaveChanges as the answers, so the two can never disagree.
+        var report = await db.Reports.AsNoTracking().FirstAsync(r => r.Id == reportId);
+        Assert.Equal(ReportStatus.Clarified, report.Status);
+
+        // And the run that asked is free to carry on. Which state follows which is a
+        // business rule and lives in C#, never in a prompt.
+        var workflow = await db.AgentWorkflows.AsNoTracking().FirstAsync(w => w.Id == workflowId);
+        Assert.Equal(WorkflowState.Diagnosing, workflow.CurrentState);
+
+        // Who answered comes from the JWT sub claim, never from the body —
+        // SubmitAnswersRequest has no field for it.
+        var answers = await db.ClarificationAnswers.AsNoTracking()
+            .Where(a => answered.Select(q => q.Id).Contains(a.ClarificationQuestionId))
+            .ToListAsync();
+
+        Assert.Equal(2, answers.Count);
+        Assert.All(answers, a => Assert.Equal(userId, a.AnsweredByUserId));
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_ReQueuesTheWorkflowForTheBackgroundRunner()
+    {
+        // Through the service with a recording queue rather than over HTTP: the real
+        // IWorkflowQueue is a shared singleton channel that nothing drains in tests, so
+        // asserting on it would depend on what every other test in this class enqueued.
+        var (_, reportId, workflowId, userId, questions) =
+            await CreateAwaitingClarificationReportAsync();
+
+        var queue = new RecordingWorkflowQueue();
+
+        using var scope = _factory.Services.CreateScope();
+
+        var clarifications = new ClarificationService(
+            scope.ServiceProvider.GetRequiredService<AppDbContext>(),
+            queue,
+            scope.ServiceProvider.GetRequiredService<ILogger<ClarificationService>>());
+
+        var result = await clarifications.SubmitAnswersAsync(
+            reportId, userId, AnswerAll(questions));
+
+        Assert.Equal(SubmitAnswersOutcome.Success, result.Outcome);
+
+        // The runner picks the workflow up again from here. Handed over AFTER the save, so
+        // it cannot open its scope and find no answers.
+        Assert.Equal(new[] { workflowId }, queue.Enqueued);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_ForAReportThatDoesNotExist_Is404()
+    {
+        var (client, _) = await CreateAuthenticatedClientAsync();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/reports/999999/clarifications",
+            new SubmitAnswersRequest(new[] { new SubmittedAnswer(1, "Yes") }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_ByAnyoneButTheReporter_Is403AndLeaksNothingAboutTheReport()
+    {
+        var (_, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        // A different signed-in user. Valid token, wrong person — 403, not 401 and not 404.
+        var (stranger, _) = await CreateAuthenticatedClientAsync();
+
+        var response = await stranger.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications", AnswerAll(questions), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        // Identity is checked BEFORE state and content, so a stranger sending a body that
+        // is also wrong still gets 403 and learns nothing about what the report is carrying.
+        var nonsense = await stranger.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[] { new SubmittedAnswer(999999, "Nope") }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Forbidden, nonsense.StatusCode);
+
+        // And nothing was written.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var report = await db.Reports.AsNoTracking().FirstAsync(r => r.Id == reportId);
+        Assert.Equal(ReportStatus.AwaitingClarification, report.Status);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_ToAReportThatIsNotAwaitingClarification_Is409()
+    {
+        // Submitted, not AwaitingClarification: nothing has been asked, so there is nothing
+        // an answer could mean. The body may be perfectly well formed, which is why this is
+        // a conflict rather than a 400.
+        var (client, userId) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+
+        var created = await client.PostAsJsonAsync(
+            "/api/reports",
+            new CreateReportDto("The ceiling fan is making a grinding noise.", roomId),
+            JsonOptions);
+
+        var report = await created.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
+        Assert.Equal(ReportStatus.Submitted, report!.Status);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{report.Id}/clarifications",
+            new SubmitAnswersRequest(new[] { new SubmittedAnswer(1, "Yes") }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        // State is checked before content, so the bad question id above never gets looked at.
+        Assert.Equal(userId, report.ReporterId);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_NamingAQuestionFromAnotherReport_Is400NotA404()
+    {
+        var (client, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        // A real question id, belonging to a different report. The report itself was found,
+        // so the body is what is wrong.
+        var (_, _, _, _, otherQuestions) = await CreateAwaitingClarificationReportAsync();
+
+        var answers = new SubmitAnswersRequest(new[]
+        {
+            new SubmittedAnswer(questions[0].Id, "Yes"),
+            new SubmittedAnswer(otherQuestions[1].Id, "Today")
+        });
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications", answers, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // Nothing was written, not even the answer that named a real question of this
+        // report — the form is accepted whole or not at all.
+        Assert.Equal(2, await UnansweredCountAsync(reportId));
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_LeavingAQuestionOut_Is400BecauseTheFormGoesBackWhole()
+    {
+        // No partial submissions: finishing one later would need a second round, and a
+        // second round is the conversation this system does not have.
+        var (client, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[] { new SubmittedAnswer(questions[0].Id, "Yes") }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // Nothing partial was written — the second question is still open, and so is the
+        // first one it would have been paired with.
+        Assert.Equal(2, await UnansweredCountAsync(reportId));
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_WithASingleSelectValueThatWasNeverOffered_Is400()
+    {
+        // THIS is what makes AnswerType a constraint rather than a suggestion. A picker
+        // whose value is never checked against its own options is a text box wearing a
+        // picker's name, and unbounded text is the thing AnswerType exists to prevent.
+        var (client, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        Assert.Equal(AnswerType.SingleSelect, questions[1].AnswerType);
+        Assert.DoesNotContain("Since the rains started", questions[1].Options!);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[]
+            {
+                new SubmittedAnswer(questions[0].Id, "Yes"),
+                new SubmittedAnswer(questions[1].Id, "Since the rains started")
+            }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(2, await UnansweredCountAsync(reportId));
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_Twice_Is409AndTheFirstAnswersStand()
+    {
+        // ONE ANSWER, NOT A THREAD. The first answer is evidence, not a draft, so a
+        // re-submission is refused rather than allowed to overwrite it.
+        //
+        // The unique index does NOT produce this: the service has loaded each question's
+        // answer to check it, and inside one DbContext EF resolves the required one-to-one
+        // conflict itself and would succeed by REPLACING. This 409 is an explicit query.
+        var (client, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        var first = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications", AnswerAll(questions), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.NoContent, first.StatusCode);
+
+        // Put the report back where it was, so this reaches the already-answered check
+        // rather than stopping at the status check in front of it.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var report = await db.Reports.FirstAsync(r => r.Id == reportId);
+            report.Status = ReportStatus.AwaitingClarification;
+            await db.SaveChangesAsync();
+        }
+
+        var second = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[]
+            {
+                new SubmittedAnswer(questions[0].Id, "No"),
+                new SubmittedAnswer(questions[1].Id, "This week")
+            }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+
+        var answered = await client.GetFromJsonAsync<List<ClarificationQuestionDto>>(
+            $"/api/reports/{reportId}/clarifications", JsonOptions);
+
+        Assert.Equal("Yes", answered![0].AnswerText);
+        Assert.Equal("Today", answered[1].AnswerText);
+    }
+
+    /// <summary>Records what was handed over instead of queueing it. See the test above.</summary>
+    private sealed class RecordingWorkflowQueue : IWorkflowQueue
+    {
+        public List<int> Enqueued { get; } = new();
+
+        public ValueTask EnqueueAsync(int workflowId, CancellationToken cancellationToken = default)
+        {
+            Enqueued.Add(workflowId);
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<int> DequeueAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException("Nothing drains the queue in tests.");
+    }
+
+    /// <summary>Answers every question with something valid for its own answer type.</summary>
+    private static SubmitAnswersRequest AnswerAll(IReadOnlyList<ClarificationQuestionDto> questions) =>
+        new(questions
+            .Select(q => new SubmittedAnswer(
+                q.Id,
+                q.AnswerType == AnswerType.SingleSelect ? q.Options![0] : "Yes"))
+            .ToList());
+
+    private async Task<int> UnansweredCountAsync(int reportId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
+
+        return (await clarifications.GetForReportAsync(reportId))
+            .Count(q => q.AnswerText is null);
+    }
+
+    // ---------------------------------------------------------------------------
     // Fixtures.
     // ---------------------------------------------------------------------------
 
@@ -382,5 +731,47 @@ public class ClarificationTests : IClassFixture<ApiFactory>
         var workflow = Assert.Single(workflows!.Items.Where(w => w.ReportId == report!.Id));
 
         return (report!.Id, workflow.Id, userId);
+    }
+
+    /// <summary>
+    /// A report sitting exactly where the submit endpoint expects to find one: clarified
+    /// by a run, AwaitingClarification, with the stub's two questions unanswered against
+    /// it. The client returned is the reporter's.
+    /// </summary>
+    private async Task<(HttpClient Client, int ReportId, int WorkflowId, int UserId,
+        IReadOnlyList<ClarificationQuestionDto> Questions)> CreateAwaitingClarificationReportAsync()
+    {
+        var (client, userId) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+
+        var created = await client.PostAsJsonAsync(
+            "/api/reports",
+            new CreateReportDto("The projector in the lab keeps cutting out mid-lecture.", roomId),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var report = await created.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
+
+        var workflows = await client.GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
+            "/api/workflows?page=1&pageSize=50", JsonOptions);
+
+        var workflow = Assert.Single(workflows!.Items.Where(w => w.ReportId == report!.Id));
+
+        var response = AgentResponse(StubOutput, out var document);
+        using var _ = document;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
+            await clarifications.RecordQuestionsAsync(
+                report!.Id, workflow.Id, response.ParseQuestions());
+        }
+
+        var questions = await client.GetFromJsonAsync<List<ClarificationQuestionDto>>(
+            $"/api/reports/{report!.Id}/clarifications", JsonOptions);
+
+        Assert.Equal(2, questions!.Count);
+
+        return (client, report.Id, workflow.Id, userId, questions);
     }
 }

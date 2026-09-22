@@ -84,6 +84,28 @@ public class ReportService : IReportService
         return ToDto(report);
     }
 
+    public async Task<IReadOnlyList<ReportDto>?> GetOpenReportsForAssetAsync(
+        int assetId,
+        CancellationToken cancellationToken = default)
+    {
+        // Asked separately so "no such asset" and "nothing open against it" stay distinct
+        // — see the interface. Null here becomes found=false in the tool response.
+        if (!await _db.Assets.AnyAsync(a => a.Id == assetId, cancellationToken))
+        {
+            return null;
+        }
+
+        return await _db.Reports
+            .AsNoTracking()
+            .Where(r => r.AssetId == assetId && r.Status != ReportStatus.Closed)
+            // Newest first, and capped: the cap is what makes the order matter, because
+            // taking ten of an oldest-first list would hide whatever was reported today.
+            .OrderByDescending(r => r.Id)
+            .Take(IReportService.MaxToolRelatedReports)
+            .Select(r => ToDto(r))
+            .ToListAsync(cancellationToken);
+    }
+
     private static ReportDto ToDto(Report r) =>
         new(r.Id, r.ReporterId, r.RoomId, r.AssetId, r.Description, r.Status, r.PhotoUrl,
             r.CreatedAt, r.UpdatedAt);

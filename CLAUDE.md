@@ -278,6 +278,44 @@ and 14 service records.
 - Every call to `/api/internal/tools/{toolName}` — allowed or rejected — writes an
   `AgentStep` row, so the audit trail is complete even for rejected calls.
 
+### The tools return facts, never judgements
+
+`get_room`, `get_building`, `get_asset`, `get_asset_service_history` and
+`get_related_open_reports`. Every one of them answers with a row, a list of rows, or
+nothing. **There is deliberately no `diagnose`, `assess` or `recommend` tool**, and there
+is not going to be one: a tool that returned a judgement would be handing the model its
+own opinion back wearing the API's authority, and it would be unauditable the moment it
+mattered. What the facts *mean* is the agent's job; any rule the system acts on is C#
+somewhere a person can read it. Pinned by a test that asks for four such names and
+expects four 404s.
+
+- Each handler **delegates to the service that owns the data** — never a query written
+  against `DbContext` in the controller, so a tool cannot grow a reading of the database
+  that no service is responsible for.
+- **The row caps are constants in the services** (`MaxToolHistoryRows` 20,
+  `MaxToolRelatedReports` 10), not fields on `ToolCallRequest`. The agent sends a tool
+  name and an id and nothing else, so how much one call can pull is not something the
+  caller — or anything that has talked its way into the caller — can widen. Same instinct
+  as the hardcoded allow-list.
+- **The capped lists are newest-first, the opposite of `AssetDetailDto`**, and the cap is
+  the reason: taking twenty rows off an oldest-first history returns the twenty *least*
+  relevant visits and hides everything recent.
+- **Null and empty are different answers.** An unknown asset id is `found: false`; an
+  asset that exists with no history, or nothing open against it, is `found: true` with an
+  empty list. Collapsing them would tell the agent a machine has a clean record when it
+  had in fact asked about a machine that is not there.
+- `get_related_open_reports` excludes `Closed` reports — the question is "is anyone else
+  seeing this now", and a fault closed last year is history and belongs in the service
+  record instead.
+- `ToolCallRequest` still carries exactly one `Id`. What it *means* is the tool's
+  business: a room for `get_room`, an **asset** for both of the new list tools.
+
+**The agent side has not caught up yet.** `ClarifierAgent.ALLOWED_TOOLS` is still
+`("get_room", "get_building")`, so nothing calls the three asset tools until an agent
+declares them. That is the right order — the C# allow-list is the boundary, the Python
+tuple is a convenience on the far side of the network — but it does mean these are
+reachable and unused until then.
+
 ---
 
 ## CLARIFICATION — the questions are rows, the answers are bounded

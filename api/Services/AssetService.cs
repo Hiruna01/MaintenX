@@ -289,6 +289,55 @@ public class AssetService : IAssetService
                 .ToList());
     }
 
+    // -----------------------------------------------------------------------
+    // Reads behind the agent tools. Ordinary queries on the same DbContext as everything
+    // else here — the agent has no database credentials of its own and reaches these only
+    // through the allow-listed tool router.
+    // -----------------------------------------------------------------------
+
+    public async Task<AssetContextDto?> GetAssetContextAsync(
+        int id,
+        CancellationToken cancellationToken = default)
+    {
+        var asset = await _db.Assets
+            .AsNoTracking()
+            .Include(a => a.Category)
+            .Include(a => a.Room)
+            .FirstOrDefaultAsync(a => a.Id == id, cancellationToken);
+
+        if (asset is null || asset.Category is null || asset.Room is null)
+        {
+            return null;
+        }
+
+        return new AssetContextDto(ToDto(asset), asset.Category.Name, asset.Room.Name);
+    }
+
+    public async Task<IReadOnlyList<ServiceRecordDto>?> GetRecentServiceHistoryAsync(
+        int assetId,
+        CancellationToken cancellationToken = default)
+    {
+        // Asked separately, and the answer matters: without this, an unknown asset id and
+        // an asset that has never been serviced both come back as an empty list, and the
+        // agent would read "this machine has a clean record" off a machine that does not
+        // exist. Null here becomes found=false in the tool response.
+        if (!await _db.Assets.AnyAsync(a => a.Id == assetId, cancellationToken))
+        {
+            return null;
+        }
+
+        // Newest first, unlike the detail read — see the interface. Id breaks ties inside
+        // a day, descending for the same reason the date does.
+        return await _db.ServiceRecords
+            .AsNoTracking()
+            .Where(s => s.AssetId == assetId)
+            .OrderByDescending(s => s.ServicedOn)
+            .ThenByDescending(s => s.Id)
+            .Take(IAssetService.MaxToolHistoryRows)
+            .Select(s => ToDto(s))
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IEnumerable<AssetCategoryDto>> GetCategoriesAsync(
         CancellationToken cancellationToken = default)
     {

@@ -1,4 +1,5 @@
 using CampusFacilities.Api.Dtos;
+using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -29,14 +30,136 @@ public class ReportsController : ControllerBase
         _clarificationService = clarificationService;
     }
 
-    [HttpGet("{id:int}")]
-    [ProducesResponseType(typeof(ReportDto), StatusCodes.Status200OK)]
+    /// <summary>
+    /// One page of reports. <paramref name="search"/> matches the description; the rest are
+    /// exact filters and all of them combine. <paramref name="dateFrom"/> and
+    /// <paramref name="dateTo"/> are calendar dates and BOTH ENDS ARE INCLUSIVE.
+    ///
+    /// <paramref name="status"/> and <paramref name="sort"/> bind by enum NAME
+    /// ("AwaitingClarification", "CreatedAt") — the same strings the JSON contract and the
+    /// database use — so a client never sends an ordinal, and a name that is not a member is
+    /// a 400 from model binding rather than a filter that silently matches nothing.
+    ///
+    /// WHO SEES WHAT IS NOT A QUERY PARAMETER. A Reporter gets their own reports and a
+    /// FacilitiesManager or Admin gets the estate, decided in ReportService from the token's
+    /// role — there is no parameter here that widens it and nothing a client can send that
+    /// changes it. The controller passes on who is asking; it does not decide what that
+    /// means.
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(PagedResult<ReportListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ReportDto>> GetById(int id, CancellationToken cancellationToken)
+    public async Task<ActionResult<PagedResult<ReportListItemDto>>> GetAll(
+        [FromQuery] string? search,
+        [FromQuery] ReportStatus? status,
+        [FromQuery] int? roomId,
+        [FromQuery] int? assetId,
+        [FromQuery] DateOnly? dateFrom,
+        [FromQuery] DateOnly? dateTo,
+        [FromQuery] ReportSort sort = ReportSort.CreatedAt,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
     {
-        var report = await _reportService.GetByIdAsync(id, cancellationToken);
-        return report is null ? NotFound() : Ok(report);
+        if (!TryGetCaller(out var callerId, out var callerRole))
+        {
+            return Unauthorized();
+        }
+
+        var result = await _reportService.GetAllAsync(
+            callerId, callerRole, search, status, roomId, assetId, dateFrom, dateTo,
+            sort, page, pageSize, cancellationToken);
+
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// One report in full: its room and asset resolved, the clarification questions with
+    /// whatever answers have come back, and every agent step recorded for it.
+    ///
+    /// Scoped exactly like the list — a Reporter reads their own reports and nobody else's.
+    /// A report that exists but is not the caller's is a 403, matching
+    /// POST {id}/clarifications on the same resource: the token is valid and we know who
+    /// they are, so this is a refusal, not a question about their identity. ExistsAsync
+    /// tells that apart from a genuine 404, the same way AssetsController calls
+    /// TagExistsAsync before choosing its status code.
+    /// </summary>
+    [HttpGet("{id:int}")]
+    [ProducesResponseType(typeof(ReportDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ReportDetailDto>> GetById(int id, CancellationToken cancellationToken)
+    {
+        if (!TryGetCaller(out var callerId, out var callerRole))
+        {
+            return Unauthorized();
+        }
+
+        var report = await _reportService.GetDetailAsync(id, callerId, callerRole, cancellationToken);
+
+        if (report is not null)
+        {
+            return Ok(report);
+        }
+
+        return await _reportService.ExistsAsync(id, cancellationToken)
+            ? StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
+            {
+                Status = StatusCodes.Status403Forbidden,
+                Title = "Not your report",
+                Detail = "Reporters see the reports they filed. This one was filed by somebody else."
+            })
+            : NotFound();
+    }
+
+    /// <summary>
+    /// Moves a report along its lifecycle. FacilitiesManager only — deciding that a fault is
+    /// diagnosed, or that it is finished with, is a management call, and it is what keeps
+    /// 401 and 403 separately demonstrable on this controller: no token is 401 everywhere,
+    /// while a Reporter's token is 200 on the reads above and 403 here.
+    ///
+    /// AN ILLEGAL MOVE IS A 409, NEVER A QUIET SUCCESS. The legal moves are a hardcoded map
+    /// in ReportService and reading it is the whole rule; a status that could go anywhere
+    /// would make the lifecycle advisory. 409 rather than 400 because nothing about the
+    /// request is malformed — the value is a real member of the enum, and it is the report
+    /// that is not where the caller thinks it is.
+    ///
+    /// PATCH, not PUT: this changes one field and leaves the reporter's own account of the
+    /// fault alone. 204, like every other update in this API.
+    /// </summary>
+    [HttpPatch("{id:int}/status")]
+    [Authorize(Policy = nameof(Role.FacilitiesManager))]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> UpdateStatus(
+        int id,
+        UpdateReportStatusDto dto,
+        CancellationToken cancellationToken)
+    {
+        var outcome = await _reportService.UpdateStatusAsync(id, dto.Status, cancellationToken);
+
+        return outcome switch
+        {
+            UpdateReportStatusOutcome.Success => NoContent(),
+            UpdateReportStatusOutcome.NotFound => NotFound(),
+            UpdateReportStatusOutcome.IllegalTransition => Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Illegal status transition",
+                Detail = $"Report {id} cannot move to {dto.Status} from where it is now. A report "
+                       + "follows its lifecycle forward, may be Closed from any stage before "
+                       + "that, and once Closed it stays closed."
+            }),
+            // Unreachable, and deliberately loud rather than a quiet 500: a new outcome
+            // added without a case here is a bug in this switch, not in the caller.
+            _ => throw new InvalidOperationException($"Unhandled status outcome '{outcome}'.")
+        };
     }
 
     /// <summary>
@@ -219,5 +342,28 @@ public class ReportsController : ControllerBase
     {
         ModelState.AddModelError(nameof(SubmitAnswersRequest.Answers), detail);
         return ValidationProblem(ModelState);
+    }
+
+    /// <summary>
+    /// Who is asking, from the token and from nowhere else. Both values are read here once
+    /// rather than in each action, so no endpoint can quietly go without one.
+    ///
+    /// A token this API issued always carries both claims, so a failure here means a token
+    /// this API did not issue or one whose shape has changed — 401 either way.
+    /// </summary>
+    private bool TryGetCaller(out int callerId, out Role callerRole)
+    {
+        callerRole = default;
+
+        var sub = User.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
+
+        if (!int.TryParse(sub, out callerId))
+        {
+            return false;
+        }
+
+        // Parsed by NAME, matching how AuthService writes it and how the database stores it.
+        // A client never sees, and never needs, an ordinal.
+        return Enum.TryParse(User.FindFirst("role")?.Value, out callerRole);
     }
 }

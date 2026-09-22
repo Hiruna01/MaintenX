@@ -832,6 +832,85 @@ that item today**, with a warning: `BeginProcessingAsync` only starts a workflow
 The hand-off is made anyway so the resume point sits where it belongs — the runner branches
 on `CurrentState` when the diagnostician lands.
 
+### The report endpoints — a visibility rule and a lifecycle
+
+`GET /api/reports` pages through the existing `PagedResult<T>` — **there is no second
+pagination type**. `search` matches the description (`ToLower().Contains()`, never
+`EF.Functions.ILike`, same reason as the asset search); `status`, `roomId` and `assetId` are
+exact filters and all of them combine; `dateFrom`/`dateTo` are calendar dates with **both
+ends inclusive**. `status` and `sort` bind by enum **name**, so an unknown value is a 400
+from model binding rather than a filter that silently matches nothing. Every sort carries a
+tiebreak on `Id` — reports share a `CreatedAt` readily, since it is stamped per
+`SaveChanges`.
+
+The default sort is **newest first**, the opposite of the asset registry's alphabetical
+default and for the opposite reason: a report list is a worklist read from the top, an asset
+list is scanned. `sort=Status` orders on the stored **string**, so it groups alphabetically
+rather than by lifecycle position — a consequence of storing enums by name, and grouping is
+what a caller sorting by status wants. Ordering by the lifecycle would need a `CASE` or an
+ordinal in the database, and the ordinal is exactly what this project refuses.
+
+- **Who sees what is decided in `ReportService`, never by the client.** A `Reporter` is
+  scoped to their own reports; a `FacilitiesManager` and an `Admin` see the estate. The
+  scope is a `Where` applied **before the count and before paging**, so a Reporter's
+  `TotalCount` describes their own reports and a page number cannot reach past it. There is
+  no query parameter that widens it.
+- **The rule is written as "who sees everything", so it fails closed.** A role added to the
+  enum later is scoped to its own reports until somebody deliberately widens it, rather than
+  inheriting the estate from an `else` branch nobody revisited. A `Technician` is scoped
+  today for that reason — work reaches them through a `WorkOrder`, not by browsing reports.
+- **The same rule is applied to `GET /api/reports/{id}`**, and it has to be: a list that
+  hides other people's reports while a detail read hands them over by id would be a rule
+  that only looks enforced. A report that exists but is not the caller's is a **403**, not a
+  404, matching `POST {id}/clarifications` on the same resource — the token is valid and we
+  know who they are, so it is a refusal rather than a question about identity.
+  `ExistsAsync` is what tells that apart from a genuine 404, the same way `AssetsController`
+  calls `TagExistsAsync` before choosing its status code.
+- `ReportDetailDto` carries the room and asset resolved, the clarification questions with
+  their answers, and **every `AgentStep` recorded for the report**, flat and oldest-first
+  across every workflow raised for it. Each step carries its `WorkflowId`, so a second run
+  is still tellable apart. The questions come from `IClarificationService`, not a query
+  written in `ReportService`, so one place knows how `OptionsJson` becomes a list.
+- `ReportListItemDto` denormalises `RoomName` onto the row and carries
+  `UnansweredQuestionCount` rather than the questions themselves — the one thing a list
+  needs to say about clarification is "this is waiting on you", and a query per row is what
+  a list DTO exists to avoid.
+- **Indexes on `ReporterId`, `Status` and `CreatedAt`** (`AddReportQueryIndexes`); `RoomId`
+  and `AssetId` already had theirs from their foreign keys. `ReporterId` is not an optional
+  filter but the visibility scope, so it is on the hot path of the most common read.
+
+#### `PATCH /api/reports/{id}/status` — the lifecycle is a hardcoded map
+
+FacilitiesManager only, 204, and **an illegal move is a 409 rather than a quiet success**.
+The legal moves are a hardcoded `Dictionary<ReportStatus, ReportStatus[]>` in
+`ReportService`, the same instinct as the tool allow-list: a status that could go anywhere is
+not a lifecycle, it is a free-text field wearing an enum's name. It is a deterministic
+business rule, so it is C# and no agent proposes, validates or applies a transition.
+
+The shape is a funnel with one escape hatch: forward through clarification, diagnosis and a
+work order, and `Closed` from **any** stage — a fault can turn out to be nothing, be fixed
+in passing, or be a duplicate, and none of those should have to be walked through diagnosis
+to be filed away. `Submitted` may jump straight to `Diagnosed`, because clarification is
+what the agent asks for when it needs more detail and a clear report does not need it.
+
+- **`Closed` is terminal and there is no way back.** A fault that returns is a new report
+  with its own history, not this one reopened — the same rule the verification loop follows
+  when a failed repair produces a **new** work order rather than reusing the row. Reopening
+  would overwrite the record that this one was resolved. `ReportStatus` having no `Reopened`
+  member, unlike `WorkflowState`, is that same decision stated in the enum.
+- **A move to the status the report is already in is refused too.** No status lists itself,
+  so the same line covers it: the endpoint asserts a *transition*, and staying put is not
+  one. Telling a caller their view is stale is more use than a 204 that changed nothing.
+- **409, not 400.** The value is a real member of the enum and nothing about the request is
+  malformed — it is the report that is not where the caller thinks it is.
+- **An `Admin` is refused as well**, and it surprises people. The policies are
+  one-per-`Role` and this one names `FacilitiesManager`, so there is no "or anyone more
+  senior" fallback — `Role` carries no seniority ordering, and inventing one here would put
+  a second, implicit authorisation rule beside the explicit one. Pinned by a test.
+- `UpdateReportStatusDto` carries **only** the status. A status endpoint that could also
+  rewrite the description, room or asset would be an edit wearing a workflow action's name;
+  those are the reporter's account of the fault.
+
 Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
 visible rather than hidden, so the finished shape of the form stays obvious.
 

@@ -6,6 +6,16 @@ namespace CampusFacilities.Api.Services;
 public interface IAssetService
 {
     /// <summary>
+    /// The most service records `get_asset_service_history` will return.
+    ///
+    /// A constant, not a parameter on <see cref="ToolCallRequest"/>: the agent names a
+    /// tool and an id and nothing else, so how much history one call can pull is not
+    /// something the caller — or anything that has talked its way into the caller — can
+    /// widen. Same instinct as the hardcoded allow-list itself.
+    /// </summary>
+    const int MaxToolHistoryRows = 20;
+
+    /// <summary>
     /// One page of assets. Every argument is optional and they all combine: a free-text
     /// search over name and tag, three exact-match filters, and the column to order by.
     ///
@@ -88,6 +98,35 @@ public interface IAssetService
     /// an agent call, and never a figure a model produced. See AssetFailureSummaryDto.
     /// </summary>
     Task<AssetFailureSummaryDto?> GetFailureSummaryAsync(int id, CancellationToken cancellationToken = default);
+
+    // -----------------------------------------------------------------------
+    // Reads behind the agent tools. These have no REST endpoint of their own: they are
+    // shaped for a model's context window rather than for a page, which is why they are
+    // capped and why they carry names instead of nested DTOs.
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// An asset with its category and room NAMES — what `get_asset` returns. Null when no
+    /// asset has that id.
+    /// </summary>
+    Task<AssetContextDto?> GetAssetContextAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The asset's service history, NEWEST FIRST and capped at
+    /// <see cref="MaxToolHistoryRows"/> rows — what `get_asset_service_history` returns.
+    ///
+    /// Newest first is the opposite of <see cref="GetByIdAsync"/>, and the cap is the
+    /// reason. Taking the first 20 of an oldest-first list hands back the twenty LEAST
+    /// relevant visits and silently hides everything recent, which for an asset with a
+    /// long history is worse than returning nothing.
+    ///
+    /// NULL means no asset has that id; an EMPTY LIST means the asset exists and has
+    /// never been serviced. Collapsing those two would tell the agent a machine has a
+    /// clean record when in fact it was asking about a machine that is not there.
+    /// </summary>
+    Task<IReadOnlyList<ServiceRecordDto>?> GetRecentServiceHistoryAsync(
+        int assetId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Every category, ordered by name. Used to populate a picker.</summary>
     Task<IEnumerable<AssetCategoryDto>> GetCategoriesAsync(CancellationToken cancellationToken = default);

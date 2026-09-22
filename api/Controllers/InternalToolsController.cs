@@ -23,8 +23,9 @@ namespace CampusFacilities.Api.Controllers;
 public class InternalToolsController : ControllerBase
 {
     /// <summary>
-    /// Handler for one allow-listed tool. Both registered tools look a single entity up
-    /// by id, which is why the argument is just an int — see ToolCallRequest.
+    /// Handler for one allow-listed tool. Every registered tool answers a question about
+    /// one entity named by its id, which is why the argument is just an int — see
+    /// ToolCallRequest.
     /// </summary>
     private delegate Task<object?> ToolHandler(
         InternalToolsController controller,
@@ -44,22 +45,33 @@ public class InternalToolsController : ControllerBase
         new Dictionary<string, ToolHandler>(StringComparer.Ordinal)
         {
             ["get_room"] = (controller, id, ct) => controller.GetRoomAsync(id, ct),
-            ["get_building"] = (controller, id, ct) => controller.GetBuildingAsync(id, ct)
+            ["get_building"] = (controller, id, ct) => controller.GetBuildingAsync(id, ct),
+            ["get_asset"] = (controller, id, ct) => controller.GetAssetAsync(id, ct),
+            ["get_asset_service_history"] = (controller, id, ct) =>
+                controller.GetAssetServiceHistoryAsync(id, ct),
+            ["get_related_open_reports"] = (controller, id, ct) =>
+                controller.GetRelatedOpenReportsAsync(id, ct)
         };
 
     private readonly IRoomService _roomService;
     private readonly IBuildingService _buildingService;
+    private readonly IAssetService _assetService;
+    private readonly IReportService _reportService;
     private readonly IWorkflowService _workflowService;
     private readonly ILogger<InternalToolsController> _logger;
 
     public InternalToolsController(
         IRoomService roomService,
         IBuildingService buildingService,
+        IAssetService assetService,
+        IReportService reportService,
         IWorkflowService workflowService,
         ILogger<InternalToolsController> logger)
     {
         _roomService = roomService;
         _buildingService = buildingService;
+        _assetService = assetService;
+        _reportService = reportService;
         _workflowService = workflowService;
         _logger = logger;
     }
@@ -138,9 +150,18 @@ public class InternalToolsController : ControllerBase
     }
 
     // ---------------------------------------------------------------------------
-    // Tool handlers. Each one is a thin delegation to the service that already owns
-    // that data — no new query paths, so a tool can never read more than the matching
-    // REST endpoint would.
+    // Tool handlers. Each one is a thin delegation to the service that already owns that
+    // data — never a query written here against the DbContext, so a tool cannot grow a
+    // reading of the database that no service is responsible for.
+    //
+    // EVERY ONE OF THEM RETURNS FACTS: a row, a list of rows, or nothing. None of them
+    // returns a judgement, a score, a recommendation or a diagnosis — a tool that did
+    // would be the model's own opinion handed back to it wearing the API's authority, and
+    // unauditable the moment it mattered. What the facts MEAN is the agent's job upstream,
+    // and any rule the system acts on is C# somewhere a person can read it.
+    //
+    // The three asset tools are shaped for a model's context window rather than a page:
+    // names instead of nested DTOs, newest first, and a row cap the caller cannot widen.
     // ---------------------------------------------------------------------------
 
     private async Task<object?> GetRoomAsync(int id, CancellationToken cancellationToken) =>
@@ -148,6 +169,18 @@ public class InternalToolsController : ControllerBase
 
     private async Task<object?> GetBuildingAsync(int id, CancellationToken cancellationToken) =>
         await _buildingService.GetByIdAsync(id, cancellationToken);
+
+    private async Task<object?> GetAssetAsync(int id, CancellationToken cancellationToken) =>
+        await _assetService.GetAssetContextAsync(id, cancellationToken);
+
+    // id is the ASSET's id, not a service record's. Null back — an unknown asset — becomes
+    // found=false; an empty list is found=true, because "never serviced" is an answer.
+    private async Task<object?> GetAssetServiceHistoryAsync(int id, CancellationToken cancellationToken) =>
+        await _assetService.GetRecentServiceHistoryAsync(id, cancellationToken);
+
+    // Also the asset's id. Same null-versus-empty distinction as above.
+    private async Task<object?> GetRelatedOpenReportsAsync(int id, CancellationToken cancellationToken) =>
+        await _reportService.GetOpenReportsForAssetAsync(id, cancellationToken);
 
     private static string SerializeToolCall(string toolName, int id) =>
         // An array because a step may eventually carry several calls; today it is one.

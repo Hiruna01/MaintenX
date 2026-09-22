@@ -27,6 +27,11 @@ that job. If a job ever needs a real credential it goes in GitHub repository sec
 
 Not yet covered by CI, so still run by hand: `flutter test`, `npm run lint`.
 
+**`.gitattributes` normalises every text file to LF** (`* text=auto eol=lf`). It is not
+decoration: this is a mixed macOS/Windows team, and without it a checkout on Windows can
+show the entire tree as modified when nothing has changed. After pulling a change to that
+file, run `git add --renormalize .` once. Do not commit a file with CRLF line endings.
+
 ---
 
 ## BACKEND — follow this structure exactly
@@ -100,6 +105,140 @@ Not yet covered by CI, so still run by hand: `flutter test`, `npm run lint`.
 
 ---
 
+## ASSET REGISTRY — what exists, and what has been done to it
+
+`AssetCategory`, `Asset` and `ServiceRecord` in `Models/`, with `AssetStatus` and
+`ServiceOutcome` persisted as strings like every other enum. `IAssetService` /
+`AssetService`, `AddScoped`, behind `AssetsController` and `AssetCategoriesController`.
+
+- **`Asset.AssetTag` is the QR payload**, unique across the estate: scanning a sticker
+  yields that string and nothing else, so it has to identify exactly one machine.
+  **It is not editable.** `UpdateAssetDto` deliberately has no `AssetTag` field — renaming
+  the row would silently orphan every sticker already printed and applied, with no way to
+  tell from the database that it had happened. A mislabelled asset gets a new sticker and a
+  new row.
+- **Dates are `DateOnly`, not `DateTime`** (`date` in PostgreSQL). An installation or a
+  service visit is a calendar date; a time component invites a timezone conversion that
+  moves it across midnight.
+- **Assets are never deleted.** `AssetStatus.Retired` is how equipment leaves the estate.
+  Every foreign key into the registry is `DeleteBehavior.Restrict`, so deleting a room or a
+  category out from under an asset fails loudly rather than quietly taking its service
+  history with it. That history outlives the working life of the machine it describes.
+- **`IAssetService.CreateAsync` returns null for three different reasons** — unknown
+  category, unknown room, or a tag already in use. There is no `Result<T>` in this project,
+  so `TagExistsAsync` sits beside it: a controller calls that first to tell a 409 from a
+  400, the same way `InternalToolsController` calls `IWorkflowService.ExistsAsync` before
+  choosing its status code.
+- Detail reads return the service history **oldest-first** — the opposite of the workflow
+  list. It is read to follow a machine over time, and a repeat failure only reads as one in
+  the order it happened.
+
+### The endpoints — reads for everyone, writes for Admin
+
+`[Authorize]` on both controllers with no policy, and
+`[Authorize(Policy = nameof(Role.Admin))]` per write action. A technician looks up a
+machine's history before a visit and a reporter scans a sticker, so a role check on the
+reads would break both; deciding what equipment the estate contains is an Admin's job.
+That split is also what keeps **401 and 403 separately demonstrable** on one controller —
+no token is 401 everywhere, a Reporter's token is 200 on a read and 403 on a write.
+
+- `GET /api/assets` is the only paginated one, through the existing `PagedResult<T>`.
+  **There is no second pagination type.** Search matches name **or** tag in one box,
+  because a tag is what someone holding the equipment has; `categoryId`, `roomId` and
+  `status` are exact filters and all of them combine. `status` and `sort` bind by enum
+  **name**, so an unknown value is a 400 from model binding rather than a filter that
+  silently matches nothing.
+- **The search is `ToLower().Contains()`, never `EF.Functions.ILike`.** ILike is
+  Npgsql-only and the tests run on SQLite by default, so it would be a runtime failure
+  nothing on a developer's machine would catch. Lowering both sides is also what makes the
+  two providers agree: SQLite's `LIKE` is already case-insensitive and PostgreSQL's is not.
+- Every sort carries `ThenBy(Id)`. Without a total order two assets sharing a name — or an
+  installation date, which many do, since equipment arrives in batches — can order
+  differently between two queries, and a row appears on both page 1 and page 2, or on
+  neither.
+- `GET /api/assets/by-tag/{assetTag}` is the QR path. An unknown tag is a **404**, not an
+  error: a sticker from some other system is a miss.
+
+#### `DELETE /api/assets/{id}` retires, it does not delete
+
+The verb is right for the client — "this equipment is gone" is what the caller means — and
+how the registry honours that without losing the history is the registry's business. The
+service method behind it is called **`RetireAsync`**, not `DeleteAsync`, so nothing reads
+as a row removal at the call site. It sets `Status` to `Retired` and returns 204; an asset
+that is already retired still returns 204, because the caller asked for it to be out of
+service and it is.
+
+A real delete would not quietly take the service history with it — every foreign key into
+the registry is `Restrict`, so it would throw out of the driver as a 500 for any asset that
+has ever been serviced, reported on or worked on, which is every asset anyone would want to
+delete. Pinned by a test that deletes an asset **with** history and then reads both back.
+
+#### `GET /api/assets/{id}/failure-summary` — the business operation
+
+Not CRUD, and **not an agent call**. `failureCount12Months`, `failureCount3Months`,
+`lastServicedOn`, `daysSinceLastService`, `temporaryFixCount`, `isUnderWarranty`,
+`isRepeatFailure` and `distinctOutcomes` are every one of them a count or a date
+comparison, computed in C# over the materialised history. Failure counts and warranty
+dates are named in PROJECT RULES as deterministic business rules; the diagnostic agent
+**reads** this summary through a tool call, it never produces one.
+
+- **"Three months" means exactly 90 days**, and `isRepeatFailure` (3 or more visits) reads
+  that same cut-off rather than a second one of its own. `AddMonths(-3)` is 89, 90, 91 or
+  92 days depending on the month, and a summary reporting two visits this quarter beside a
+  repeat-failure flag would be read as a bug — and would be one.
+- Computing it in memory rather than in SQL is also what makes it behave identically on
+  both test databases: `DateOnly` arithmetic does not translate to SQLite, where dates are
+  `TEXT`. Same reasoning as evaluating the approval threshold in C#.
+- `lastServicedOn` and `daysSinceLastService` are **nullable, and null is not zero** — a
+  machine nobody has ever touched is not a machine serviced today. Same rule as
+  `VerificationCheck.ReporterConfirmed`.
+- A null `WarrantyExpiresOn` reads `isUnderWarranty: false`. "No warranty recorded" is not
+  the same fact as "expired", but it is not cover either.
+
+Categories have **no DELETE**: the foreign key from `Asset` is `Restrict`, so removing one
+anything is filed under fails at the database, and a category with nothing under it is not
+worth an endpoint and a role check to tidy away. `CreateAssetCategoryDto` serves both the
+create and the update, the way `CreateRoomDto` does — a category is its name and its
+default warranty and nothing else, so it has no field that may be set once and never
+changed. Changing `DefaultWarrantyMonths` does not touch existing assets: it is a default
+for data entry, and an asset's own `WarrantyExpiresOn` is what every warranty decision
+reads.
+
+### `ServiceRecord` is deliberately NOT `WorkOrder`
+
+A `WorkOrder` is live work in progress: assigned, scheduled, still changing. A
+`ServiceRecord` is what is left once that work is finished and will not change again. A
+completed work order **appends** a `ServiceRecord`.
+
+They are separate because they are read for different reasons. The diagnostic agent reads
+this table to find repeat failures across months of history: it has no business seeing
+half-finished work, and history must not shift under it every time a technician updates a
+live order. Merging them would also put a scheduling lifecycle and an immutable record in
+one table, which is two jobs. Do not merge them.
+
+**`ServiceRecord.WorkOrderId` is now a real foreign key** (`AddWorkOrders`), `Restrict`,
+with no navigation property on either side. It stays **nullable**, legitimately: seeded and
+imported history was never produced by a work order.
+
+### The Development seed data is load-bearing, not filler
+
+The diagnostic agent is written against it and cannot be developed or demonstrated without
+history that actually contains a repeat failure. `DbSeeder` creates 4 categories, 8 assets
+and 14 service records.
+
+- **The three records on `PRJ-MAB101-01` are the planted pattern**: one visit finding
+  nothing, then the same fault returning twice with the same thermal root cause and two
+  temporary fixes, escalating over four months to a replacement recommendation. Read
+  individually each note is unremarkable; read together they are a failing unit.
+- **That asset is left `Active` on purpose.** It works between failures, so nothing on the
+  asset row itself looks wrong — the pattern exists only in the history, which is exactly
+  the problem the agent has to solve. Do not "fix" the status.
+- **The notes are written the way technicians write them** — terse, abbreviated, and vague
+  where a real note would be vague. The agent's job is reading unstructured text, and clean
+  prose here would make it look better than it is. Do not tidy them.
+
+---
+
 ## AGENT WORKFLOWS — background orchestration, not a blocking call
 
 - `AgentWorkflow` (one row per objective) and `AgentStep` (one row per agent action) live in
@@ -121,11 +260,14 @@ Not yet covered by CI, so still run by hand: `flutter test`, `npm run lint`.
   surface on, so a workflow must never be left parked because the agent was down.
 - **The runner records ONE agent-level step per run**, with `ToolCallsJson` empty. Tool
   calls are recorded by `InternalToolsController` alone — recording the agent's returned
-  `tool_calls` here as well would double every tool call in the audit trail.
+  `tool_calls` here as well would double every tool call in the audit trail. It also writes
+  the clarifier's questions as `ClarificationQuestion` rows; that is not a second step and
+  not a second audit record — see CLARIFICATION below.
 - **`AgentWorkflow.PlanJson` is still never populated.** The clarifier produces questions,
   and questions are not a plan, so they go in `AgentStep.PayloadJson` where step output
-  belongs. Do not render `PlanJson` in a client until an agent actually produces one — an
-  always-null field on a page is worse than no field.
+  belongs — and, because they are working data as well as audit, into
+  `ClarificationQuestion` rows beside it. Do not render `PlanJson` in a client until an
+  agent actually produces one — an always-null field on a page is worse than no field.
 - **`POST /api/internal/tools/{toolName}`** is how the agent calls back into the API. It is
   authenticated by a **shared-secret header** (`AGENT_SHARED_SECRET`), not a JWT — there is
   no user behind these calls, so no role to check. Missing or wrong secret → 401.
@@ -135,6 +277,214 @@ Not yet covered by CI, so still run by hand: `flutter test`, `npm run lint`.
   let alone changeable, by anything the model outputs.
 - Every call to `/api/internal/tools/{toolName}` — allowed or rejected — writes an
   `AgentStep` row, so the audit trail is complete even for rejected calls.
+
+---
+
+## CLARIFICATION — the questions are rows, the answers are bounded
+
+The clarifier's output is written **twice, to two different ends**, and neither replaces
+the other:
+
+- **`AgentStep.PayloadJson`** — the agent's reply verbatim, at the moment it produced it.
+  This is the audit trail and it is never edited.
+- **`ClarificationQuestion` rows** — the working data: the copy the application queries per
+  report, orders, renders as a form and answers.
+
+Collapsing the two is the mistake this split exists to prevent. An audit trail you edit is
+not an audit trail, and a payload blob is not something a reporter can answer one question
+at a time.
+
+- `ClarificationQuestion` carries `ReportId` **and** `WorkflowId`, both indexed. The
+  workflow id is not redundant: a report may be clarified by more than one run over its
+  life, and this is what says which run asked what.
+- **`AnswerType` is `YesNo` / `SingleSelect` / `ShortText`, and that is the whole list.**
+  This enum is where "there is no chat interface" stops being an intention and becomes a
+  constraint — every clarification comes back through a toggle, a picker over a fixed list,
+  or a capped short string, and none of those is a message box. **Adding a `FreeText`
+  member turns this project into the chatbot it deliberately is not.** It is a viva
+  question.
+- `OptionsJson` is a PostgreSQL **`jsonb`** column, null for every answer type except
+  `SingleSelect` — a yes/no question carrying options would render as a control the agent
+  never asked for.
+- **A question has at most one answer**, enforced by a unique index on
+  `ClarificationAnswer.ClarificationQuestionId`. One answer, not a thread, because there is
+  no conversation.
+- **`ClarificationQuestion.ReportId` is NOT nullable, so a workflow with no report writes
+  no rows.** `POST /api/workflows` can still start a run from a bare objective, and a
+  question about nothing has nobody to ask and nowhere to appear. The `AgentStep` still
+  records what was asked, so the run is not invisible.
+
+### The parse lives in one place, and it never throws
+
+`AgentRunResponse.ParseQuestions()` is the **only** place the API reads the agent's
+question shape, so the agent's snake_case `answer_type` values (`yes_no`, `single_select`,
+`short_text`) are mapped onto the C# enum exactly once rather than wherever a reader
+happens to need them.
+
+It **skips** anything malformed instead of throwing — the caller is a background worker
+with no request to surface an exception on — and `WorkflowRunner` logs a warning when the
+parsed count falls short of what the agent sent. That shortfall should be impossible, since
+the agent validates its own output against a Pydantic schema before sending it, which is
+exactly why it is worth a warning: it means the two contracts have drifted apart.
+
+### The status transition is C#, never the agent
+
+`ClarificationService` moves the report to `AwaitingClarification` **in the same
+`SaveChanges`** as the question rows, so the two can never disagree: a report is never left
+saying `AwaitingClarification` with nothing to answer, nor `Submitted` with questions
+sitting against it. The agent decides *what to ask*; what that means for the report is a
+deterministic business rule and lives in C#.
+
+### The unique index will not save a writer that has already loaded the answer
+
+Worth knowing before the submit-answers endpoint lands, because it is genuinely surprising.
+Inside a single `DbContext` that has **already loaded** the existing answer, EF resolves the
+required one-to-one conflict itself: the old row is marked `Deleted` and the save
+**succeeds by replacing the answer**. The index only stops a writer that knows nothing but a
+question id.
+
+A service that means "reject a re-answer" therefore has to look for one and say so — it
+will not get a `DbUpdateException` for free. Pinned by a test that deliberately uses a
+separate DI scope; the note is in `AppDbContext` next to the index as well.
+
+### `Report` — three columns alongside
+
+- **`AssetId`, nullable.** A reporter is not expected to know which asset tag the
+  misbehaving projector carries, and a form that demanded one would be abandoned or
+  answered with a guess. It is filled in later — by a QR scan at the point of reporting, or
+  by whoever triages the report.
+- **`PhotoUrl`, nullable** — a URL to wherever the image is stored, never the image bytes,
+  which have no business in a row that is read on every list query.
+- **`ReportStatus` is `Submitted` / `AwaitingClarification` / `Clarified` / `Diagnosed` /
+  `WorkOrderRaised` / `Closed`**, a string in the database like every other enum.
+  **Deliberately not a copy of `WorkflowState`.** A workflow state describes one agent run
+  and can end in `Failed`, which says nothing about the fault still sitting in the room.
+  This says where the *fault* has got to, and it survives a run that never completed.
+
+---
+
+## WORK ORDERS — the scheduling lifecycle
+
+`WorkOrder`, `ScheduledSlot` and `ClassScheduleSlot` in `Models/`, with `WorkOrderStatus`
+(`Draft` / `AwaitingApproval` / `Approved` / `Rejected` / `Scheduled` / `InProgress` /
+`Completed` / `Cancelled`) and `WorkOrderStrategy` (`KnownFix` / `SingleJob` /
+`ConsolidatedJob` / `InspectFirst` / `Defer` / `EscalateReplacement`) persisted as strings
+like every other enum. There is no controller yet.
+
+- **Money is `decimal`, and its precision is stated rather than inherited.**
+  `EstimatedCost` and `ActualCost` are `numeric(18,2)`. Left undeclared, EF maps `decimal`
+  to an unqualified PostgreSQL `numeric` whose scale is whatever each value arrives with,
+  so the column would accept `4999.999999` and hand it to a threshold comparison meant to
+  reason in rupees and cents. **A float here is not a display bug, it is money spent
+  without authorisation**: an estimate that should sit exactly on the threshold can land a
+  hair below it and auto-approve. It is a viva question.
+- Input DTOs bound cost with the **decimal overload** of `[Range]`
+  (`[Range(typeof(decimal), "0", "10000000", ParseLimitsInInvariantCulture = true)]`), not
+  `[Range(0, double.MaxValue)]` — that overload would validate money by parsing it through
+  a binary double, which is the one thing this project refuses to do with money. The limits
+  parse invariantly so a comma decimal separator cannot change what is accepted.
+- **`WorkOrder.AssetId` is NOT nullable**, unlike `Report.AssetId`, and the difference is
+  the point: a reporter is not expected to know which asset tag the projector carries, but
+  nobody can be sent to repair a machine nobody has identified. It is also what makes the
+  completed `ServiceRecord` land against the right service history.
+- **`CreateWorkOrderDto` has no `Status`.** Every order is raised `Draft`, and whether it
+  needs a manager's decision is decided by comparing `EstimatedCost` against the threshold
+  in C#. A caller that could post a status could post `Approved` and skip that comparison —
+  the approval control removed by the thing it is supposed to control.
+- **Indexes:** `ReportId`, `AssetId`, `AssignedTechnicianId`, `Status` on `WorkOrder`;
+  `RoomId` and `StartsAt` on `ClassScheduleSlot`, plus a **unique** `ExternalEventId`.
+- `ScheduledSlot` is its own table rather than two columns on the order: a job can take
+  more than one visit, and rescheduling then adds a row instead of overwriting the only
+  record of when the work was meant to happen. `Cascade` from its order — a booking says
+  nothing without one — unlike almost everything else here.
+- `ClassScheduleSlot` is **mirrored from the campus timetable, never authored here**. The
+  unique `ExternalEventId` is what makes a re-sync idempotent: the same class pulled twice
+  updates its row instead of appearing as a second lecture in the same room at the same
+  time, which would read as a conflict that does not exist and push maintenance out of a
+  room that was free. `SyncedAt` is distinct from `UpdatedAt` — a sync that changes nothing
+  leaves `UpdatedAt` alone, so this is the only column that says how stale the mirror is.
+- **`ApprovalSettings` reads `Approval:CostThreshold` (default 15000 LKR)** — a class read
+  from configuration, never a literal in a service. The threshold changes with a budget, a
+  currency or a faculty, and it has to be variable between a demo database and a real one.
+  The comparison itself stays in C#: an agent may estimate a cost, but whether that estimate
+  needs a human is arithmetic, and arithmetic a model performs is unauditable.
+- **A note for whoever writes the service:** SQLite (the default test mode) has no `decimal`
+  type and stores these as `TEXT`, so a threshold comparison or `ORDER BY` translated into
+  SQLite SQL would compare them as strings. Evaluate the approval rule in C# after
+  materialising rows — which is where it belongs anyway.
+
+---
+
+## VERIFICATION — did the repair actually hold?
+
+`VerificationCheck` in `Models/`, with `VerificationStatus` (`Pending` /
+`AwaitingReporterResponse` / `Confirmed` / `Reopened` / `Escalated` / `Expired`) persisted
+as a string. `IVerificationService` / `VerificationService`, `AddScoped`. There is no
+controller and no hosted service yet.
+
+A completed work order is the technician's account of the work, and nothing before this
+component ever checked it against the room.
+
+- **The delay is the entire point.** `VerificationSettings.DelayDays` (default 5) is how
+  long after completion the check falls due. Asked the same afternoon every reporter says
+  yes, because an intermittent fault has not had time to come back — and a confirmation
+  that means nothing is worse than no confirmation, because it enters the metrics as a
+  success. `DueAt` is measured **from completion, not from now**, so a check raised late by
+  a backfill still falls due when it should have.
+- `VerificationSettings` also carries `SweepIntervalMinutes` (default 60). Both from
+  configuration, never literals; startup refuses a non-positive value for either.
+- **`ReporterConfirmed` is `bool?`, not `bool`.** "Not answered yet" and "answered no" are
+  completely different facts, and a non-nullable bool would quietly record every unanswered
+  check as a failed repair.
+- **The index on `(Status, DueAt)` is composite, not two indexes.** The sweep asks for
+  `Pending` checks whose `DueAt` has passed — equality on the first column, a range on the
+  second, which is exactly the shape a composite serves. `Status` leads because it is the
+  equality test; a range column first would leave the equality unable to use the index.
+  Being leftmost also means this one index answers "everything Pending" on its own, so no
+  separate index on `Status` is needed. `WorkOrderId` is indexed separately.
+- **One check per completed work order, and the index on `WorkOrderId` is NOT unique.** A
+  reopened fault produces a *new* work order with its own check rather than reusing the
+  row — this one is the record of an answer that was given, and re-asking it would
+  overwrite the evidence that the first repair failed.
+- **The sweep body lives in the scoped service** (`ProcessDueChecksAsync`), not in the
+  hosted service that will call it on a timer — the same split as `WorkflowRunner` and
+  `IWorkflowService`. That keeps the rule testable without starting a background worker and
+  keeps a scoped `DbContext` out of a singleton.
+- **What an answer means is C#, set in the same `SaveChanges` as the answer itself**, so a
+  check is never left `Confirmed` with `ReporterConfirmed` false. Same rule, and the same
+  reason, as `ClarificationService` moving a report alongside its questions.
+- **One answer per check, enforced by the service rather than by an index** — the answer
+  lives in columns on the row, not in a second table, so there is no unique constraint to
+  lean on. `RecordReporterResponseAsync` looks for an existing response and refuses.
+- **`AgentOutcome` is a string, not an enum, precisely because it is the model's opinion.**
+  Giving it a C# enum would imply the system acts on it. `Status` is set by C# from the
+  reporter's answer; the agent's label is recorded beside it and read by humans.
+- **`MetricsDto.ConfirmationRate` excludes checks nobody answered.** The denominator is
+  `Confirmed + Reopened`, not `Total` — counting an `Expired` check either way reports a
+  result that was never given. This is the one number the component exists to produce, and
+  every figure in it is computed in C# from counts, never estimated by a model.
+
+### The verification seed data is load-bearing too
+
+The sweep and the metrics cannot be developed against an empty table, nor against one where
+every check says the same thing — a confirmation rate of 100% looks identical whether the
+code is right or the query is wrong. `DbSeeder` adds **6 completed work orders** with their
+reports, and a check for each: **2 `Confirmed`, 1 `Reopened`, 3 `Pending` and already
+overdue** so the sweep has work the first time it runs.
+
+- **The `Reopened` one is on `PRJ-MAB101-01`** — the projector carrying the planted
+  repeat-failure history — so it is that same thermal fault surfacing again, caught by the
+  verification loop instead of by a fourth report from the room. An escalation rule written
+  against this data has a real case to find.
+- Completions run **6 to 20 days ago, not 2**: with a 5-day delay, an order finished 2 days
+  ago is not yet due and could not be one of the three overdue checks.
+- **The seeder deliberately does not append `ServiceRecord` rows** for these completions,
+  even though a real completion does. Three of these assets carry the history the
+  diagnostic agent is written against, and adding rows would change what it is developed
+  against.
+- Work order seeding runs **after** user seeding and backs out with a warning if no demo
+  reporter exists (`Seed:Passwords:Reporter` unset) — a report needs a reporter, and a
+  half-configured machine should still get a usable registry rather than a failed seed.
 
 ---
 
@@ -225,7 +575,8 @@ agent/config.py        settings read from the environment
   requires one line at the end of `api/Program.cs`: `public partial class Program { }`.
 - **Never the EF Core in-memory provider.** It does not enforce unique indexes or
   constraints, so "duplicate email returns 409" would pass there even with the index
-  deleted. `ApiFactory` runs against one of two real databases instead, chosen by the
+  deleted — as would "a question has at most one answer", whose whole enforcement *is* an
+  index. `ApiFactory` runs against one of two real databases instead, chosen by the
   `TEST_DATABASE_URL` environment variable:
   - **unset (a developer's machine) — SQLite in-memory**, built from the model with
     `EnsureCreated()`. Fast and needs nothing installed.
@@ -237,6 +588,14 @@ agent/config.py        settings read from the environment
   migration, so a broken or out-of-step migration is invisible on SQLite. It is also the
   only mode where the `jsonb` columns are really `jsonb` (`AppDbContext` falls back to
   `TEXT` on SQLite) and where `timestamp with time zone` behaves as it will in production.
+- **A migration must survive a database that already has rows**, and CI structurally
+  cannot check that: it migrates an *empty* database, so a new constraint always applies
+  cleanly there. A migration that adds a foreign key to a column which predates the table
+  it now references has to clear orphaned values first — `AddReports` does this for
+  `AgentWorkflow.ReportId`, and `AddWorkOrders` does it for `ServiceRecord.WorkOrderId`,
+  which sat unconstrained until `WorkOrder` existed. Without that step the job stays green
+  while the migration is unrunnable against every database that has data in it, including a
+  teammate's and anything deployed.
 - A database **per factory**, not one shared database: xUnit gives each test class its own
   `ApiFactory`, and no class should be able to see another's rows. That is the isolation
   the SQLite mode gets for free, preserved deliberately for PostgreSQL.
@@ -407,8 +766,12 @@ field**, so a client cannot file a report as someone else. The description is ca
 1000 characters on both sides, matching `AgentWorkflow.Objective`, which it becomes
 verbatim; the 10-character floor mirrors the Flutter form's own `validate()`.
 
-Nothing collects the clarifier's answers. The questions are stored on an `AgentStep` and
-displayed read-only; there is no follow-up round and no chat interface — see above.
+The clarifier's questions are now real `ClarificationQuestion` rows as well as an
+`AgentStep` payload — see CLARIFICATION above — so a client can read a report's questions
+back in order. **Nothing collects the answers yet.** `SubmitAnswersRequest` exists as a DTO
+but no endpoint is behind it, so the questions are still displayed read-only. When that
+endpoint lands it takes the whole form in ONE request and the exchange is over: there is no
+follow-up round and no chat interface.
 
 Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
 visible rather than hidden, so the finished shape of the form stays obvious.

@@ -197,8 +197,9 @@ public class WorkflowService : IWorkflowService
         if (questionCount > 0)
         {
             // There is something to ask the reporter, so the workflow waits for it. The
-            // questions themselves are recorded on the AgentStep; nothing collects the
-            // answers yet, which is why this is a resting state and not a step towards one.
+            // questions themselves are recorded on the AgentStep and as ClarificationQuestion
+            // rows; POST /api/reports/{id}/clarifications is what moves the workflow out of
+            // here again, back to Diagnosing.
             workflow.CurrentState = WorkflowState.AwaitingClarification;
             workflow.Outcome =
                 $"The clarifier asked {questionCount} question(s) about this report.";

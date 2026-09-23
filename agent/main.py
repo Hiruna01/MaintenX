@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from agents.clarifier import ClarifierAgent
+from agents.diagnostic import DiagnosticAgent
 from config import get_settings
 from graph import build_graph
 from llm_client import LlmClient
@@ -44,7 +45,10 @@ async def lifespan(app: FastAPI):
     tools = ToolClient(settings)
 
     app.state.settings = settings
-    app.state.graph = build_graph(ClarifierAgent(llm=llm, tools=tools))
+    app.state.graph = build_graph(
+        ClarifierAgent(llm=llm, tools=tools),
+        DiagnosticAgent(llm=llm, tools=tools),
+    )
 
     yield
 
@@ -75,6 +79,14 @@ async def health() -> dict[str, object]:
 
 @app.post("/run", response_model=RunResponse)
 async def run(request: RunRequest) -> RunResponse:
-    """Runs the graph for one report and returns the agent output."""
-    final_state = await app.state.graph.ainvoke({"request": request, "response": None})
-    return final_state["response"]
+    """
+    Runs the graph for one report and returns every agent's output.
+
+    The clarifier's result stays at the top level, exactly where the API already reads
+    it; the diagnosis is attached beside it. Assembling the response is this layer's
+    job, which keeps every node in graph.py a one-liner.
+    """
+    final_state = await app.state.graph.ainvoke(
+        {"request": request, "response": None, "diagnosis": None}
+    )
+    return final_state["response"].model_copy(update={"diagnosis": final_state["diagnosis"]})

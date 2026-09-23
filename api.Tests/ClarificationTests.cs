@@ -594,6 +594,96 @@ public class ClarificationTests : IClassFixture<ApiFactory>
         Assert.Equal(2, await UnansweredCountAsync(reportId));
     }
 
+    [Theory]
+    [InlineData("Maybe")]
+    [InlineData("yes")]
+    [InlineData("Yes ")]
+    [InlineData("Yes, but only after it has been on for about an hour")]
+    public async Task SubmitAnswers_WithAYesNoAnswerThatIsNotExactlyYesOrNo_Is400(string answer)
+    {
+        // A yes/no toggle is a picker with two options, and it is held to the same rule as
+        // any other picker. Without this a client could put 100 characters of free text
+        // where "Yes" belongs — a message box behind a toggle's name, which is exactly the
+        // chat interface AnswerType exists to rule out.
+        //
+        // Matched ordinally, so "yes" and "Yes " are refused too: both clients send the
+        // exact string, and loosening it here would be guessing at what the reporter meant.
+        var (client, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        Assert.Equal(AnswerType.YesNo, questions[0].AnswerType);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[]
+            {
+                new SubmittedAnswer(questions[0].Id, answer),
+                new SubmittedAnswer(questions[1].Id, questions[1].Options![0])
+            }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // Nothing written, not even the valid single-select answer beside it, and the
+        // report is still waiting on its reporter.
+        Assert.Equal(2, await UnansweredCountAsync(reportId));
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var report = await db.Reports.AsNoTracking().FirstAsync(r => r.Id == reportId);
+        Assert.Equal(ReportStatus.AwaitingClarification, report.Status);
+    }
+
+    [Theory]
+    [InlineData("Yes")]
+    [InlineData("No")]
+    public async Task SubmitAnswers_WithYesOrNo_IsAccepted(string answer)
+    {
+        var (client, reportId, _, _, questions) = await CreateAwaitingClarificationReportAsync();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[]
+            {
+                new SubmittedAnswer(questions[0].Id, answer),
+                new SubmittedAnswer(questions[1].Id, questions[1].Options![0])
+            }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SubmitAnswers_ShortTextIsCappedButNotCheckedAgainstAnyOptions()
+    {
+        // The other side of the option check: typed text is bounded by its 100-character
+        // cap, not by a list. A short-text answer that happens not to be "Yes" is fine.
+        const string output = """
+            {
+              "questions": [
+                { "question_text": "Is it leaking?", "answer_type": "yes_no" },
+                { "question_text": "What does the display show?",
+                  "answer_type": "short_text" }
+              ]
+            }
+            """;
+
+        var (client, reportId, _, _, questions) =
+            await CreateAwaitingClarificationReportAsync(output);
+
+        Assert.Equal(AnswerType.ShortText, questions[1].AnswerType);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[]
+            {
+                new SubmittedAnswer(questions[0].Id, "No"),
+                new SubmittedAnswer(questions[1].Id, "A blue 'no signal' box, then black")
+            }),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
     [Fact]
     public async Task SubmitAnswers_Twice_Is409AndTheFirstAnswersStand()
     {
@@ -735,11 +825,13 @@ public class ClarificationTests : IClassFixture<ApiFactory>
 
     /// <summary>
     /// A report sitting exactly where the submit endpoint expects to find one: clarified
-    /// by a run, AwaitingClarification, with the stub's two questions unanswered against
-    /// it. The client returned is the reporter's.
+    /// by a run, AwaitingClarification, with the stub's two questions — or those in
+    /// <paramref name="agentOutput"/> — unanswered against it. The client returned is the
+    /// reporter's.
     /// </summary>
     private async Task<(HttpClient Client, int ReportId, int WorkflowId, int UserId,
-        IReadOnlyList<ClarificationQuestionDto> Questions)> CreateAwaitingClarificationReportAsync()
+        IReadOnlyList<ClarificationQuestionDto> Questions)> CreateAwaitingClarificationReportAsync(
+            string agentOutput = StubOutput)
     {
         var (client, userId) = await CreateAuthenticatedClientAsync();
         var roomId = await CreateRoomAsync();
@@ -757,20 +849,20 @@ public class ClarificationTests : IClassFixture<ApiFactory>
 
         var workflow = Assert.Single(workflows!.Items.Where(w => w.ReportId == report!.Id));
 
-        var response = AgentResponse(StubOutput, out var document);
+        var response = AgentResponse(agentOutput, out var document);
         using var _ = document;
+        var parsed = response.ParseQuestions();
 
         using (var scope = _factory.Services.CreateScope())
         {
             var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
-            await clarifications.RecordQuestionsAsync(
-                report!.Id, workflow.Id, response.ParseQuestions());
+            await clarifications.RecordQuestionsAsync(report!.Id, workflow.Id, parsed);
         }
 
         var questions = await client.GetFromJsonAsync<List<ClarificationQuestionDto>>(
             $"/api/reports/{report!.Id}/clarifications", JsonOptions);
 
-        Assert.Equal(2, questions!.Count);
+        Assert.Equal(parsed.Count, questions!.Count);
 
         return (client, report.Id, workflow.Id, userId, questions);
     }

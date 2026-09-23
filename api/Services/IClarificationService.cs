@@ -55,7 +55,7 @@ public interface IClarificationService
     ///   3. report is not AwaitingClarification             NotAwaitingClarification
     ///   4. a question id not belonging to this report      UnknownQuestion
     ///   5. a question left unanswered                      MissingAnswer
-    ///   6. a SingleSelect answer not among its options     OptionNotOffered
+    ///   6. a SingleSelect / YesNo answer not offered       OptionNotOffered
     ///   7. a question that has already been answered       AlreadyAnswered
     ///
     /// Check 7 is a real query, not a hope: the unique index on
@@ -128,9 +128,10 @@ public enum SubmitAnswersOutcome
     DuplicateAnswer,
 
     /// <summary>
-    /// A SingleSelect answer was not one of the choices that question stored. A 400. This
-    /// is the check that makes AnswerType a constraint rather than a suggestion: without
-    /// it a picker is a text box wearing a picker's name.
+    /// A SingleSelect answer was not one of the choices that question stored, or a YesNo
+    /// answer was not exactly "Yes" or "No". A 400. This is the check that makes AnswerType
+    /// a constraint rather than a suggestion: without it a picker is a text box wearing a
+    /// picker's name.
     /// </summary>
     OptionNotOffered,
 

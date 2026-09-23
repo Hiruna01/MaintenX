@@ -71,3 +71,68 @@ def test_run_requires_a_description(client):
     response = client.post("/run", json={"workflow_id": 7, "description": ""})
 
     assert response.status_code == 422
+
+
+def test_run_returns_a_diagnosis_beside_the_clarifier_output(client):
+    """
+    Two agents, one response — and the clarifier's fields are exactly where they were.
+    The API's AgentRunResponse reads agent, status and output by name, so the diagnosis
+    has to be an addition to this contract, never a reinterpretation of it.
+    """
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Lecture Hall A projector keeps cutting out mid lecture.",
+            "room_id": 1,
+            "asset_id": 1,
+        },
+    )
+
+    assert response.status_code == 200
+
+    body = RunResponse.model_validate(response.json())
+    assert body.agent == "clarifier"
+    assert body.status is AgentStatus.ok
+    assert len(body.output.questions) <= MAX_QUESTIONS
+
+    assert body.diagnosis is not None
+    assert body.diagnosis.agent == "diagnostic"
+    assert body.diagnosis.status is AgentStatus.ok
+    assert [c.tool for c in body.diagnosis.tool_calls] == [
+        "get_asset",
+        "get_asset_service_history",
+        "get_related_open_reports",
+    ]
+
+
+def test_run_accepts_earlier_clarification_answers(client):
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Projector cutting out.",
+            "asset_id": 1,
+            "clarification_answers": [
+                {"question_text": "Is the power light on?", "answer_text": "Yes"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_run_rejects_an_answer_longer_than_the_apis_own_cap(client):
+    """100 characters, the same as ClarificationAnswer.AnswerText on the API side."""
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Projector cutting out.",
+            "clarification_answers": [
+                {"question_text": "Which input?", "answer_text": "x" * 101},
+            ],
+        },
+    )
+
+    assert response.status_code == 422

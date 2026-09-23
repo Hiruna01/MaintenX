@@ -45,8 +45,71 @@ logger = logging.getLogger(__name__)
 # Header name must match AgentSettings.SecretHeaderName on the API side.
 SECRET_HEADER = "X-Agent-Secret"
 
+# The seeded projector PRJ-MAB101-01 and its planted repeat-failure history, copied
+# VERBATIM from api/Data/DbSeeder.cs (the three PRJ-MAB101-01 service records), in the
+# shape the API's asset tools return. Newest first, as get_asset_service_history orders it.
+#
+# Used as the STUB_MODE reply for the asset tools, and by the diagnostic's golden-case
+# test and eval. If the seed changes, change this with it — the notes are the evidence,
+# and the golden case is only as honest as this copy.
+SEEDED_PROJECTOR_RESULTS: dict[str, Any] = {
+    "get_asset": {
+        "asset": {
+            "id": 1,
+            "assetTag": "PRJ-MAB101-01",
+            "name": "Lecture Hall A Projector",
+            "assetCategoryId": 1,
+            "roomId": 1,
+            "manufacturer": "Epson",
+            "model": "EB-990U",
+            "installedOn": "2023-08-14",
+            "warrantyExpiresOn": "2025-08-14",
+            "status": "Active",
+        },
+        "categoryName": "Projector",
+        "roomName": "Lecture Hall A",
+    },
+    "get_asset_service_history": [
+        {
+            "id": 3,
+            "assetId": 1,
+            "servicedOn": "2026-09-02",
+            "technicianName": "S. Fernando",
+            "technicianNote": (
+                "cleaned filter, unit still running hot, temporary fix, fan bearing sounds "
+                "weak - recommend replacement before next term"
+            ),
+            "outcome": "TemporaryFix",
+        },
+        {
+            "id": 2,
+            "assetId": 1,
+            "servicedOn": "2026-07-03",
+            "technicianName": "K. Perera",
+            "technicianNote": (
+                "same complaint as May. air filter choked w/ dust, lamp hrs high. cleaned "
+                "filter, ok on test after 30min."
+            ),
+            "outcome": "TemporaryFix",
+        },
+        {
+            "id": 1,
+            "assetId": 1,
+            "servicedOn": "2026-05-12",
+            "technicianName": "K. Perera",
+            "technicianNote": (
+                "projector cutting out mid lecture. checked hdmi + cable, reseated both. ran "
+                "20min on test, no fault seen. adv. dept to report again if recurs."
+            ),
+            "outcome": "NoFaultFound",
+        },
+    ],
+    "get_related_open_reports": [],
+}
+
 # Fixed context used in STUB_MODE so tests never need a running API.
-_STUB_RESULTS: dict[str, dict[str, Any]] = {
+_STUB_RESULTS: dict[str, Any] = {
+    **SEEDED_PROJECTOR_RESULTS,
     "get_room": {
         "id": 1,
         "buildingId": 1,

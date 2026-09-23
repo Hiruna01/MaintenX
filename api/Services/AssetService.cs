@@ -8,10 +8,17 @@ namespace CampusFacilities.Api.Services;
 public class AssetService : IAssetService
 {
     private readonly AppDbContext _db;
+    private readonly TimeProvider _time;
 
-    public AssetService(AppDbContext db)
+    /// <param name="time">
+    /// Where "today" comes from for the failure summary. TimeProvider.System in the app; a
+    /// fixed date in the tests, so "a warranty expiring today" and "a visit exactly 90 days
+    /// ago" are the same boundary on every run instead of flipping at midnight UTC.
+    /// </param>
+    public AssetService(AppDbContext db, TimeProvider time)
     {
         _db = db;
+        _time = time;
     }
 
     /// <summary>Largest page a client may ask for, so one request cannot pull the estate.</summary>
@@ -242,7 +249,7 @@ public class AssetService : IAssetService
         //     reasoning as evaluating the approval threshold in C#.
         //
         // The history of one asset is a handful of rows, so pulling it is not a cost.
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = DateOnly.FromDateTime(_time.GetUtcNow().UtcDateTime);
         var twelveMonthsAgo = today.AddYears(-1);
 
         // Ninety days, and IsRepeatFailure below reads this SAME cut-off rather than a

@@ -44,6 +44,10 @@ public record WorkOrderDetailDto(
     DateTime? ApprovedAt,
     string? RejectionReason,
 
+    // The manager's note from the last request-revision, if there was one. Carried so the
+    // order says why it went back to Draft; the Strategist reads the same column.
+    string? RevisionNote,
+
     DateTime? CompletedAt,
     DateTime CreatedAt,
     DateTime UpdatedAt,

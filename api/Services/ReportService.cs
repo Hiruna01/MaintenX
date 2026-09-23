@@ -62,17 +62,20 @@ public class ReportService : IReportService
     private readonly IWorkflowService _workflowService;
     private readonly IWorkflowQueue _workflowQueue;
     private readonly IClarificationService _clarificationService;
+    private readonly IFileStorageService _fileStorage;
 
     public ReportService(
         AppDbContext db,
         IWorkflowService workflowService,
         IWorkflowQueue workflowQueue,
-        IClarificationService clarificationService)
+        IClarificationService clarificationService,
+        IFileStorageService fileStorage)
     {
         _db = db;
         _workflowService = workflowService;
         _workflowQueue = workflowQueue;
         _clarificationService = clarificationService;
+        _fileStorage = fileStorage;
     }
 
     /// <summary>
@@ -395,6 +398,61 @@ public class ReportService : IReportService
             .Take(IReportService.MaxToolRelatedReports)
             .Select(r => ToDto(r))
             .ToListAsync(cancellationToken);
+    }
+
+    public async Task<AttachPhotoResult> AttachPhotoAsync(
+        int reportId,
+        int callerId,
+        Stream content,
+        string? contentType,
+        long length,
+        CancellationToken cancellationToken = default)
+    {
+        var report = await _db.Reports.FirstOrDefaultAsync(r => r.Id == reportId, cancellationToken);
+
+        if (report is null)
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.ReportNotFound);
+        }
+
+        // The reporter and nobody else — not a manager, not an Admin. Same rule as answering
+        // the report's clarification questions.
+        if (report.ReporterId != callerId)
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.NotTheReporter);
+        }
+
+        if (!ImageUploadRules.IsAllowedContentType(contentType))
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.UnsupportedContentType);
+        }
+
+        if (length > ImageUploadRules.MaxBytes)
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.TooLarge);
+        }
+
+        if (!await ImageUploadRules.HasMatchingSignatureAsync(content, contentType!, cancellationToken))
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.ContentDoesNotMatchType);
+        }
+
+        // Lower-cased so the stored object's type does not depend on how the client spelt it.
+        var url = await _fileStorage.UploadAsync(
+            content, contentType!.ToLowerInvariant(), $"reports/{report.Id}", cancellationToken);
+
+        // Nothing is written on failure: the report keeps whatever photo it had, or none.
+        if (url is null)
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.StorageUnavailable);
+        }
+
+        // A second upload replaces the URL. The earlier object stays in the bucket, orphaned
+        // but harmless — deleting it is not worth a second storage call that can fail too.
+        report.PhotoUrl = url;
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return new AttachPhotoResult(AttachPhotoOutcome.Success, url);
     }
 
     /// <summary>

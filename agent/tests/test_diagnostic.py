@@ -295,9 +295,15 @@ def test_diagnostic_declares_exactly_the_three_asset_tools():
     )
 
 
-def test_diagnostic_has_none_of_the_clarifiers_tools():
-    """A subset of its own, not a superset of the clarifier's."""
-    assert set(DiagnosticAgent.ALLOWED_TOOLS).isdisjoint(ClarifierAgent.ALLOWED_TOOLS)
+def test_diagnostic_has_a_subset_of_its_own():
+    """
+    Not a superset of the clarifier's. The two share get_asset — the clarifier needs to
+    know what equipment it is asking about — but the location lookups are the clarifier's
+    alone and the history tools are the diagnostic's alone.
+    """
+    assert set(DiagnosticAgent.ALLOWED_TOOLS) != set(ClarifierAgent.ALLOWED_TOOLS)
+    assert "get_room" not in DiagnosticAgent.ALLOWED_TOOLS
+    assert "get_asset_service_history" not in ClarifierAgent.ALLOWED_TOOLS
 
 
 async def test_a_clarifier_tool_is_refused_without_leaving_the_process(settings):

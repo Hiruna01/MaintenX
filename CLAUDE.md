@@ -617,14 +617,41 @@ agent/config.py        settings read from the environment
 - The `messages` list inside `llm_client.py` is the retry within a *single* call — a local
   variable, discarded when the function returns. Nothing survives across `/run` calls.
 
+### `ClarifierAgent` — ask only what changes the outcome
+
+`ALLOWED_TOOLS` is `("get_room", "get_asset")`: where the fault is and what the equipment
+is, so it never asks either. **Not `get_asset_service_history`** — reading repair history is
+the diagnostic's job, and a clarifier that could see it would start diagnosing. `building_id`
+is on `RunRequest` but is not looked up.
+
+- The prompt asks only what would change what a technician does — **dead or intermittent,
+  safe to leave**, the failure pattern, what the reporter can see — and never anything the
+  report, the room record or the asset record already answers. **Zero questions is a
+  correct and common answer** for a detailed report.
+- The report goes in as **one JSON object between markers**, like the diagnostic's, not
+  spliced raw. The two-question ceiling is the schema's, not the model's: a reply of ten
+  questions is a safe failure, never a long form.
+- Until `AgentRunRequest` sends `asset_id` (see the note under AGENT WORKFLOWS), the
+  clarifier only ever has the room.
+- Behaviour is in `evals/test_clarifier_live.py` — zero questions for a detailed report, one
+  or two for a vague one, no location question when the asset is named, an injection asking
+  for ten questions ignored.
+- **Last verified 2026-09-23: 4/4 on `google/gemini-3.8-flash`**, across two runs — the
+  first passed two and was cut off by an out-of-credit 402 on the other two, which then
+  passed on a rerun. A 402 is a billing failure, not a result; do not count it either way.
+  **Changing `LLM_MODEL` or either clarifier prompt voids this line**: re-run the evals and
+  update it.
+
 ### `DiagnosticAgent` — facts in, advice out
 
 `START -> clarify -> diagnose -> END`. Proposes one to three causes for a fault from the
 asset's own service history, each with a confidence and the evidence behind it, and one
 `recommended_next_action` (`inspect` / `repair` / `replace` / `monitor`).
 
-- **Its tool subset is the three asset tools and none of the clarifier's** — pinned by a
-  test that asserts the two sets are disjoint.
+- **Its tool subset is the three asset tools.** It shares `get_asset` with the clarifier
+  and nothing else — `get_room` is the clarifier's alone, the two history tools are the
+  diagnostic's alone. Pinned by tests that the subsets differ and that the clarifier has
+  no history tool.
 - **`DiagnosticInput` is a projection of `RunRequest`, not `RunRequest` itself.** The
   prompt is rendered from it, so a field added to `RunRequest` for some other agent does
   not silently reach this one's prompt — the data equivalent of `ALLOWED_TOOLS`.

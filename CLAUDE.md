@@ -309,12 +309,25 @@ expects four 404s.
   record instead.
 - `ToolCallRequest` still carries exactly one `Id`. What it *means* is the tool's
   business: a room for `get_room`, an **asset** for both of the new list tools.
+- **On the Python side, `ToolCallOutcome.result` is `dict | list | None`.** It was
+  `dict`-only when the list tools landed, so the first agent to call one would have made
+  `ToolClient.call` raise — breaking its promise never to — and nothing noticed, because
+  nothing called them yet. A new tool that returns a new shape needs that type checked.
 
 **`DiagnosticAgent` declares the three asset tools; the C# side has not caught up.**
 `AgentRunRequest` does not send `asset_id` yet, so the diagnostic has no asset to look up
 and runs on the report text alone — and `AgentRunResponse` ignores the new `diagnosis`
 field, so the runner does not persist it. Until both land, a diagnosis is computed and
-discarded. See DIAGNOSTIC AGENT below.
+discarded. See `DiagnosticAgent` under AGENT SERVICE below.
+
+**The resume path needs a routing decision before it can be wired.** Submitting answers
+moves the workflow to `Diagnosing` and re-queues it (see `POST /api/reports/{id}/clarifications`
+below), but `/run` always runs `clarify` first — and the clarifier does not read
+`clarification_answers`, so a resumed run would ask the questions just answered and put
+the report back into `AwaitingClarification`. A loop. The fix is a conditional edge from
+`START` in `graph.py` — go straight to `diagnose` when `request.clarification_answers` is
+non-empty — which is exactly the kind of routing the file allows: plain Python reading the
+state, never a judgement made by a model. It has to land with, or before, the C# resume.
 
 ---
 
@@ -556,9 +569,12 @@ agent/config.py        settings read from the environment
   side of the network from anything a model can influence.
 - **`graph.py` stays thin and group-owned.** It says which agents exist and in what order.
   No agent logic, prompt names, tool names or parsing. Adding an agent is a new file in
-  `agents/` plus one node and one edge here. Routing decisions go in
-  `add_conditional_edges` as plain Python reading the state — never a judgement made by a
-  model. Compile **without a checkpointer**: nothing persists between runs.
+  `agents/` plus, here: one node, the `END` edge moved onto it, one `GraphState` key for
+  its output, and the agent as a `build_graph` parameter. `main.py` constructs the agent
+  and attaches its result to the response — assembly is the HTTP layer's job, which keeps
+  every node a one-liner. Routing decisions go in `add_conditional_edges` as plain Python
+  reading the state — never a judgement made by a model. Compile **without a
+  checkpointer**: nothing persists between runs.
 
 ### The LLM contract — `llm_client.py`
 
@@ -582,8 +598,9 @@ agent/config.py        settings read from the environment
 - An agent runs **one round** per report: no conversation history parameter, no follow-up
   turn, no free-text `message` field in its output. This is the single constraint most likely
   to erode, so it is pinned by tests, not left to code review — `ClarifierOutput.model_fields`
-  is asserted to be exactly `{"questions"}`, and input DTOs use `extra="forbid"` so a stray
-  `conversation_history` is a 422.
+  is asserted to be exactly `{"questions"}`, `DiagnosticOutput.model_fields` exactly its
+  four fields, and input DTOs (`RunRequest`, `DiagnosticInput`) use `extra="forbid"` so a
+  stray `conversation_history` is a 422.
 - The `messages` list inside `llm_client.py` is the retry within a *single* call — a local
   variable, discarded when the function returns. Nothing survives across `/run` calls.
 
@@ -647,6 +664,12 @@ flakiness to retry away.
   *correct* answer there and the eval could not tell obeying from reasoning.
 - `tools.SEEDED_PROJECTOR_RESULTS` is a verbatim copy of that asset's seed rows, used by
   `STUB_MODE`, the golden test and the golden eval. **If the seed changes, change it too.**
+- **Last verified 2026-09-23: 3/3 on `google/gemini-3.8-flash`, run twice.** The golden
+  case named "overheating and thermal shutdown due to a failing cooling fan" at `high`,
+  citing all three dated visits, and chose `replace` — which the history supports, and
+  which is why the injection eval cannot use this asset. **Changing `LLM_MODEL` or either
+  diagnostic prompt voids this line**: re-run the evals and update it. Nothing else will
+  tell you the prompt has stopped working.
 
 ### Testing the agent service
 
@@ -755,9 +778,10 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
   never a blank screen, never a silent redirect.
 - **Access token only, no refresh**, the same scope decision as the API: exactly one value to
   store, nothing to rotate.
-- **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js` and
-  `WORKFLOW_STATES` in the workflows service hold the same strings the API sends and accepts,
-  so a member inserted into a C# enum cannot silently shift the client's meaning.
+- **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js`,
+  `WORKFLOW_STATES` in the workflows service and `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
+  `assetsApi.js` hold the same strings the API sends and accepts, so a member inserted into a
+  C# enum cannot silently shift the client's meaning.
 - **Navigation is role-based**: a Reporter must not see manager links. The route guard would
   refuse them anyway, but offering a link that leads to "not authorised" is a bad interface.
 
@@ -767,10 +791,64 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
 navigation, `ProtectedRoute` for the guards, and a catch-all `*` route. `ProtectedRoute`
 remembers where the user was heading and sends them back there after sign-in.
 
+### The asset registry — `features/assets/`
+
+`/assets` and `/assets/:id` are open to every signed-in role; `/assets/new` and
+`/assets/:id/edit` sit behind `ADMIN_ROLES`, the same read-for-everyone, write-for-Admin split
+as `AssetsController`. `ADMIN_ROLES` is `[Admin]` and nothing else — it mirrors the API's
+per-action Admin policy, which has no "or anyone more senior" fallback, so a
+`FacilitiesManager` is refused here too. The Register and Edit buttons are not rendered for
+anyone else.
+
+- **The search is server-side**, unlike the workflows list: `GET /api/assets` takes `search`,
+  so the debounced value goes into the query string and matches name **or** tag across every
+  page, not just the one fetched.
+- **Only Name and Installed are sortable, and only ascending.** Those are the two members of
+  `AssetSort` and the API takes no direction. Do not make the other columns clickable by
+  sorting the fetched page in the browser: it would reorder page 1 on its own while page 2
+  came back in a different order, and look like a server sort while not being one. A new sort
+  is a new `AssetSort` member first.
+- The list DTO carries `assetCategoryId` and `roomId`, not names. The names come from
+  `useAssetLookups`, which fetches `GET /api/assetcategories` and `GET /api/rooms` whole —
+  both are short and unpaginated — and the same lists feed the filter and form pickers.
+- **The warranty badge reads `isUnderWarranty` from the failure summary; it never compares
+  `warrantyExpiresOn` with today.** Warranty dates are a deterministic business rule, so the
+  rule lives in C# and the client only colours the answer — green under warranty, grey
+  otherwise. A null expiry reads "No warranty recorded" rather than "expired": the same grey,
+  a different fact. **The failure-summary panel likewise displays every figure and recomputes
+  none** — a second copy of a rule in JavaScript is a second answer waiting to disagree.
+- The detail page makes **two requests with their own states**: the asset is the page, and a
+  failed summary is an error in its panel while the history — the evidence the summary was
+  computed from — still renders.
+- **The service history is rendered in the order the API sends it, oldest first, and every
+  technician note verbatim**: no truncation, no "read more", no tidying, `white-space:
+  pre-wrap`. The fault the history is evidence of is spread across several terse notes, and a
+  note cut to its first line can drop exactly the clause that matters. Same reason the seed
+  notes are left untidy.
+- **Never `new Date("2026-07-03")` on a `DateOnly`.** It parses as UTC midnight and renders as
+  the previous day anywhere west of Greenwich — the exact bug the API made these `DateOnly`
+  to avoid. Use `formatDateOnly` in `assetsApi.js`, which reads the parts and builds a local
+  date.
+- **The edit form shows the tag locked and does not send it** — `UpdateAssetDto` has no field
+  for it. The create form has no status field — a new asset is `Active`. A 409 from create is
+  always a tag already in use, so it is shown under the tag field, not as a page error.
+- `validate()` and the empty form values live in `services/assetValidation.js`, not in
+  `AssetForm.jsx`: oxlint's `only-export-components` rule wants a component file to export
+  only components. Its limits mirror the DataAnnotations on the input DTOs.
+- The create form's **"Use the category default"** button fills `warrantyExpiresOn` from
+  `DefaultWarrantyMonths` — a data-entry convenience and nothing more. The Admin sees the date
+  and can change it; the stored date is what every warranty decision reads.
+- There is **no Retire button**. Retiring is choosing `Retired` in the edit form's status
+  picker; `DELETE /api/assets/{id}` does the same thing and is not called by the client yet.
+
 ### Styling and configuration
 
 - **Plain CSS or CSS modules. No Tailwind, no component library.** Presentation is not what
   this project is marked on, and it costs time the team does not have.
+- **Colours, radii and shadows are tokens on `:root` in `index.css`** — `--success`,
+  `--warn`, `--neutral`, `--info` and their `-bg` / `-border` pairs back every status,
+  outcome and warranty pill. A new pill picks from them rather than introducing a literal, and
+  its modifier class is the enum NAME (`asset-status--UnderMaintenance`), never an ordinal.
 - Only `VITE_`-prefixed keys reach the browser, so **nothing secret belongs in `web/.env`**.
   New keys go in `web/.env.example` with an empty value and a one-line comment, same rule as
   the root file. `VITE_API_BASE_URL` points at the ASP.NET Core API — the client talks to

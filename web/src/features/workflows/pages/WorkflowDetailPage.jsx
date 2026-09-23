@@ -58,7 +58,13 @@ export function WorkflowDetailPage() {
             </div>
             <div className="detail__row">
               <dt>Report</dt>
-              <dd>{data.reportId ?? 'Started without a report'}</dd>
+              <dd>
+                {data.reportId ? (
+                  <Link to={`/reports/${data.reportId}`}>Report #{data.reportId}</Link>
+                ) : (
+                  'Started without a report'
+                )}
+              </dd>
             </div>
             <div className="detail__row">
               <dt>Started</dt>

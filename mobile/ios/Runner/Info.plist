@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Required by mobile_scanner: iOS terminates an app that opens the camera without it. -->
+	<key>NSCameraUsageDescription</key>
+	<string>MaintenX uses the camera to read the QR sticker on a piece of equipment.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

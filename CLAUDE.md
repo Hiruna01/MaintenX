@@ -433,7 +433,8 @@ separate DI scope; the note is in `AppDbContext` next to the index as well.
 (`Draft` / `AwaitingApproval` / `Approved` / `Rejected` / `Scheduled` / `InProgress` /
 `Completed` / `Cancelled`) and `WorkOrderStrategy` (`KnownFix` / `SingleJob` /
 `ConsolidatedJob` / `InspectFirst` / `Defer` / `EscalateReplacement`) persisted as strings
-like every other enum. There is no controller yet.
+like every other enum. `IWorkOrderService` / `WorkOrderService`, `AddScoped`, behind
+`WorkOrdersController` — see "The endpoints" below.
 
 - **Money is `decimal`, and its precision is stated rather than inherited.**
   `EstimatedCost` and `ActualCost` are `numeric(18,2)`. Left undeclared, EF maps `decimal`
@@ -472,10 +473,61 @@ like every other enum. There is no controller yet.
   currency or a faculty, and it has to be variable between a demo database and a real one.
   The comparison itself stays in C#: an agent may estimate a cost, but whether that estimate
   needs a human is arithmetic, and arithmetic a model performs is unauditable.
-- **A note for whoever writes the service:** SQLite (the default test mode) has no `decimal`
-  type and stores these as `TEXT`, so a threshold comparison or `ORDER BY` translated into
-  SQLite SQL would compare them as strings. Evaluate the approval rule in C# after
-  materialising rows — which is where it belongs anyway.
+- **SQLite (the default test mode) has no `decimal` type** and stores these as `TEXT`, so a
+  threshold comparison or `ORDER BY` translated into SQLite SQL would compare them as
+  strings (EF refuses the `ORDER BY` outright). The approval rule is evaluated in C# before
+  the row is written, and `sort=Cost` materialises the filtered set and sorts it in C# — see
+  below.
+
+### The endpoints — reads scoped by the service, decisions for FacilitiesManager
+
+`[Authorize]` on the controller; `FacilitiesManager` policy on create, assign, approve,
+reject and request-revision; `Technician` policy on complete. An `Admin` is refused the
+manager actions too — same reasoning as `PATCH /api/reports/{id}/status`.
+
+- **Visibility is `SeesEveryWorkOrder` in the service, written to fail closed**: a
+  `FacilitiesManager` and an `Admin` see every order; anyone else sees only orders assigned
+  to them — a Technician's queue, and nothing for a Reporter. Applied before the count and
+  paging, and to `GET {id}` as well, where someone else's order is a **403** told apart from
+  a 404 by `ExistsAsync`. A `technicianId` filter cannot widen it.
+- `GET /api/workorders` pages through `PagedResult<T>`; `status`, `technicianId`, `assetId`
+  are exact filters, `dateFrom`/`dateTo` inclusive calendar dates on `CreatedAt`, `sort` is
+  `CreatedAt` (newest first, default) or `Cost` (highest estimate first), both with an `Id`
+  tiebreak. **The `Cost` sort is in memory, after the filters** — never a cast to double
+  in SQL to make SQLite cooperate. A campus has hundreds of live orders, not millions.
+- **The approval gate is in `CreateAsync`, in C#, before the row is written**: estimate
+  strictly **above** `Approval:CostThreshold`, **or** strategy `EscalateReplacement` →
+  `AwaitingApproval` and the workflow to `AwaitingManagerApproval`; otherwise `Approved` and
+  `WorkOrderRaised`. Exactly on the threshold is not above it. An auto-approved order has no
+  `ApprovedBy` — nobody decided.
+- **`CreateWorkOrderDto.EstimatedCost` and `Strategy` are `[Required]` nullables**, as are
+  `CompleteWorkOrderDto.ActualCost` and `Outcome`. A plain `decimal` binds a missing field
+  as `0` — under any threshold — so leaving the estimate out would auto-approve an order
+  nobody costed. A plain enum binds its first member, which would record a `TemporaryFix`
+  as `Resolved` and erase the repeat-failure pattern.
+- **The workflow moved is the latest one raised for the order's report**, in the same
+  `SaveChanges` as the order. A report with none (the seeded history) still has its order
+  moved; there is just no run to move with it — except request-revision, which is a 409
+  then, because nothing would ever read the note.
+- `approve` / `reject` / `request-revision` are legal only from `AwaitingApproval` (409
+  otherwise). Approve and reject both record `ApprovedBy` / `ApprovedAt` — who decided,
+  whichever way. Reject needs `RejectWorkOrderDto.Reason` (400 if missing or blank) and
+  closes the workflow. **Request-revision puts the order back to `Draft` with the note on
+  `WorkOrder.RevisionNote`**, moves the workflow to `Strategizing` and re-queues it — the
+  runner skips it with a warning today (`BeginProcessingAsync` starts only `Submitted`, and
+  there is no Strategist yet), the same as the clarification resume.
+- `assign` needs an order that has cleared approval and is not finished (`Approved`,
+  `Scheduled`, `InProgress`) and a user whose role is `Technician` (400 otherwise). It does
+  not book a time and does not change the status.
+- **`complete` is one real EF Core transaction**, and it has to be one rather than one
+  `SaveChanges`: the order goes `Completed`, a `ServiceRecord` is **appended** (note
+  verbatim, `WorkOrderId` set, `ServicedOn` the UTC date of `CompletedAt` from the injected
+  `TimeProvider`), the workflow goes `AwaitingVerification`, and then
+  `IVerificationService.CreateForCompletedWorkOrderAsync` raises the check — which reads the
+  order back as `Completed` and saves on its own. Only the assigned technician may call it
+  (403 for anyone else, checked before state). Pinned by a test that makes the verification
+  step fail after the first save and asserts none of it survived — verified to fail with
+  the transaction removed.
 
 ---
 

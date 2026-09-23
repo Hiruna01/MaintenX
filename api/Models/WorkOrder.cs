@@ -125,6 +125,19 @@ public class WorkOrder
     public string? RejectionReason { get; set; }
 
     /// <summary>
+    /// What a manager asked to be changed when they sent the order back for revision rather
+    /// than approving or rejecting it. The Strategist reads it as extra context on its next
+    /// run, and that run is a background job with no request body to read it from, which
+    /// is why it is a column.
+    ///
+    /// Null on an order nobody has asked to revise. A second request overwrites the first:
+    /// the note is an instruction to the next planning run, not an audit trail of every
+    /// round.
+    /// </summary>
+    [MaxLength(1000)]
+    public string? RevisionNote { get; set; }
+
+    /// <summary>
     /// When the work finished. Distinct from <see cref="UpdatedAt"/>, which AppDbContext
     /// stamps on every write — these would stop agreeing the moment a completed order is
     /// touched again for any reason.

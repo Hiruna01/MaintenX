@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using CampusFacilities.Api.Models;
 
 namespace CampusFacilities.Api.Dtos;
 
@@ -14,9 +15,17 @@ namespace CampusFacilities.Api.Dtos;
 /// </summary>
 public record CompleteWorkOrderDto(
     // Same decimal bounding as CreateWorkOrderDto.EstimatedCost, and never through a
-    // double. This is the figure any overspend rule compares against the estimate.
+    // double. This is the figure any overspend rule compares against the estimate — and
+    // nullable with [Required] for the same reason too: a missing cost must be a 400, not a
+    // job recorded as free.
+    [Required]
     [Range(typeof(decimal), "0", "10000000", ParseLimitsInInvariantCulture = true)]
-    decimal ActualCost,
+    decimal? ActualCost,
+
+    // Copied into ServiceRecord.Outcome. Required and nullable so a missing value is a 400
+    // rather than the enum's first member: silently recording a TemporaryFix as Resolved
+    // would erase exactly the repeat-failure pattern the diagnostic agent reads for.
+    [Required] ServiceOutcome? Outcome,
 
     // Copied verbatim into ServiceRecord.TechnicianNote, which the diagnostic agent reads
     // across months of history looking for a repeat failure. The floor is there to refuse

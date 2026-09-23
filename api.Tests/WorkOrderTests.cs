@@ -8,8 +8,8 @@ using Xunit;
 namespace api.Tests;
 
 /// <summary>
-/// Model-level tests for the work order tables. There is no controller or service yet, so
-/// what is pinned here is the shape of the data itself — specifically the two properties
+/// Model-level tests for the work order tables — the endpoints are in
+/// WorkOrderEndpointTests. What is pinned here is the shape of the data itself — the two properties
 /// that are cheap to break later and expensive to notice:
 ///
 ///   * MONEY SURVIVES A ROUND TRIP EXACTLY. EstimatedCost is compared against the approval

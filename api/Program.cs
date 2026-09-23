@@ -268,6 +268,10 @@ builder.Services.AddScoped<IClarificationService, ClarificationService>();
 // Verification — did the repair actually hold?
 builder.Services.AddScoped<IVerificationService, VerificationService>();
 
+// Work orders — the approval gate, assignment and completion. Completion raises the
+// verification check above inside its own transaction.
+builder.Services.AddScoped<IWorkOrderService, WorkOrderService>();
+
 // File storage — report photos today, completion photos next. Scoped like the services
 // above; it takes its HttpClient from the factory per upload, so the handler is pooled
 // rather than a new HttpClient being built for every photo.

@@ -5,10 +5,11 @@ import 'package:go_router/go_router.dart';
 import '../assets/scan_asset_screen.dart';
 import '../auth/auth_controller.dart';
 import '../auth/auth_state.dart';
+import '../reports/my_reports_screen.dart';
 import '../reports/submit_report_screen.dart';
 
-/// Placeholder. Real content (my reports, assigned work orders) arrives with those
-/// features; what it proves today is that the guard, the session and the routing work.
+/// The landing screen: a card per thing the app can do. Assigned work orders arrive with
+/// that feature.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -53,17 +54,22 @@ class HomeScreen extends ConsumerWidget {
             const SizedBox(height: 8),
             Card(
               child: ListTile(
+                leading: const Icon(Icons.list_alt_outlined),
+                title: const Text('My reports'),
+                subtitle: const Text('See where your reports have got to, and answer questions.'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.go(MyReportsScreen.path),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
                 leading: const Icon(Icons.qr_code_scanner),
                 title: const Text('Scan an asset'),
                 subtitle: const Text("Read a machine's QR sticker to see its history."),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => context.go(ScanAssetScreen.path),
               ),
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'Nothing else here yet — this screen is a placeholder.',
-              textAlign: TextAlign.center,
             ),
           ],
         ),

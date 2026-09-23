@@ -22,7 +22,13 @@ dependencies:
   flutter_secure_storage: ^9.2.2
 
   http: ^1.2.2
+  # MediaType for a multipart part's Content-Type. Already a dependency of `http`; listed
+  # because the photo upload imports it directly.
+  http_parser: ^4.1.2
   mobile_scanner: ^7.4.2
+
+  # A report's photo, from the camera or the gallery.
+  image_picker: ^1.2.3
 
 dev_dependencies:
   flutter_test:

@@ -871,9 +871,10 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
 - **Access token only, no refresh**, the same scope decision as the API: exactly one value to
   store, nothing to rotate.
 - **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js`,
-  `WORKFLOW_STATES` in the workflows service and `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
-  `assetsApi.js` hold the same strings the API sends and accepts, so a member inserted into a
-  C# enum cannot silently shift the client's meaning.
+  `WORKFLOW_STATES` in the workflows service, `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
+  `assetsApi.js` and `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js`
+  hold the same strings the API sends and accepts, so a member inserted into a C# enum cannot
+  silently shift the client's meaning.
 - **Navigation is role-based**: a Reporter must not see manager links. The route guard would
   refuse them anyway, but offering a link that leads to "not authorised" is a bad interface.
 
@@ -933,6 +934,72 @@ anyone else.
 - There is **no Retire button**. Retiring is choosing `Retired` in the edit form's status
   picker; `DELETE /api/assets/{id}` does the same thing and is not called by the client yet.
 
+### Reports — `features/reports/`
+
+`/reports` is the managers' intake queue, behind `MANAGER_ROLES` and in the nav for them
+only. `/reports/:id` is open to **every signed-in role**, like `GET /api/reports/{id}`: which
+reports a caller may read is decided in `ReportService` from the token, and a Reporter
+opening someone else's gets the API's 403 rendered as "Not your report", distinct from a
+404. **The client keeps no second copy of the visibility rule.**
+
+- **The search is server-side** (`search` matches the description), debounced, alongside
+  `status` by NAME and a `dateFrom` / `dateTo` range. The dates go to the API as the
+  `YYYY-MM-DD` an `<input type="date">` produces — never through `new Date()` — and the hint
+  says they are **UTC days, both ends inclusive**, because that is how `ReportService`
+  compares them against `CreatedAt`. From-after-To is flagged under the filters.
+- **Only Status and Reported are sortable** — the two members of `ReportSort`, with no
+  direction. Status groups alphabetically by the stored name, not by lifecycle position; the
+  header's title says so. Same rule as the asset table: no browser-side sorting of a page.
+- The list shows `unansweredQuestionCount` as "N unanswered" — a count the API computed, not
+  the questions. The description is clamped to two lines in the list only; the detail page
+  shows it verbatim with `pre-wrap`.
+- The detail page shows the report, its photo (a URL that does not load says so and offers
+  the link, never a broken-image icon), the clarification questions with their answers —
+  **read-only**; answering is the reporter's job, from the phone — and the agent reasoning.
+- **An empty question list says which of three things it means**: not clarified yet, the
+  clarifier's last run failed, or it ran and needed nothing (`latestAgentRunState`). "No
+  questions" after a failed run would read as a clean report when nothing was ever asked.
+- **Refresh remounts the detail with a new `key`** — a fresh mount is a fresh `useFetch`.
+  There is no refetch in the shared hook and none is needed; this is how a manager watches a
+  background run progress.
+
+#### The agent reasoning panel — the execution summary an evaluator reads hardest
+
+Every `AgentStep` for the report, **in the order the API sends it** (oldest first), split
+where the `WorkflowId` changes and numbered across the whole trail. Each row is readable
+first: agent name, agent run vs tool call, the tool name, a plain outcome pill, the duration
+in ms, and **one sentence saying what happened** ("Called get_room for id 3 — found MAB101 ·
+Lecture Hall A."). A failed step shows its `ErrorMessage` as a **Reason** in the row, not
+behind a toggle. The stored `ValidationResult`, `ToolCallsJson` and `PayloadJson` are behind
+**"Show raw"**, verbatim — the audit trail is never the first thing a reader has to parse,
+and never hidden either.
+
+- **All step interpretation lives in `services/agentSteps.js`**, pure functions, so the
+  components stay presentational. Two shapes arrive: the runner's one agent-run row
+  (`ToolCallsJson` `"[]"`, `PayloadJson` the agent's output verbatim, snake_case) and
+  `InternalToolsController`'s tool rows (`PayloadJson` `{ Tool, Found, Result }`,
+  **PascalCase** — `System.Text.Json` default options). `field()` reads either casing.
+- **`VALIDATION_RESULTS` lists the exact strings the API writes** — `Ok`, `NotFound`,
+  `RejectedUnknownTool` (tool router), `Ok`, `SafeFailure`, `CallFailed` (runner). They are
+  strings on the row, not a C# enum, so a new one added in C# must be added here or it
+  renders as its raw tag in a neutral pill.
+- **`NotFound` is grey and is NOT counted as a failure.** A tool that found nothing answered
+  the question it was asked — null and empty are different answers, and painting that red
+  would say the system broke when it did its job. `RejectedUnknownTool`, `SafeFailure` and
+  `CallFailed` are the failures.
+- The step counts in the panel header are tallies of the rows for orientation, not a rule
+  anything acts on. **Durations are not summed**: an agent run's time already includes the
+  tool calls it made.
+- The clarifier's questions appear twice on the page on purpose — as rows in Clarification
+  (the working copy) and verbatim inside the agent-run step (the audit copy), with
+  `answer_type` shown as the agent wrote it. Same split as CLARIFICATION above.
+- **The diagnosis is not rendered**, because the runner does not persist it yet (see AGENT
+  WORKFLOWS). A diagnostic step would still appear, with a generic summary and its raw
+  payload. Add a proper rendering when `AgentRunResponse` reads `diagnosis` — not before;
+  same rule as `PlanJson`.
+- There is **no status control** on the detail page yet: `PATCH /api/reports/{id}/status`
+  exists and nothing on the client calls it.
+
 ### Styling and configuration
 
 - **Plain CSS or CSS modules. No Tailwind, no component library.** Presentation is not what
@@ -940,7 +1007,11 @@ anyone else.
 - **Colours, radii and shadows are tokens on `:root` in `index.css`** — `--success`,
   `--warn`, `--neutral`, `--info` and their `-bg` / `-border` pairs back every status,
   outcome and warranty pill. A new pill picks from them rather than introducing a literal, and
-  its modifier class is the enum NAME (`asset-status--UnderMaintenance`), never an ordinal.
+  its modifier class is the enum NAME (`asset-status--UnderMaintenance`,
+  `report-status--AwaitingClarification`), never an ordinal. The one exception is
+  `step-outcome--ok|neutral|failed`, keyed by tone because `ValidationResult` is not an enum.
+- The reports list and filters **reuse the asset catalogue's `.asset-table` /
+  `.asset-filters` classes** rather than copying them, so the two lists stay one design.
 - Only `VITE_`-prefixed keys reach the browser, so **nothing secret belongs in `web/.env`**.
   New keys go in `web/.env.example` with an empty value and a one-line comment, same rule as
   the root file. `VITE_API_BASE_URL` points at the ASP.NET Core API — the client talks to
@@ -953,7 +1024,7 @@ anyone else.
 
 Flutter + Riverpod + go_router. Targets **Android and iOS**; the platform folders are
 generated with `flutter create` and otherwise left alone — the one exception is the iOS
-camera usage string, see QR scanning below. Run everything from `mobile/`:
+usage strings, see QR scanning and Reports below. Run everything from `mobile/`:
 `flutter analyze`, `flutter test`, `flutter run`.
 
 - **`android/` and `ios/` are the only platform folders that belong in the repo.** A
@@ -968,7 +1039,8 @@ camera usage string, see QR scanning below. Run everything from `mobile/`:
 ```
 mobile/lib/core/       env, api_client, token_storage, infrastructure providers
 mobile/lib/router/     go_router with the redirect guard
-mobile/lib/widgets/    LoadingView, EmptyView, ErrorView, AppFormField, AppDropdownField
+mobile/lib/widgets/    LoadingView, EmptyView, ErrorView, AppFormField, AppDropdownField,
+                       StatusPill (the five web pill tones, shared by every chip)
 mobile/lib/features/<name>/   screens, that feature's API class and its providers
 ```
 
@@ -1059,9 +1131,11 @@ assets is the web client's Admin job.
   `maxLines`, no ellipsis, `SelectableText` so it can be copied into a report.
 - `formatDateOnly` in `asset.dart` reads a `DateOnly` string by its parts; do not route one
   through `DateTime` and a timezone.
-- **`ios/Runner/Info.plist` carries `NSCameraUsageDescription`** — the one hand edit to a
-  platform folder, and a required one: iOS terminates an app that opens the camera without
-  it. Android needs nothing; the plugin's manifest merges the `CAMERA` permission in.
+- **`ios/Runner/Info.plist` carries `NSCameraUsageDescription` and
+  `NSPhotoLibraryUsageDescription`** — the only hand edits to a platform folder, and
+  required ones: iOS terminates an app that opens the camera or the photo library without
+  the matching string. The camera one covers both the scanner and the report photo.
+  Android needs nothing; the plugins' manifests merge in what they need.
 - `test/assets_test.dart` drives the real scan screen with the plugin's method channel
   mocked as **permission denied**, and uses the typed-tag path for the unknown-tag and
   no-network states — a test has no camera, and those are the states a demo hits.
@@ -1071,6 +1145,47 @@ generated by `docs/qr/generate_asset_qr_sheet.py`. The tags in that script are a
 `DbSeeder` — **if the seed changes, change the script and regenerate**, or the demo scans
 "No asset registered" in front of the examiner. Print at 100%, not "fit to page". Any other
 QR code (a poster's URL) demonstrates the unknown-tag path.
+
+### Reports — `features/reports/`
+
+`/report` files one, `/reports` lists them (`MyReportsScreen`), and
+`/reports/:id/clarifications` answers the agent's questions (`ClarificationScreen`).
+
+**`ClarificationScreen` is a FORM, never a message thread** — the single easiest way to lose
+marks on this project. Each question is one bounded control chosen by its `AnswerType` NAME:
+`YesNo` a `SegmentedButton` sending `"Yes"` / `"No"`, `SingleSelect` a dropdown of exactly
+the options the API supplied (sent back unchanged — the API matches them ordinally),
+`ShortText` a text field with a 100-character counter. No bubbles, no send button, no
+transcript: the whole form goes in **one POST**, and a report already answered says it is
+done rather than replaying what was said.
+
+- **An unknown answer type gets no text-box fallback.** `isRenderable` fails closed and the
+  screen refuses the whole form: a free-text fallback is exactly how a chat box would get in.
+  Pinned by a test, and by one that the form contains exactly one `TextField`.
+- `validateClarificationAnswers` wants every question answered (the API refuses a partial
+  form) and counts length in UTF-16 code units, the way the API does — the field's counter
+  counts characters as the reader sees them, so 51 emoji pass the counter and fail the API.
+- `MyReportsScreen` searches and filters **server-side** (`search` debounced 350 ms,
+  `status` by NAME), pages with the API's `PagedResult`, and leaves the scoping to the API:
+  nothing on the client decides whose reports appear. "Nothing yet" and "nothing matches"
+  are two different empty states, neither an error. Only a report waiting on the reporter
+  is tappable — it opens its form.
+
+**A photo is attached to a report that already exists**, so submitting with one is two
+requests: file the report, then `POST /api/reports/{id}/photo` (`ApiClient.postFile`,
+multipart, 90 s timeout, progress in 64 KB chunks). A failed upload is its own state —
+**"your report has been filed, but the photo was not attached"** with Retry upload and
+Continue without photo — and a retry never files a second report. At 100% the bar goes
+indeterminate ("Saving photo…"): the bytes are out and the API is still storing them.
+
+- `image_picker` scales to 2048 px at quality 85, which keeps a phone photo well inside the
+  API's 5 MB and makes iOS re-encode HEIC as JPEG. `PickedPhoto.fromFile` mirrors the API's
+  type and size limits so a bad photo is refused when picked, not after filing; the API's
+  magic-byte check stays the rule.
+- The multipart file name is a fixed `photo.jpg` / `photo.png`: the API never reads it, and
+  the phone's own file name has no reason to leave the phone.
+- `imagePickerProvider` exists so tests can hand the screen a fake picker — a test has no
+  camera and no gallery.
 
 ### `POST /api/reports` — landed
 
@@ -1089,8 +1204,8 @@ The clarifier's questions are now real `ClarificationQuestion` rows as well as a
 back in order, and **`POST /api/reports/{id}/clarifications` now collects the answers** —
 the whole form in ONE request, 204, and the exchange is over: no follow-up round and no
 chat interface. `GET /api/reports/{id}/clarifications` is the read beside it, returning each
-question with its answer once one is given. **The Flutter form is still read-only**; nothing
-on the client posts to this endpoint yet.
+question with its answer once one is given. **`ClarificationScreen` posts to it** — see
+Reports below.
 
 Every check the POST makes is C# in `ClarificationService.SubmitAnswersAsync`, in a fixed
 order — 404 for an unknown report, 403 for anyone but the original reporter, 409 for a
@@ -1191,9 +1306,9 @@ what the agent asks for when it needs more detail and a clear report does not ne
   rewrite the description, room or asset would be an edit wearing a workflow action's name;
   those are the reporter's account of the fault.
 
-Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
-visible rather than hidden, so the finished shape of the form stays obvious. The API side of
-the photo now exists (below); the Flutter button is still disabled.
+QR scanning on the report form is a disabled button marked `TODO(qr)` — visible rather than
+hidden, so the finished shape of the form stays obvious. The photo button is live; see
+Reports below.
 
 #### `POST /api/reports/{id}/photo` — Supabase Storage, only the URL in Postgres
 

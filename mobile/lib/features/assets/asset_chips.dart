@@ -1,61 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../widgets/status_pill.dart';
 import 'asset.dart';
-
-/// The same four tones the web client's pills use, so an asset reads the same colour on
-/// both clients.
-class _Tone {
-  const _Tone(this.foreground, this.background, this.border);
-
-  final Color foreground;
-  final Color background;
-  final Color border;
-
-  static const success = _Tone(Color(0xFF067647), Color(0xFFECFDF3), Color(0xFFABEFC6));
-  static const warn = _Tone(Color(0xFFB54708), Color(0xFFFFFAEB), Color(0xFFFEDF89));
-  static const info = _Tone(Color(0xFF175CD3), Color(0xFFEFF8FF), Color(0xFFB2DDFF));
-  static const neutral = _Tone(Color(0xFF475467), Color(0xFFF2F4F7), Color(0xFFE4E7EC));
-  static const danger = _Tone(Color(0xFFB42318), Color(0xFFFDF1F0), Color(0xFFFECDCA));
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.tone, this.icon});
-
-  final String label;
-  final _Tone tone;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: tone.background,
-        border: Border.all(color: tone.border),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 14, color: tone.foreground),
-            const SizedBox(width: 4),
-          ],
-          Flexible(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: tone.foreground,
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 /// An asset's status, keyed by the `AssetStatus` enum NAME.
 class AssetStatusChip extends StatelessWidget {
@@ -66,11 +12,11 @@ class AssetStatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tone = switch (status) {
-      AssetStatuses.active => _Tone.success,
-      AssetStatuses.underMaintenance => _Tone.warn,
-      _ => _Tone.neutral,
+      AssetStatuses.active => PillTone.success,
+      AssetStatuses.underMaintenance => PillTone.warn,
+      _ => PillTone.neutral,
     };
-    return _Pill(label: AssetStatuses.label(status), tone: tone);
+    return StatusPill(label: AssetStatuses.label(status), tone: tone);
   }
 }
 
@@ -82,18 +28,18 @@ class OutcomeChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return _Pill(label: ServiceOutcomes.label(outcome), tone: _outcomeTone(outcome));
+    return StatusPill(label: ServiceOutcomes.label(outcome), tone: _outcomeTone(outcome));
   }
 }
 
 /// The accent colour of a visit's outcome — also used for the rule beside its note.
 Color outcomeColor(String outcome) => _outcomeTone(outcome).foreground;
 
-_Tone _outcomeTone(String outcome) => switch (outcome) {
-      ServiceOutcomes.resolved => _Tone.success,
-      ServiceOutcomes.temporaryFix => _Tone.warn,
-      ServiceOutcomes.partReplaced => _Tone.info,
-      _ => _Tone.neutral,
+PillTone _outcomeTone(String outcome) => switch (outcome) {
+      ServiceOutcomes.resolved => PillTone.success,
+      ServiceOutcomes.temporaryFix => PillTone.warn,
+      ServiceOutcomes.partReplaced => PillTone.info,
+      _ => PillTone.neutral,
     };
 
 /// Green when under warranty, grey when not.
@@ -120,25 +66,25 @@ class WarrantyChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading) {
-      return const _Pill(label: 'Checking warranty…', tone: _Tone.neutral);
+      return const StatusPill(label: 'Checking warranty…', tone: PillTone.neutral);
     }
     if (isUnderWarranty == null) {
-      return const _Pill(label: 'Warranty status unavailable', tone: _Tone.neutral);
+      return const StatusPill(label: 'Warranty status unavailable', tone: PillTone.neutral);
     }
     if (isUnderWarranty!) {
-      return _Pill(
+      return StatusPill(
         label: 'Under warranty · until ${formatDateOnly(warrantyExpiresOn)}',
-        tone: _Tone.success,
+        tone: PillTone.success,
         icon: Icons.verified_user_outlined,
       );
     }
     // A null expiry is "no warranty recorded" — the same grey as expired, but a different
     // fact, so it says so.
-    return _Pill(
+    return StatusPill(
       label: warrantyExpiresOn == null
           ? 'No warranty recorded'
           : 'Warranty expired · ${formatDateOnly(warrantyExpiresOn)}',
-      tone: _Tone.neutral,
+      tone: PillTone.neutral,
       icon: Icons.shield_outlined,
     );
   }
@@ -150,9 +96,9 @@ class RepeatFailureChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const _Pill(
+    return const StatusPill(
       label: 'Repeat failure',
-      tone: _Tone.danger,
+      tone: PillTone.danger,
       icon: Icons.warning_amber_rounded,
     );
   }

@@ -2,9 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Required by mobile_scanner: iOS terminates an app that opens the camera without it. -->
+	<!-- Required by mobile_scanner and image_picker: iOS terminates an app that opens the
+	     camera, or the photo library, without the matching usage string. -->
 	<key>NSCameraUsageDescription</key>
-	<string>MaintenX uses the camera to read the QR sticker on a piece of equipment.</string>
+	<string>MaintenX uses the camera to read the QR sticker on a piece of equipment, and to photograph a fault you are reporting.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>MaintenX lets you attach a photo of a fault from your library to a report.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

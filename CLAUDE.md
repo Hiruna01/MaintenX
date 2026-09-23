@@ -155,7 +155,12 @@ no token is 401 everywhere, a Reporter's token is 200 on a read and 403 on a wri
 - Every sort carries `ThenBy(Id)`. Without a total order two assets sharing a name — or an
   installation date, which many do, since equipment arrives in batches — can order
   differently between two queries, and a row appears on both page 1 and page 2, or on
-  neither.
+  neither. **Only the PostgreSQL test mode can catch a deleted tiebreak**: SQLite stores a
+  table in rowid (= Id) order whatever order rows arrive in, so ties come back in Id order
+  anyway. `GetAssets_PagingIsATotalOrder_WhenTheSortColumnTies` therefore inserts its tied
+  rows highest-Id-first with explicit Ids, which PostgreSQL keeps in that reverse order —
+  verified to fail there with the tiebreak removed. Editing a row after insert is not
+  enough to reorder it (a HOT update leaves the index pointing at the old position).
 - `GET /api/assets/by-tag/{assetTag}` is the QR path. An unknown tag is a **404**, not an
   error: a sticker from some other system is a miss.
 
@@ -193,7 +198,15 @@ dates are named in PROJECT RULES as deterministic business rules; the diagnostic
   machine nobody has ever touched is not a machine serviced today. Same rule as
   `VerificationCheck.ReporterConfirmed`.
 - A null `WarrantyExpiresOn` reads `isUnderWarranty: false`. "No warranty recorded" is not
-  the same fact as "expired", but it is not cover either.
+  the same fact as "expired", but it is not cover either. **A warranty expiring today is
+  still covered** (`>= today`) — it runs to the end of the day it expires on.
+- **"Today" comes from an injected `TimeProvider`** (`TimeProvider.System`, registered in
+  `Program.cs`), never `DateTime.UtcNow` inside the service. `FailureSummaryTests` pins the
+  clock to 31 May 2026 through `FixedClockApiFactory`, so the boundary cases — exactly 2 vs
+  3 visits, day 90 vs 91, a warranty expiring yesterday / today / tomorrow — cannot flip on
+  a run that straddles midnight UTC. 31 May is deliberate: `AddMonths(-3)` from it is 92
+  days, so the 1 March visit tells the 90-day rule from the calendar-month one. A new
+  date-dependent rule should take `TimeProvider` the same way.
 
 Categories have **no DELETE**: the foreign key from `Asset` is `Restrict`, so removing one
 anything is filed under fails at the database, and a category with nothing under it is not

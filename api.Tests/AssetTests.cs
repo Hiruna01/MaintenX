@@ -491,6 +491,248 @@ public class AssetTests : IClassFixture<ApiFactory>
             (await admin.GetAsync("/api/assetcategories/999999")).StatusCode);
     }
 
+    // -----------------------------------------------------------------------
+    // Edges — where paging, auth and the unique tag actually go wrong
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Three machines with one name and one installation date — equipment arrives in
+    /// batches. Neither sort column can order them, so the Id tiebreak is the only thing
+    /// deciding which one is on which page. Without it a row can land on two pages or none.
+    ///
+    /// A missing tiebreak is only a bug where the database's own order for tied rows
+    /// differs from Id order, so the test builds exactly that: the rows are inserted
+    /// HIGHEST Id first. On PostgreSQL the heap, and the RoomId index's entries for equal
+    /// keys, then hold them in descending Id order, and without ThenBy(Id) that is the order
+    /// they come back in. Checked on PostgreSQL: with both tiebreaks deleted from
+    /// AssetService, both cases fail; with them in place, both pass.
+    /// (Editing a row after insert was tried first and was not enough —
+    /// most likely because PostgreSQL makes it a HOT update, which leaves the index pointing
+    /// at the row's original position.)
+    ///
+    /// On SQLite the Id IS the rowid, and a table is always stored in rowid order whatever
+    /// order the rows arrived in, so there a deleted tiebreak is not a bug the database can
+    /// show and this test passes. It still catches a wrong tiebreak there.
+    /// </summary>
+    [Theory]
+    [InlineData("Name")]
+    [InlineData("InstalledOn")]
+    public async Task GetAssets_PagingIsATotalOrder_WhenTheSortColumnTies(string sort)
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+        var roomId = await CreateRoomAsync();
+        var categoryId = await CreateCategoryAsync(admin);
+
+        // Explicit Ids, far above anything the identity sequence hands out in a test run
+        // and clear of the 999999 other tests use for "does not exist".
+        var baseId = Random.Shared.Next(100_000, 900_000);
+        var ids = new[] { baseId + 1, baseId + 2, baseId + 3 };
+
+        // Highest Id first, one SaveChanges each, so the storage order is the reverse of
+        // the Id order and nothing can batch or reorder the inserts.
+        foreach (var id in ids.Reverse())
+        {
+            using var scope = _factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Assets.Add(new Asset
+            {
+                Id = id,
+                AssetTag = $"TIE-{UniqueCode()}",
+                Name = "Batch projector",
+                AssetCategoryId = categoryId,
+                RoomId = roomId,
+                InstalledOn = new DateOnly(2023, 1, 10),
+                Status = AssetStatus.Active
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // One page holding all three: the tied rows must already be in Id order.
+        var whole = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&sort={sort}&pageSize=3", JsonOptions);
+        Assert.Equal(ids, whole!.Items.Select(a => a.Id));
+
+        // One per page: every asset exactly once, in Id order, across three requests.
+        var seen = new List<int>();
+        for (var page = 1; page <= 3; page++)
+        {
+            var result = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+                $"/api/assets?roomId={roomId}&sort={sort}&page={page}&pageSize=1", JsonOptions);
+
+            Assert.Equal(3, result!.TotalCount);
+            Assert.Equal(3, result.TotalPages);
+            seen.Add(Assert.Single(result.Items).Id);
+        }
+
+        Assert.Equal(ids, seen);
+
+        // A page past the end is an empty page with honest counters, not an error.
+        var beyond = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&sort={sort}&page=4&pageSize=1", JsonOptions);
+        Assert.Empty(beyond!.Items);
+        Assert.Equal(3, beyond.TotalCount);
+    }
+
+    [Fact]
+    public async Task GetAssets_LastPageIsPartial_AndPageAndPageSizeAreClampedNotRejected()
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+        var roomId = await CreateRoomAsync();
+        for (var i = 0; i < 3; i++)
+        {
+            await CreateAssetAsync(admin, $"Unit {i}", roomId: roomId);
+        }
+
+        // Three rows at two a page: the second page holds the one left over.
+        var last = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&page=2&pageSize=2", JsonOptions);
+        Assert.Single(last!.Items);
+        Assert.Equal(2, last.TotalPages);
+
+        // Page 0 is page 1; a page size of 0 is 1; a page size of 1000 is the cap of 100.
+        var pageZero = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&page=0&pageSize=2", JsonOptions);
+        Assert.Equal(1, pageZero!.Page);
+        Assert.Equal(2, pageZero.Items.Count);
+
+        var sizeZero = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&pageSize=0", JsonOptions);
+        Assert.Equal(1, sizeZero!.PageSize);
+        Assert.Single(sizeZero.Items);
+
+        var huge = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&pageSize=1000", JsonOptions);
+        Assert.Equal(100, huge!.PageSize);
+    }
+
+    [Fact]
+    public async Task GetAssets_StatusFilter_ExcludesEveryOtherStatus()
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+        var roomId = await CreateRoomAsync();
+        var active = await CreateAssetAsync(admin, "Still here", roomId: roomId);
+        var retired = await CreateAssetAsync(admin, "Gone", roomId: roomId);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/api/assets/{retired.Id}")).StatusCode);
+
+        var onlyRetired = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&status=Retired", JsonOptions);
+        Assert.Equal(retired.Id, Assert.Single(onlyRetired!.Items).Id);
+
+        var onlyActive = await admin.GetFromJsonAsync<PagedResult<AssetDto>>(
+            $"/api/assets?roomId={roomId}&status=Active", JsonOptions);
+        Assert.Equal(active.Id, Assert.Single(onlyActive!.Items).Id);
+    }
+
+    [Theory]
+    [InlineData("status=Broken")]
+    [InlineData("sort=Price")]
+    public async Task GetAssets_AnUnknownEnumName_Is400_NotAFilterThatSilentlyMatchesNothing(string query)
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+
+        var response = await admin.GetAsync($"/api/assets?{query}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateAsset_Anonymous_Is401_EvenWithABodyThatWouldFailValidation()
+    {
+        var anonymous = _factory.CreateClient();
+
+        // A valid body: the only thing wrong is that nobody is signed in.
+        var valid = await anonymous.PostAsJsonAsync(
+            "/api/assets",
+            new CreateAssetDto($"ANON-{UniqueCode()}", "Projector", 1, 1, null, null,
+                new DateOnly(2024, 1, 1), null),
+            JsonOptions);
+        Assert.Equal(HttpStatusCode.Unauthorized, valid.StatusCode);
+
+        // An empty body is still 401, not 400: identity is checked before content, so a
+        // stranger learns nothing about what the endpoint expects.
+        var empty = await anonymous.PostAsJsonAsync("/api/assets", new { }, JsonOptions);
+        Assert.Equal(HttpStatusCode.Unauthorized, empty.StatusCode);
+    }
+
+    /// <summary>
+    /// Every role but Admin is refused — including a FacilitiesManager. The policy names
+    /// Admin, and Role carries no seniority ordering, so there is no "or anyone more senior".
+    /// The body is fully valid, so the 403 cannot be a 400 in disguise, and nothing is written.
+    /// </summary>
+    [Theory]
+    [InlineData(Role.Reporter)]
+    [InlineData(Role.Technician)]
+    [InlineData(Role.FacilitiesManager)]
+    public async Task CreateAsset_EveryRoleButAdmin_Is403_AndWritesNothing(Role role)
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+        var categoryId = await CreateCategoryAsync(admin);
+        var roomId = await CreateRoomAsync();
+        var tag = $"DENY-{UniqueCode()}";
+
+        var client = await CreateAuthenticatedClientAsync(role);
+        var response = await client.PostAsJsonAsync(
+            "/api/assets",
+            new CreateAssetDto(tag, "Projector", categoryId, roomId, null, null,
+                new DateOnly(2024, 1, 1), null),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync($"/api/assets/by-tag/{tag}")).StatusCode);
+    }
+
+    /// <summary>
+    /// The tag is trimmed before it is stored and before it is checked, so " TAG " is the
+    /// same sticker as "TAG". If the check and the insert disagreed about that, the
+    /// pre-check would pass and the unique index would throw out of the driver as a 500.
+    /// </summary>
+    [Fact]
+    public async Task CreateAsset_DuplicateTagWithSurroundingWhitespace_Is409_Not500()
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+        var categoryId = await CreateCategoryAsync(admin);
+        var roomId = await CreateRoomAsync();
+        var tag = $"PAD-{UniqueCode()}";
+
+        await CreateAssetAsync(admin, "Original", tag, categoryId, roomId);
+
+        var padded = await admin.PostAsJsonAsync(
+            "/api/assets",
+            new CreateAssetDto($"  {tag}  ", "Impostor", categoryId, roomId, null, null,
+                new DateOnly(2024, 1, 1), null),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Conflict, padded.StatusCode);
+
+        // A ProblemDetails body the client can show, not an exception page.
+        using var problem = JsonDocument.Parse(await padded.Content.ReadAsStringAsync());
+        Assert.Equal("Asset tag already in use", problem.RootElement.GetProperty("title").GetString());
+
+        // And the original row is untouched.
+        var existing = await admin.GetFromJsonAsync<AssetDetailDto>($"/api/assets/by-tag/{tag}", JsonOptions);
+        Assert.Equal("Original", existing!.Name);
+    }
+
+    [Fact]
+    public async Task GetAssetByTag_IsAnExactMatch_SoHalfAStickerIsA404_NotSomeOtherAsset()
+    {
+        var admin = await CreateAuthenticatedClientAsync(Role.Admin);
+        var tag = $"EXACT-{UniqueCode()}";
+        await CreateAssetAsync(admin, tag: tag);
+
+        // The search box matches substrings; the QR path must not. A partial read of a
+        // damaged sticker has to miss rather than land on the wrong machine.
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await admin.GetAsync($"/api/assets/by-tag/{tag[..^1]}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await admin.GetAsync($"/api/assets/by-tag/{tag}X")).StatusCode);
+
+        // Whitespace around a scan is an artefact of the decode, not a different asset.
+        var padded = await admin.GetAsync($"/api/assets/by-tag/{Uri.EscapeDataString($" {tag} ")}");
+        Assert.Equal(HttpStatusCode.OK, padded.StatusCode);
+    }
+
     /// <summary>
     /// Writes service history straight to the database. There is no endpoint for it — a
     /// ServiceRecord is appended when a work order completes, never posted by a client.

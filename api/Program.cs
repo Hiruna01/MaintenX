@@ -257,7 +257,9 @@ builder.Services.AddScoped<IRoomService, RoomService>();
 // Reports
 builder.Services.AddScoped<IReportService, ReportService>();
 
-// Asset registry
+// Asset registry. The failure summary reads "today" from TimeProvider rather than
+// DateTime.UtcNow, so its date boundaries can be pinned in tests.
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IAssetService, AssetService>();
 
 // Clarification questions and answers

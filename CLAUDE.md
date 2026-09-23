@@ -367,6 +367,11 @@ at a time.
   or a capped short string, and none of those is a message box. **Adding a `FreeText`
   member turns this project into the chatbot it deliberately is not.** It is a viva
   question.
+- **The API holds every answer to its control, not just the clients.** A `SingleSelect`
+  answer must be one of the question's stored options and a `YesNo` answer must be exactly
+  `"Yes"` or `"No"` — both checked ordinally in `ClarificationService`, both a 400. Only
+  `ShortText` is free text, and only up to 100 characters. A bound that only the clients
+  kept would be one `curl` away from a message box.
 - `OptionsJson` is a PostgreSQL **`jsonb`** column, null for every answer type except
   `SingleSelect` — a yes/no question carrying options would render as a control the agent
   never asked for.
@@ -1153,7 +1158,8 @@ QR code (a poster's URL) demonstrates the unknown-tag path.
 
 **`ClarificationScreen` is a FORM, never a message thread** — the single easiest way to lose
 marks on this project. Each question is one bounded control chosen by its `AnswerType` NAME:
-`YesNo` a `SegmentedButton` sending `"Yes"` / `"No"`, `SingleSelect` a dropdown of exactly
+`YesNo` a `SegmentedButton` sending `"Yes"` / `"No"` (the only two strings the API accepts),
+`SingleSelect` a dropdown of exactly
 the options the API supplied (sent back unchanged — the API matches them ordinally),
 `ShortText` a text field with a 100-character counter. No bubbles, no send button, no
 transcript: the whole form goes in **one POST**, and a report already answered says it is
@@ -1214,6 +1220,12 @@ for a question left unanswered and for a `SingleSelect` answer that was never of
 409 for a question already answered. Identity before state, state before content, so a
 stranger learns nothing about what the report is carrying. **None of them may be delegated
 to the agent**: the agent decides what to ask and nothing at all about what comes back.
+
+**A `YesNo` answer is held to the same option check** — a toggle is a picker whose two
+options, exactly `"Yes"` and `"No"` (`ClarificationService.YesNoOptions`), are fixed in C#
+rather than stored per question. Matched ordinally, so `"yes"` and `"Yes "` are refused
+too. Without it, any 100 characters could stand where "Yes" belongs: a message box behind a
+toggle's name. Only `ShortText` is free, and only up to its 100-character cap.
 
 That last check is a real query, not the unique index doing its job — the service has loaded
 each question's answer to look at it, so EF would resolve the one-to-one conflict itself and
@@ -1375,6 +1387,12 @@ lives in user secrets on the API and nowhere else — never in `web/.env`, never
 `--dart-define`. The `anon` key is not a substitute; uploads authenticate with it and fail.
 The API boots without Supabase configured and photo uploads return 503, so a teammate not
 working on photos needs none of it.
+
+## Branches
+
+One branch per feature or fix, cut from an up-to-date `main`, merged back by pull request.
+Prefix it with what it is — `feat/`, `fix/`, `chore/`, `test/` — and name the change, not
+the ticket: `fix/yesno-answer-validation`, not `feat/report-tests`.
 
 ## Issue template
 

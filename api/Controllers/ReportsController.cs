@@ -404,7 +404,8 @@ public class ReportsController : ControllerBase
             case SubmitAnswersOutcome.OptionNotOffered:
                 return AnswersInvalid(
                     $"The answer to question {result.QuestionId} is not one of the options that "
-                    + "question offers. A single-select answer must match one of them exactly.");
+                    + "question offers. A single-select answer must match one of them exactly, "
+                    + "and a yes/no answer must be exactly \"Yes\" or \"No\".");
 
             default:
                 // Unreachable, and deliberately loud rather than a quiet 500: a new outcome

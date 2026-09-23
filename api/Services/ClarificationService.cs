@@ -8,6 +8,13 @@ namespace CampusFacilities.Api.Services;
 
 public class ClarificationService : IClarificationService
 {
+    /// <summary>
+    /// The only two answers a YesNo question takes — exactly the strings both clients send.
+    /// Fixed here rather than stored per question, because the agent never supplies options
+    /// for a yes/no question and a toggle has nothing else to offer.
+    /// </summary>
+    public static readonly IReadOnlyList<string> YesNoOptions = new[] { "Yes", "No" };
+
     private readonly AppDbContext _db;
 
     // The same hand-off ReportService uses. Answering the form is what lets the run carry
@@ -204,18 +211,24 @@ public class ClarificationService : IClarificationService
             }
         }
 
-        // 6. A SingleSelect answer that is not one of the choices that question stored.
+        // 6. A SingleSelect or YesNo answer that is not one of the choices that question
+        //    offers.
         //
         //    This is what makes AnswerType a constraint instead of a suggestion: a picker
         //    whose value is never checked against its own options is a text box wearing a
         //    picker's name, and unbounded text is the thing AnswerType exists to prevent.
+        //    A yes/no toggle is the same picker with its two options fixed here rather than
+        //    stored per question — without this, "Yes" was a convention the clients kept
+        //    and any 100 characters would have been accepted in its place.
         //
         //    Matched exactly, ordinally: the client was handed these strings verbatim by
         //    GetForReportAsync, so it has one to send back unchanged. Anything looser
         //    would be guessing at what the reporter meant, which is not this layer's job.
-        foreach (var question in questions.Where(q => q.AnswerType == AnswerType.SingleSelect))
+        foreach (var question in questions.Where(q => q.AnswerType != AnswerType.ShortText))
         {
-            var options = ParseOptions(question.OptionsJson);
+            var options = question.AnswerType == AnswerType.YesNo
+                ? YesNoOptions
+                : ParseOptions(question.OptionsJson);
             var answerText = submitted[question.Id].AnswerText;
 
             if (options is null || !options.Contains(answerText, StringComparer.Ordinal))

@@ -17,6 +17,7 @@ class AppFormField extends StatelessWidget {
     this.maxLines = 1,
     this.enabled = true,
     this.onChanged,
+    this.maxLength,
   });
 
   final String label;
@@ -29,11 +30,17 @@ class AppFormField extends StatelessWidget {
   final bool enabled;
   final ValueChanged<String>? onChanged;
 
+  /// Shows a "12/100" counter and stops typing at the cap. Validate the length as well:
+  /// the counter counts characters as the reader sees them, while the API counts UTF-16
+  /// code units, so an emoji can pass one and fail the other.
+  final int? maxLength;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: TextField(
+        maxLength: maxLength,
         controller: controller,
         obscureText: obscureText,
         keyboardType: keyboardType,

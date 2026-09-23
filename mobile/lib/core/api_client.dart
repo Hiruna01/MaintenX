@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 import 'token_storage.dart';
 
@@ -30,11 +33,20 @@ class ApiClient {
     required TokenStorage tokenStorage,
     http.Client? httpClient,
     this.timeout = const Duration(seconds: 15),
+    this.uploadTimeout = const Duration(seconds: 90),
   })  : _tokenStorage = tokenStorage,
         _http = httpClient ?? http.Client();
 
   final String baseUrl;
   final Duration timeout;
+
+  /// Longer than [timeout]: a 5 MB photo over a campus mobile connection is legitimately
+  /// slower than a JSON request, and the API then forwards it to storage before answering.
+  final Duration uploadTimeout;
+
+  /// How much of a file is handed to the connection at a time, and so how finely upload
+  /// progress moves.
+  static const int uploadChunkBytes = 64 * 1024;
 
   final TokenStorage _tokenStorage;
   final http.Client _http;
@@ -78,11 +90,66 @@ class ApiClient {
     return _decode(response, hadToken: hadToken);
   }
 
+  /// POST multipart/form-data with ONE file part, reporting progress as it goes.
+  ///
+  /// [onProgress] receives bytes of the file sent so far and the file's total size. It
+  /// counts bytes handed to the connection, which is as close to "sent" as a client can
+  /// see; once it reaches the total the API is still storing the file, so a caller should
+  /// read 100% as "processing", not "done".
+  ///
+  /// [filename] is required by multipart for the part to bind as a file, and the API never
+  /// reads it — the stored object is named server-side.
+  Future<dynamic> postFile(
+    String path, {
+    required String field,
+    required Uint8List bytes,
+    required String contentType,
+    required String filename,
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final hadToken = await _tokenStorage.read() != null;
+
+    final response = await _send(
+      () async {
+        final request = http.MultipartRequest('POST', _uri(path))
+          // No Content-Type here: MultipartRequest writes its own, with the boundary.
+          ..headers.addAll(await _headers(hasBody: false))
+          ..files.add(http.MultipartFile(
+            field,
+            _chunked(bytes, onProgress),
+            bytes.length,
+            filename: filename,
+            contentType: MediaType.parse(contentType),
+          ));
+        return http.Response.fromStream(await _http.send(request));
+      },
+      timeout: uploadTimeout,
+    );
+    return _decode(response, hadToken: hadToken);
+  }
+
+  /// The file as a stream of small chunks, so progress moves as the connection pulls them
+  /// rather than jumping from 0 to 100% on one large write.
+  static Stream<List<int>> _chunked(
+    Uint8List bytes,
+    void Function(int sent, int total)? onProgress,
+  ) async* {
+    onProgress?.call(0, bytes.length);
+    for (var offset = 0; offset < bytes.length; offset += uploadChunkBytes) {
+      final end = math.min(offset + uploadChunkBytes, bytes.length);
+      yield Uint8List.sublistView(bytes, offset, end);
+      onProgress?.call(end, bytes.length);
+    }
+  }
+
   /// Every outbound call carries a timeout, and a socket failure becomes an ApiException
   /// rather than a raw platform exception the UI would have to know about.
-  Future<http.Response> _send(Future<http.Response> Function() request) async {
+  Future<http.Response> _send(
+    Future<http.Response> Function() request, {
+    Duration? timeout,
+  }) async {
     try {
-      return await request().timeout(timeout);
+      return await request().timeout(timeout ?? this.timeout);
     } on TimeoutException {
       throw ApiException(0, 'The API did not respond in time.');
     } catch (_) {

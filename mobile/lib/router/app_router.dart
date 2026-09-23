@@ -8,6 +8,8 @@ import '../features/auth/auth_controller.dart';
 import '../features/auth/auth_state.dart';
 import '../features/auth/login_screen.dart';
 import '../features/home/home_screen.dart';
+import '../features/reports/clarification_screen.dart';
+import '../features/reports/my_reports_screen.dart';
 import '../features/reports/submit_report_screen.dart';
 
 /// Bridges Riverpod to go_router: go_router re-runs its redirect when this notifies, and
@@ -56,6 +58,19 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: SubmitReportScreen.subPath,
             builder: (context, state) => const SubmitReportScreen(),
+          ),
+          GoRoute(
+            path: MyReportsScreen.subPath,
+            builder: (context, state) => const MyReportsScreen(),
+            routes: [
+              GoRoute(
+                path: ClarificationScreen.subPath,
+                // A non-numeric id becomes null and the screen renders an error, not a crash.
+                builder: (context, state) => ClarificationScreen(
+                  reportId: int.tryParse(state.pathParameters['id'] ?? ''),
+                ),
+              ),
+            ],
           ),
           GoRoute(
             path: ScanAssetScreen.subPath,

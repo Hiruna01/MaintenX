@@ -12,6 +12,7 @@ import { MANAGER_ROLES, hasRole } from '../features/auth/services/roles';
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', roles: null },
   { to: '/assets', label: 'Assets', roles: null },
+  { to: '/reports', label: 'Reports', roles: MANAGER_ROLES },
   { to: '/workflows', label: 'Workflows', roles: MANAGER_ROLES },
 ];
 

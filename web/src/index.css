@@ -550,7 +550,9 @@ a {
 .asset-status,
 .outcome,
 .warranty,
-.repeat-flag {
+.repeat-flag,
+.report-status,
+.step-outcome {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -1336,6 +1338,510 @@ a {
   background: var(--surface-2);
 }
 
+/* =====================================================================================
+   REPORTS — intake queue, report detail and the agent reasoning panel
+   The list and filters reuse the asset catalogue's .asset-table / .asset-filters styles.
+   ===================================================================================== */
+
+/* ---------- pills: modifier is the enum NAME / ValidationResult tone, never an ordinal ---------- */
+
+.report-status--Submitted,
+.report-status--Clarified,
+.report-status--Diagnosed {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.step-outcome--neutral {
+  border-color: var(--neutral-border);
+  background: var(--neutral-bg);
+  color: var(--neutral);
+}
+
+.report-status--AwaitingClarification {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.report-status--WorkOrderRaised,
+.step-outcome--ok {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+/* Closed stays the neutral grey: it can mean fixed, a duplicate or nothing at all. */
+
+.step-outcome--failed {
+  border-color: #fecdca;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ---------- list ---------- */
+
+.report-filters input[type='date'] {
+  height: 2.5rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.report-filters input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.report-filters__hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.report-filters__hint--error {
+  color: var(--danger);
+}
+
+.report-table__id {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Clamped to two lines in the worklist only; the detail page shows it in full. */
+.report-table__description {
+  display: -webkit-box;
+  max-width: 34rem;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.report-table__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.report-table__waiting {
+  color: var(--warn);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ---------- detail: hero ---------- */
+
+.report-hero__description {
+  margin: 1rem 0 0;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.report-photo {
+  display: block;
+  width: 15rem;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.report-photo img {
+  display: block;
+  width: 100%;
+  max-height: 15rem;
+  object-fit: cover;
+}
+
+.report-photo--none {
+  display: grid;
+  place-items: center;
+  min-height: 7rem;
+  padding: 1rem;
+  border-style: dashed;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* ---------- detail: sections ---------- */
+
+.report-section {
+  margin-bottom: 2rem;
+}
+
+.report-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.report-section h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.2rem;
+}
+
+.report-section__lead {
+  max-width: 44rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* ---------- detail: clarification (read-only, never a form) ---------- */
+
+.clarifications {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.clarifications__item {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.clarifications__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+}
+
+.clarifications__number {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.clarifications__text {
+  flex: 1 1 16rem;
+  margin: 0;
+  font-weight: 600;
+}
+
+.clarifications__type {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.clarifications__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.clarifications__options li {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.clarifications__options .clarifications__option--chosen {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+  font-weight: 600;
+}
+
+.clarifications__answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  margin: 0.75rem 0 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.clarifications__answer-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.clarifications__answer-text {
+  font-weight: 500;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.clarifications__answer-when {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.clarifications__answer--waiting {
+  color: var(--warn);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+/* ---------- detail: agent reasoning ---------- */
+
+.reasoning__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.reasoning__stats li {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.reasoning__stats strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.reasoning__stats .reasoning__stat--failed,
+.reasoning__stats .reasoning__stat--failed strong {
+  color: var(--danger);
+}
+
+.reasoning__group + .reasoning__group {
+  margin-top: 1.5rem;
+}
+
+.reasoning__workflow {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.reasoning__steps {
+  position: relative;
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The spine joining the numbered markers, so the steps read as one sequence. */
+.reasoning__steps::before {
+  content: '';
+  position: absolute;
+  top: 1rem;
+  bottom: 1rem;
+  left: 0.95rem;
+  width: 2px;
+  background: var(--border-soft);
+}
+
+.agent-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.75rem;
+}
+
+.agent-step__number {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  margin-top: 0.6rem;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-step--failed .agent-step__number {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.agent-step__body {
+  min-width: 0;
+  padding: 0.85rem 1.1rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-step--failed .agent-step__body {
+  border-color: #fecdca;
+}
+
+.agent-step__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.6rem;
+}
+
+.agent-step__agent {
+  text-transform: capitalize;
+}
+
+.agent-step__kind {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agent-step__tool,
+.agent-step__answer-type {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.agent-step__duration {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.agent-step__summary {
+  margin: 0.5rem 0 0;
+}
+
+.agent-step__reason {
+  margin-top: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid #fecdca;
+  border-radius: 8px;
+  background: var(--danger-bg);
+}
+
+.agent-step__reason-label {
+  color: var(--danger);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-step__reason p {
+  margin: 0.2rem 0 0;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-step__questions {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.6rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.agent-step__options {
+  color: var(--muted);
+}
+
+.agent-step__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.agent-step__raw-toggle {
+  padding: 0.2rem 0.5rem;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-step__raw-toggle:hover {
+  background: #eef2ff;
+}
+
+.agent-step__raw-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.agent-step__raw {
+  margin: 0.6rem 0 0;
+}
+
+.agent-step__raw dt {
+  margin-top: 0.5rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.agent-step__raw dd {
+  margin: 0.2rem 0 0;
+}
+
+.agent-step__raw pre {
+  max-height: 20rem;
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
 /* ---------- narrow screens ---------- */
 
 @media (max-width: 640px) {
@@ -1368,6 +1874,14 @@ a {
   }
 
   .timeline__count {
+    margin-left: 0;
+  }
+
+  .report-photo {
+    width: 100%;
+  }
+
+  .agent-step__duration {
     margin-left: 0;
   }
 }

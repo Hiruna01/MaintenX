@@ -7,6 +7,8 @@ import AssetsPage from '../features/assets/pages/AssetsPage';
 import LoginPage from '../features/auth/pages/LoginPage';
 import { ADMIN_ROLES, MANAGER_ROLES } from '../features/auth/services/roles';
 import DashboardPage from '../features/dashboard/pages/DashboardPage';
+import ReportDetailPage from '../features/reports/pages/ReportDetailPage';
+import ReportsPage from '../features/reports/pages/ReportsPage';
 import WorkflowDetailPage from '../features/workflows/pages/WorkflowDetailPage';
 import WorkflowsPage from '../features/workflows/pages/WorkflowsPage';
 import NotFoundPage from './NotFoundPage';
@@ -25,6 +27,9 @@ export function AppRoutes() {
         {/* Reading the registry is every role's business, as it is on the API. */}
         <Route path="/assets" element={<AssetsPage />} />
         <Route path="/assets/:id" element={<AssetDetailPage />} />
+        {/* Open to every role, like GET /api/reports/{id}: the API decides WHICH reports a
+            caller may read, and a Reporter opening someone else's gets its 403 rendered. */}
+        <Route path="/reports/:id" element={<ReportDetailPage />} />
       </Route>
 
       {/* Changing the registry is Admin only. A Reporter is never shown these links, and
@@ -36,6 +41,7 @@ export function AppRoutes() {
 
       {/* Signed in as a manager. A Reporter gets the "not authorised" page, not a blank one. */}
       <Route element={<ProtectedRoute allowedRoles={MANAGER_ROLES} />}>
+        <Route path="/reports" element={<ReportsPage />} />
         <Route path="/workflows" element={<WorkflowsPage />} />
         <Route path="/workflows/:id" element={<WorkflowDetailPage />} />
       </Route>

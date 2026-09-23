@@ -117,7 +117,68 @@ public interface IReportService
     Task<IReadOnlyList<ReportDto>?> GetOpenReportsForAssetAsync(
         int assetId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Uploads a photo of the fault and records its URL on the report.
+    ///
+    /// EVERY CHECK HAPPENS BEFORE ANYTHING IS UPLOADED, in a fixed order: the report exists,
+    /// the caller filed it, then the file itself — type, size, and whether its bytes are
+    /// really the type it claims. Identity before content, as in
+    /// ClarificationService.SubmitAnswersAsync, so a stranger learns nothing from the
+    /// content checks about a report that is not theirs.
+    ///
+    /// THE URL IS WRITTEN ONLY IF THE UPLOAD SUCCEEDED. If storage is unavailable the report
+    /// is left exactly as it was, because a URL pointing at nothing is worse than no photo.
+    ///
+    /// <paramref name="callerId"/> is a parameter for the same reason as CreateAsync's
+    /// reporterId: it comes from the signed token. No file name is taken — see
+    /// IFileStorageService.UploadAsync.
+    /// </summary>
+    Task<AttachPhotoResult> AttachPhotoAsync(
+        int reportId,
+        int callerId,
+        Stream content,
+        string? contentType,
+        long length,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Why an <see cref="IReportService.AttachPhotoAsync"/> call ended as it did. Same shape
+/// and reasoning as <see cref="SubmitAnswersOutcome"/> — a plain enum, not a Result&lt;T&gt;.
+/// </summary>
+public enum AttachPhotoOutcome
+{
+    /// <summary>Uploaded and recorded. A 201 carrying the URL.</summary>
+    Success,
+
+    /// <summary>No report has that id. A 404.</summary>
+    ReportNotFound,
+
+    /// <summary>
+    /// The report exists but the caller did not file it. A 403 — including for a manager
+    /// or an Admin: the photo is part of the reporter's own account of the fault.
+    /// </summary>
+    NotTheReporter,
+
+    /// <summary>The content type is not image/jpeg or image/png. A 400.</summary>
+    UnsupportedContentType,
+
+    /// <summary>Larger than <see cref="ImageUploadRules.MaxBytes"/>. A 400.</summary>
+    TooLarge,
+
+    /// <summary>
+    /// The bytes do not start the way the claimed type always starts, or there are none.
+    /// A 400.
+    /// </summary>
+    ContentDoesNotMatchType,
+
+    /// <summary>Storage was unreachable or refused the upload; nothing was recorded. A 503.</summary>
+    StorageUnavailable
+}
+
+/// <summary><see cref="PhotoUrl"/> is set only on <see cref="AttachPhotoOutcome.Success"/>.</summary>
+public record AttachPhotoResult(AttachPhotoOutcome Outcome, string? PhotoUrl = null);
 
 /// <summary>
 /// Why an <see cref="IReportService.UpdateStatusAsync"/> call ended as it did. A plain enum

@@ -183,6 +183,28 @@ if (verificationSettings.SweepIntervalMinutes <= 0)
 
 builder.Services.AddSingleton(verificationSettings);
 
+// ---------------------------------------------------------------------------
+// Photo storage (Supabase Storage)
+//
+// Falls back to the SUPABASE_* names used by the root .env.example. Like the agent settings,
+// an unset value does not stop the API booting — photo uploads return 503 instead, and a
+// warning below says so once. Locally these go in dotnet user-secrets, never in a file.
+// ---------------------------------------------------------------------------
+var storageSettings = new StorageSettings
+{
+    Url = builder.Configuration["Supabase:Url"]
+        ?? builder.Configuration["SUPABASE_URL"]
+        ?? string.Empty,
+    ServiceKey = builder.Configuration["Supabase:ServiceKey"]
+        ?? builder.Configuration["SUPABASE_SERVICE_KEY"]
+        ?? string.Empty,
+    Bucket = builder.Configuration["Supabase:StorageBucket"]
+        ?? builder.Configuration["SUPABASE_STORAGE_BUCKET"]
+        ?? StorageSettings.DefaultBucket
+};
+
+builder.Services.AddSingleton(storageSettings);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -243,6 +265,17 @@ builder.Services.AddScoped<IClarificationService, ClarificationService>();
 
 // Verification — did the repair actually hold?
 builder.Services.AddScoped<IVerificationService, VerificationService>();
+
+// File storage — report photos today, completion photos next. Scoped like the services
+// above; it takes its HttpClient from the factory per upload, so the handler is pooled
+// rather than a new HttpClient being built for every photo.
+builder.Services.AddHttpClient(SupabaseStorageService.HttpClientName, client =>
+{
+    // A stalled upload must not hold the request open indefinitely. The service turns the
+    // resulting timeout into a 503.
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddScoped<IFileStorageService, SupabaseStorageService>();
 
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -350,6 +383,13 @@ if (string.IsNullOrEmpty(agentSettings.BaseUrl))
     app.Logger.LogWarning(
         "No agent service URL configured (Agent:BaseUrl / AGENT_SERVICE_URL). " +
         "Every workflow the background runner picks up will fail.");
+}
+
+if (!storageSettings.IsConfigured)
+{
+    app.Logger.LogWarning(
+        "No Supabase Storage configured (Supabase:Url and Supabase:ServiceKey / SUPABASE_URL " +
+        "and SUPABASE_SERVICE_KEY). Every photo upload will be refused with 503.");
 }
 
 // First in the pipeline so it wraps everything after it.

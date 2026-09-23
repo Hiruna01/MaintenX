@@ -1052,7 +1052,33 @@ what the agent asks for when it needs more detail and a clear report does not ne
   those are the reporter's account of the fault.
 
 Photo attachment and QR scanning are disabled buttons marked `TODO(photo)` / `TODO(qr)` —
-visible rather than hidden, so the finished shape of the form stays obvious.
+visible rather than hidden, so the finished shape of the form stays obvious. The API side of
+the photo now exists (below); the Flutter button is still disabled.
+
+#### `POST /api/reports/{id}/photo` — Supabase Storage, only the URL in Postgres
+
+multipart/form-data, one file part named `photo`, 201 with `{ photoUrl }` via
+`CreatedAtAction` on the report. Checked in `ReportService.AttachPhotoAsync` before anything
+is uploaded, identity before content: 404 unknown report, 403 anyone but the reporter (a
+manager and an Admin included), then 400 for a type other than `image/jpeg` / `image/png`,
+over 5 MB, or **bytes that do not start with that type's signature** — the content type is a
+header the client wrote, so the magic-byte check is what makes it worth anything. The rules
+live in `ImageUploadRules`, shared by any future photo upload.
+
+- **`IFileStorageService.UploadAsync(stream, contentType, folder)` has no file-name
+  parameter, on purpose.** The object name is a server-generated GUID plus an extension
+  from the validated content type; the uploaded name is never read. A client-chosen name is
+  the classic path-traversal vector, and the surest way never to use it is for there to be
+  nowhere to pass it. Keep the interface generic — completion photos use it as it is.
+- **Storage failure is a 503 and writes nothing.** `UploadAsync` returns null — never throws —
+  for unreachable, timed out, not configured or refused, and the report keeps whatever photo
+  it had. A URL pointing at nothing is worse than no photo.
+- `AddScoped`, with a named `HttpClient` from `IHttpClientFactory` (30s timeout).
+  `Supabase:Url` / `Supabase:ServiceKey` / `Supabase:StorageBucket` (or the `SUPABASE_*`
+  names); unset boots with a warning, like the agent settings. The bucket must be **public** —
+  the stored URL is the object's public URL and the clients load it directly.
+- Tests replace the named client's primary handler (`StorageStubApiFactory`), so the real
+  `SupabaseStorageService` runs and only the network is fake — no test can reach Supabase.
 
 ---
 
@@ -1088,6 +1114,12 @@ initialised on `api/CampusFacilities.Api.csproj` — the `<UserSecretsId>` in th
 not a secret and should stay committed). Configuration is layered, each overriding the
 last: `appsettings.json` < `appsettings.Development.json` < user secrets < environment
 variables. README has the exact `dotnet user-secrets set` commands for first-time setup.
+
+`Supabase:ServiceKey` is the **service role** key: it bypasses every Storage policy, so it
+lives in user secrets on the API and nowhere else — never in `web/.env`, never in a
+`--dart-define`. The `anon` key is not a substitute; uploads authenticate with it and fail.
+The API boots without Supabase configured and photo uploads return 503, so a teammate not
+working on photos needs none of it.
 
 ## Issue template
 

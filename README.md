@@ -69,6 +69,7 @@ All variables are listed in [`.env.example`](.env.example) with empty values.
 | `LLM_MODEL`            | agent   | Model identifier requested by the agent               |
 | `SUPABASE_URL`         | api     | Supabase project URL                                  |
 | `SUPABASE_SERVICE_KEY` | api     | Supabase service role key — server-side only          |
+| `SUPABASE_STORAGE_BUCKET` | api  | Public Storage bucket for photos (default `photos`)   |
 
 Never place `SUPABASE_SERVICE_KEY`, `LLM_API_KEY`, or `JWT_SECRET` in the web or mobile
 client.
@@ -107,6 +108,15 @@ Not a secret, but the API rejects browser calls from the React dev server withou
 
 ```bash
 dotnet user-secrets set "Cors:AllowedOrigins:0" "http://localhost:5173" --project api
+```
+
+Photo uploads go to Supabase Storage. Without these the API still starts, but
+`POST /api/reports/{id}/photo` returns 503. Create a **public** bucket named `photos` in the
+Supabase dashboard first (Storage → New bucket), then:
+
+```bash
+dotnet user-secrets set "Supabase:Url" "https://YOUR_PROJECT_REF.supabase.co" --project api
+dotnet user-secrets set "Supabase:ServiceKey" "YOUR_SERVICE_ROLE_KEY" --project api
 ```
 
 Check what you have set at any time — this reads the local store, not the repo:

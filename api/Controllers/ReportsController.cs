@@ -195,6 +195,86 @@ public class ReportsController : ControllerBase
     }
 
     /// <summary>
+    /// Attaches a photo of the fault. multipart/form-data with one file part named
+    /// <c>photo</c>, JPEG or PNG, at most 5 MB. Only the reporter who filed the report may
+    /// attach one.
+    ///
+    /// The image goes to Supabase Storage and only its URL is stored on the report. The
+    /// uploaded file name is NEVER READ — the storage object is named with a GUID generated
+    /// server-side — because a client-chosen name is the classic path-traversal vector.
+    ///
+    /// 201 via CreatedAtAction pointing at the report, which is where the stored URL is read
+    /// back from. 503 if storage cannot be reached, and in that case nothing is recorded.
+    /// </summary>
+    [HttpPost("{id:int}/photo")]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(typeof(ReportPhotoDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<ReportPhotoDto>> UploadPhoto(
+        int id,
+        IFormFile photo,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCaller(out var callerId, out _))
+        {
+            return Unauthorized();
+        }
+
+        await using var content = photo.OpenReadStream();
+
+        var result = await _reportService.AttachPhotoAsync(
+            id, callerId, content, photo.ContentType, photo.Length, cancellationToken);
+
+        return result.Outcome switch
+        {
+            AttachPhotoOutcome.Success =>
+                CreatedAtAction(nameof(GetById), new { id }, new ReportPhotoDto(result.PhotoUrl!)),
+
+            AttachPhotoOutcome.ReportNotFound => NotFound(),
+
+            AttachPhotoOutcome.NotTheReporter => StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
+            {
+                Status = StatusCodes.Status403Forbidden,
+                Title = "Not your report",
+                Detail = "A photo is attached by the reporter who filed the report, and this "
+                       + "report was filed by somebody else."
+            }),
+
+            AttachPhotoOutcome.UnsupportedContentType =>
+                PhotoInvalid("The photo must be a JPEG (image/jpeg) or a PNG (image/png)."),
+
+            AttachPhotoOutcome.TooLarge =>
+                PhotoInvalid($"The photo must be at most {ImageUploadRules.MaxBytes / (1024 * 1024)} MB."),
+
+            AttachPhotoOutcome.ContentDoesNotMatchType =>
+                PhotoInvalid($"The file is not a valid {photo.ContentType} image."),
+
+            AttachPhotoOutcome.StorageUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Photo storage is unavailable",
+                Detail = "The photo could not be stored right now and has not been attached to "
+                       + "the report. The report itself is unchanged. Please try again later."
+            }),
+
+            // Unreachable, and deliberately loud rather than a quiet 500: a new outcome
+            // added without a case here is a bug in this switch, not in the caller.
+            _ => throw new InvalidOperationException($"Unhandled photo outcome '{result.Outcome}'.")
+        };
+    }
+
+    /// <summary>The three file failures are all 400s against the photo field.</summary>
+    private ActionResult PhotoInvalid(string detail)
+    {
+        ModelState.AddModelError("photo", detail);
+        return ValidationProblem(ModelState);
+    }
+
+    /// <summary>
     /// The clarification questions asked about a report, in the order the form renders
     /// them, each carrying its answer once one has been given.
     ///

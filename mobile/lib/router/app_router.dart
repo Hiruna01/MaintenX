@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../features/assets/asset_detail_screen.dart';
+import '../features/assets/scan_asset_screen.dart';
 import '../features/auth/auth_controller.dart';
 import '../features/auth/auth_state.dart';
 import '../features/auth/login_screen.dart';
@@ -54,6 +56,17 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: SubmitReportScreen.subPath,
             builder: (context, state) => const SubmitReportScreen(),
+          ),
+          GoRoute(
+            path: ScanAssetScreen.subPath,
+            builder: (context, state) => const ScanAssetScreen(),
+          ),
+          GoRoute(
+            path: AssetDetailScreen.subPath,
+            // A non-numeric id becomes null and the screen renders an error, not a crash.
+            builder: (context, state) => AssetDetailScreen(
+              assetId: int.tryParse(state.pathParameters['id'] ?? ''),
+            ),
           ),
         ],
       ),

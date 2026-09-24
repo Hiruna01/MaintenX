@@ -11,10 +11,19 @@ namespace CampusFacilities.Api.Dtos;
 /// human looking at a screen. WorkOrderResolutionNote and WorkOrderCompletedAt are carried
 /// across from the work order because the whole question being asked is "did THAT hold?" —
 /// the answer is unreadable without the claim it is answering.
+///
+/// The work order is carried as those fields rather than as a WorkOrderDto because a
+/// Reporter reads this too: they are shown what was done and when, not the estimate, the
+/// cost or who was sent — a Reporter can read no work order through WorkOrdersController.
 /// </summary>
 public record VerificationDetailDto(
     int Id,
     int WorkOrderId,
+
+    // The report whose fault the repair was for — the reporter's own way into this check,
+    // since a Reporter cannot read the work order itself.
+    int ReportId,
+
     AssetDto Asset,
 
     // What the technician recorded on completion, and when. Null resolution note is

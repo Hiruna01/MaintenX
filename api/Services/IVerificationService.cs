@@ -1,4 +1,5 @@
 using CampusFacilities.Api.Dtos;
+using CampusFacilities.Api.Models;
 
 namespace CampusFacilities.Api.Services;
 
@@ -25,18 +26,52 @@ public interface IVerificationService
     Task<bool> HasOpenCheckAsync(int workOrderId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Checks, newest first, optionally filtered by state. The opposite order to the asset
-    /// registry's service history: this is a worklist, so the most recent matters most.
+    /// One page of checks, filtered and sorted, through the existing PagedResult&lt;T&gt;.
+    /// There is no second pagination type in this project.
+    ///
+    /// WHO MAY SEE WHAT IS DECIDED HERE, NOT BY THE CALLER — the same rule, written the
+    /// same way, as IReportService.GetAllAsync. A FacilitiesManager and an Admin see every
+    /// check; anyone else sees the checks on repairs to faults THEY reported, reached
+    /// through the check's work order to its report. The scope is a Where applied before
+    /// the count and paging, and no parameter widens it.
+    ///
+    /// <paramref name="status"/>, <paramref name="assetId"/> are exact filters.
+    /// <paramref name="dateFrom"/> and <paramref name="dateTo"/> bound DueAt — when the
+    /// question falls due, the one date every check has — as UTC calendar dates, BOTH ENDS
+    /// INCLUSIVE, the same arithmetic as the report list.
     /// </summary>
-    Task<IReadOnlyList<VerificationCheckDto>> GetAllAsync(
-        VerificationStatusFilter filter = VerificationStatusFilter.All,
+    Task<PagedResult<VerificationCheckDto>> GetAllAsync(
+        int callerId,
+        Role callerRole,
+        VerificationStatus? status = null,
+        int? assetId = null,
+        DateOnly? dateFrom = null,
+        DateOnly? dateTo = null,
+        VerificationSort sort = VerificationSort.DueAt,
+        int page = 1,
+        int pageSize = 20,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// One check with its asset and the work order claim it is testing. Null when no check
-    /// has that id (a 404 for the caller).
+    /// One check with its asset and the work order claim it is testing, under the same
+    /// visibility rule as <see cref="GetAllAsync"/> — a list that hid other people's checks
+    /// while a read by id handed them over would be a rule that only looks enforced.
+    ///
+    /// Null both when no check has that id and when the caller may not see it. The
+    /// controller tells those apart with <see cref="ExistsAsync"/>, the same way
+    /// ReportsController does.
     /// </summary>
-    Task<VerificationDetailDto?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
+    Task<VerificationDetailDto?> GetDetailAsync(
+        int id,
+        int callerId,
+        Role callerRole,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether a check exists AT ALL, ignoring who is asking. Used to tell a 404 from a 403
+    /// after <see cref="GetDetailAsync"/> returns null.
+    /// </summary>
+    Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>Every check raised against a work order, oldest first.</summary>
     Task<IReadOnlyList<VerificationCheckDto>> GetForWorkOrderAsync(
@@ -75,20 +110,37 @@ public interface IVerificationService
     Task<VerificationSweepResultDto> ProcessDueChecksAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Records the reporter's verdict and moves the check to Confirmed or Reopened in the
-    /// same SaveChanges, so the two can never disagree — the same rule, and the same
-    /// reason, as ClarificationService moving a report to AwaitingClarification alongside
-    /// its questions.
+    /// Records the reporter's answer to "Is the problem fixed?" and moves the check to
+    /// Confirmed or Reopened in the same SaveChanges, so the two can never disagree — the
+    /// same rule, and the same reason, as ClarificationService moving a report to
+    /// AwaitingClarification alongside its questions.
     ///
-    /// Returns false when the check does not exist OR has already been answered. A caller
-    /// that needs to tell those apart calls <see cref="GetByIdAsync"/> first: a check with
-    /// a non-null ReporterRespondedAt has been answered, and re-answering it is a 409.
+    /// Every check is C#, in a fixed order — identity before state, so a stranger learns
+    /// nothing about where somebody else's check has got to:
+    ///
+    ///   1. no such check                                          → NotFound
+    ///   2. the caller did not file the report the repair was for  → NotTheReporter
+    ///   3. already answered                                       → AlreadyAnswered
+    ///   4. not AwaitingReporterResponse                           → NotAwaitingResponse
+    ///
+    /// Answered is looked at before the status because an answered check is Confirmed or
+    /// Reopened by then, and "not awaiting a response" would be true but less useful. Both
+    /// are 409s; the order only chooses the message.
+    ///
+    /// Only AwaitingReporterResponse may be answered — not Pending. A check still waiting
+    /// out its delay has not been put to anyone yet, and an answer given before the delay
+    /// has passed is exactly the same-afternoon "yes" the delay exists to avoid.
+    ///
+    /// On success the check is also QUEUED FOR THE AGENT (AgentQueuedAt) in that same
+    /// SaveChanges, rather than left for the next sweep to notice. The sweep only queues
+    /// rows whose AgentQueuedAt is null, so it will not queue this one a second time.
     ///
     /// ONE ANSWER, NOT A THREAD. A check that has been answered is finished; there is no
     /// second round, and nothing replies to the comment.
     /// </summary>
-    Task<bool> RecordReporterResponseAsync(
+    Task<ConfirmVerificationOutcome> RecordReporterResponseAsync(
         int id,
+        int callerId,
         ReporterConfirmationDto dto,
         CancellationToken cancellationToken = default);
 
@@ -100,20 +152,27 @@ public interface IVerificationService
 }
 
 /// <summary>
-/// The coarse filter the checks list offers. Deliberately not the full VerificationStatus
-/// enum: a worklist is read as "what needs doing" or "what is finished", and offering six
-/// separate filters would make the caller reconstruct that grouping itself.
+/// What <see cref="IVerificationService.RecordReporterResponseAsync"/> made of an answer.
+/// There is no Result wrapper in this project; the controller maps each member to a status
+/// code, the same shape as SubmitAnswersOutcome.
 /// </summary>
-public enum VerificationStatusFilter
+public enum ConfirmVerificationOutcome
 {
-    All,
+    /// <summary>Answer recorded, status set from it, check queued for the agent. A 204.</summary>
+    Success,
 
-    /// <summary>Pending and AwaitingReporterResponse — still in flight.</summary>
-    Open,
+    /// <summary>No check has that id. A 404.</summary>
+    NotFound,
 
-    /// <summary>Confirmed, Reopened, Escalated and Expired — answered or given up on.</summary>
-    Closed,
+    /// <summary>The caller is not the reporter of the report the repair was for. A 403.</summary>
+    NotTheReporter,
 
-    /// <summary>DueAt has passed and the sweep has not moved it on. See MetricsDto.</summary>
-    Overdue
+    /// <summary>The check has an answer already, and the first one stands. A 409.</summary>
+    AlreadyAnswered,
+
+    /// <summary>
+    /// The check is not waiting on the reporter — still in its delay, or closed without an
+    /// answer (Escalated, Expired). A 409.
+    /// </summary>
+    NotAwaitingResponse
 }

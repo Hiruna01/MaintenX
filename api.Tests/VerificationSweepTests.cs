@@ -48,6 +48,9 @@ public class SweepClockApiFactory : ApiFactory
 /// Each test takes its OWN factory: a sweep acts on every due row in the table, so its
 /// counts are only meaningful against rows the test itself created. What is pinned:
 ///
+///   * only a Pending check whose DueAt has passed is asked — DueAt exactly now included —
+///     and a check in any other state is left exactly as it was;
+///   * a second pass over the same table, bad row and all, changes nothing;
 ///   * the response window, on its boundary, and that queueing never touches Status;
 ///   * a check is queued once, not once per pass;
 ///   * ONE BAD ROW DOES NOT STOP THE SWEEP — it is expired with a reason and the rest are
@@ -60,6 +63,91 @@ public class VerificationSweepTests
     {
         Converters = { new JsonStringEnumConverter() }
     };
+
+    [Fact]
+    public async Task Sweep_AsksOnlyPendingChecksWhoseDueAtHasPassed_AndLeavesEveryOtherStateAlone()
+    {
+        using var factory = new SweepClockApiFactory();
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var service = scope.ServiceProvider.GetRequiredService<IVerificationService>();
+        var now = factory.Clock.Now.UtcDateTime;
+
+        // Due this instant: the delay is over, so it is asked. `<`, not `<=`, would miss it.
+        var dueNow = await SeedAsync(db, "DNW", VerificationStatus.Pending, askedAt: null, dueAt: now);
+        // A minute short of its delay: the fault has not had its time to come back.
+        var aMinuteEarly = await SeedAsync(db, "AME", VerificationStatus.Pending, askedAt: null, dueAt: now.AddMinutes(1));
+
+        // Past their DueAt, but NOT Pending — none of these may be asked again. Re-asking the
+        // first would move ProcessedAt to now and quietly restart its response window, so a
+        // silent reporter would never be handed on.
+        var askedYesterday = await SeedAsync(db, "AYD", VerificationStatus.AwaitingReporterResponse, askedAt: now.AddDays(-1));
+        var expired = await SeedAsync(db, "EXP", VerificationStatus.Expired, askedAt: now.AddDays(-10));
+        var escalated = await SeedAsync(db, "ESC", VerificationStatus.Escalated, askedAt: now.AddDays(-10));
+        var settled = await SeedAsync(db, "SET", VerificationStatus.Confirmed, askedAt: now.AddDays(-10),
+            respondedAt: now.AddDays(-9), confirmed: true, queuedAt: now.AddDays(-9));
+
+        var before = await SnapshotAsync(db);
+
+        var result = await service.ProcessDueChecksAsync();
+
+        Assert.Equal(new VerificationSweepResultDto(Processed: 1, AskedReporter: 1, QueuedForAgent: 0, Failed: 0), result);
+
+        var after = await SnapshotAsync(db);
+
+        Assert.Equal(VerificationStatus.AwaitingReporterResponse, after[dueNow].Status);
+        Assert.Equal(now, after[dueNow].ProcessedAt!.Value, TimeSpan.FromSeconds(1));
+
+        // Every other row is exactly as it was — status, both stamps and UpdatedAt, so a
+        // write that changed nothing visible would still be caught.
+        foreach (var id in new[] { aMinuteEarly, askedYesterday, expired, escalated, settled })
+        {
+            Assert.Equal(before[id], after[id]);
+        }
+    }
+
+    [Fact]
+    public async Task Sweep_RunTwice_TheSecondPassChangesNothing_BadRowIncluded()
+    {
+        using var factory = new SweepClockApiFactory();
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var window = TimeSpan.FromDays(scope.ServiceProvider.GetRequiredService<VerificationSettings>().ResponseWindowDays);
+        var now = factory.Clock.Now.UtcDateTime;
+
+        // One of every kind of work a pass does, plus a row that fails.
+        await SeedAsync(db, "TW1", VerificationStatus.Pending, askedAt: null, dueAt: now.AddDays(-1));
+        await SeedAsync(db, "TW2", VerificationStatus.AwaitingReporterResponse, askedAt: now - window - TimeSpan.FromHours(1));
+        await SeedAsync(db, "TW3", VerificationStatus.Reopened, askedAt: now.AddDays(-2), respondedAt: now.AddDays(-1), confirmed: false);
+        var bad = await SeedAsync(db, "TWB", VerificationStatus.Pending, askedAt: null, dueAt: now.AddDays(-2));
+
+        // The same failing context for both passes: if the second pass touched the bad row
+        // again it would fail again, and Failed would say so.
+        using var failingDb = ContextWith(db, new FailWhen(c => c.Id == bad && c.Status == VerificationStatus.AwaitingReporterResponse));
+        var service = new VerificationService(
+            failingDb,
+            scope.ServiceProvider.GetRequiredService<VerificationSettings>(),
+            factory.Clock,
+            scope.ServiceProvider.GetRequiredService<ILogger<VerificationService>>());
+
+        var first = await service.ProcessDueChecksAsync();
+        Assert.Equal(new VerificationSweepResultDto(Processed: 4, AskedReporter: 1, QueuedForAgent: 2, Failed: 1), first);
+
+        var afterFirst = await SnapshotAsync(db);
+        Assert.Equal(VerificationStatus.Expired, afterFirst[bad].Status);
+
+        // The same instant, then a minute on — the timer and the button pressed together, or
+        // the next tick. Neither may ask, queue or expire anything a second time.
+        foreach (var step in new[] { TimeSpan.Zero, TimeSpan.FromMinutes(1) })
+        {
+            factory.Clock.Now += step;
+
+            var again = await service.ProcessDueChecksAsync();
+
+            Assert.Equal(new VerificationSweepResultDto(Processed: 0, AskedReporter: 0, QueuedForAgent: 0, Failed: 0), again);
+            Assert.Equal(afterFirst, await SnapshotAsync(db));
+        }
+    }
 
     [Fact]
     public async Task Sweep_QueuesAnsweredAndLongSilentChecks_OnTheWindowBoundary_WithoutTouchingStatus()
@@ -233,7 +321,8 @@ public class VerificationSweepTests
         DateTime? askedAt,
         DateTime? dueAt = null,
         DateTime? respondedAt = null,
-        bool? confirmed = null)
+        bool? confirmed = null,
+        DateTime? queuedAt = null)
     {
         var due = dueAt ?? askedAt!.Value;
         var order = await VerificationTests.SeedCompletedWorkOrderAsync(db, prefix, due.AddDays(-5));
@@ -246,12 +335,31 @@ public class VerificationSweepTests
             Status = status,
             ProcessedAt = askedAt,
             ReporterRespondedAt = respondedAt,
-            ReporterConfirmed = confirmed
+            ReporterConfirmed = confirmed,
+            AgentQueuedAt = queuedAt
         };
 
         db.VerificationChecks.Add(check);
         await db.SaveChangesAsync();
         return check.Id;
+    }
+
+    /// <summary>Everything a pass could write to a check, per check, read fresh from the database.</summary>
+    private sealed record RowState(
+        VerificationStatus Status,
+        DateTime? ProcessedAt,
+        DateTime? AgentQueuedAt,
+        string? ExpiredReason,
+        DateTime UpdatedAt);
+
+    private static async Task<Dictionary<int, RowState>> SnapshotAsync(AppDbContext db)
+    {
+        db.ChangeTracker.Clear();
+        return await db.VerificationChecks
+            .AsNoTracking()
+            .ToDictionaryAsync(
+                v => v.Id,
+                v => new RowState(v.Status, v.ProcessedAt, v.AgentQueuedAt, v.ExpiredReason, v.UpdatedAt));
     }
 
     /// <summary>

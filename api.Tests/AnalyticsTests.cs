@@ -20,7 +20,7 @@ namespace api.Tests;
 /// table and must not see rows another test created. What is pinned:
 ///
 ///   * an empty database is zeros, never NaN and never a 500 — and a median of nothing is
-///     null, not 0;
+///     null, not 0 — on the verification read beside it as well;
 ///   * FacilitiesManager and Admin only, 401 and 403 kept apart, a reversed range a 400;
 ///   * the reopen rate counts ANSWERED checks only, per category and per month, with the
 ///     date range inclusive at both ends;
@@ -67,6 +67,19 @@ public class AnalyticsTests
 
         Assert.Empty(metrics.RepeatFailures);
         Assert.Equal(FixedClockApiFactory.Today, metrics.RepeatFailuresAsOf);
+
+        // The verification read beside it divides the same way over the same nothing.
+        var verificationResponse = await manager.GetAsync("/api/analytics/verification");
+        Assert.Equal(HttpStatusCode.OK, verificationResponse.StatusCode);
+        Assert.DoesNotContain("NaN", await verificationResponse.Content.ReadAsStringAsync());
+
+        var verification = (await verificationResponse.Content.ReadFromJsonAsync<VerificationMetricsDto>(JsonOptions))!;
+        Assert.Equal(0, verification.Total);
+        Assert.Equal(0m, verification.ConfirmationRate);
+        Assert.Equal(0m, verification.ReopenRate);
+        // An average of nothing is null, not 0 days.
+        Assert.Null(verification.AverageDaysToRespond);
+        Assert.Equal(0, verification.OverdueUnprocessed);
     }
 
     [Fact]

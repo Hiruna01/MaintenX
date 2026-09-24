@@ -76,6 +76,8 @@ public class DbSeederVerificationTests : IClassFixture<ApiFactory>
         Assert.Equal("PRJ-MAB101-01", reopened.Asset!.AssetTag);
         Assert.False(reopened.ReporterConfirmed);
         Assert.NotNull(reopened.AgentOutcome);
+        // Evidence travels with the verdict: the detail page renders one line per item.
+        Assert.NotEmpty(System.Text.Json.JsonSerializer.Deserialize<string[]>(reopened.AgentEvidenceJson!)!);
 
         // bool? earns its nullability: three distinct answers across the set.
         Assert.Equal(2, checks.Count(c => c.ReporterConfirmed == true));

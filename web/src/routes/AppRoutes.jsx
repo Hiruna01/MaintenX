@@ -9,11 +9,15 @@ import {
   ADMIN_ROLES,
   DISPATCH_ROLES,
   MANAGER_ROLES,
+  METRICS_ROLES,
   WORK_ORDER_ROLES,
 } from '../features/auth/services/roles';
 import DashboardPage from '../features/dashboard/pages/DashboardPage';
 import ReportDetailPage from '../features/reports/pages/ReportDetailPage';
 import ReportsPage from '../features/reports/pages/ReportsPage';
+import MetricsPage from '../features/verification/pages/MetricsPage';
+import VerificationDetailPage from '../features/verification/pages/VerificationDetailPage';
+import VerificationsPage from '../features/verification/pages/VerificationsPage';
 import WorkflowDetailPage from '../features/workflows/pages/WorkflowDetailPage';
 import WorkflowsPage from '../features/workflows/pages/WorkflowsPage';
 import ApprovalsPage from '../features/workorders/pages/ApprovalsPage';
@@ -38,6 +42,10 @@ export function AppRoutes() {
         {/* Open to every role, like GET /api/reports/{id}: the API decides WHICH reports a
             caller may read, and a Reporter opening someone else's gets its 403 rendered. */}
         <Route path="/reports/:id" element={<ReportDetailPage />} />
+        {/* Open to every role, like GET /api/verifications: the API scopes a Reporter to the
+            checks on their own reports and gives a manager every one. */}
+        <Route path="/verifications" element={<VerificationsPage />} />
+        <Route path="/verifications/:id" element={<VerificationDetailPage />} />
       </Route>
 
       {/* Changing the registry is Admin only. A Reporter is never shown these links, and
@@ -65,6 +73,11 @@ export function AppRoutes() {
           Admin and a Technician reaching this by URL get "not authorised", not a 403 page. */}
       <Route element={<ProtectedRoute allowedRoles={DISPATCH_ROLES} />}>
         <Route path="/approvals" element={<ApprovalsPage />} />
+      </Route>
+
+      {/* Estate-wide numbers: FacilitiesManager and Admin, the two roles the endpoint names. */}
+      <Route element={<ProtectedRoute allowedRoles={METRICS_ROLES} />}>
+        <Route path="/metrics" element={<MetricsPage />} />
       </Route>
 
       {/* Catch-all. */}

@@ -200,6 +200,142 @@ public class VerificationEndpointTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task List_SearchesTheAssetTag_InsideTheCallersScope()
+    {
+        var (reporter, reporterId) = await ClientForAsync(Role.Reporter);
+        var (_, otherId) = await ClientForAsync(Role.Reporter);
+
+        var mine = await SeedCheckAsync("SRCHA", reporterId, VerificationStatus.AwaitingReporterResponse);
+        await SeedCheckAsync("SRCHB", reporterId, VerificationStatus.AwaitingReporterResponse);
+        await SeedCheckAsync("SRCHAX", otherId, VerificationStatus.AwaitingReporterResponse);
+
+        // Case-insensitive, a fragment of the tag. The other reporter's SRCHAX matches the
+        // text too, and stays out: a search never widens the scope.
+        var found = await GetPageAsync(reporter, "/api/verifications?search=srcha-");
+        Assert.Equal(new[] { mine }, found.Items.Select(i => i.Id));
+    }
+
+    [Fact]
+    public async Task List_FlagsOverdueChecks_OnTheSweepsOwnClocks()
+    {
+        var (reporter, reporterId) = await ClientForAsync(Role.Reporter);
+        var now = DateTime.UtcNow;
+
+        // Pending and past due: the sweep has not asked yet.
+        var unasked = await SeedCheckAsync("OVD1", reporterId, VerificationStatus.Pending, dueAt: now.AddHours(-1));
+        // Pending and not yet due.
+        var notDue = await SeedCheckAsync("OVD2", reporterId, VerificationStatus.Pending, dueAt: now.AddDays(1));
+        // Asked a day ago, inside the 3-day response window.
+        var waiting = await SeedCheckAsync("OVD3", reporterId, VerificationStatus.AwaitingReporterResponse, dueAt: now.AddDays(-1));
+        // Asked four days ago and still silent.
+        var silent = await SeedCheckAsync("OVD4", reporterId, VerificationStatus.AwaitingReporterResponse, dueAt: now.AddDays(-4));
+        // Answered long ago: closed, never overdue.
+        var answered = await SeedCheckAsync("OVD5", reporterId, VerificationStatus.Confirmed, dueAt: now.AddDays(-30));
+
+        var page = await GetPageAsync(reporter, "/api/verifications?search=ovd&pageSize=100");
+        var overdue = page.Items.ToDictionary(i => i.Id, i => i.IsOverdue);
+
+        Assert.True(overdue[unasked]);
+        Assert.False(overdue[notDue]);
+        Assert.False(overdue[waiting]);
+        Assert.True(overdue[silent]);
+        Assert.False(overdue[answered]);
+    }
+
+    [Fact]
+    public async Task Detail_ShowsAManagerWhatHappenedSince_AndAReporterNone_OfItAndTheEvidence()
+    {
+        var (reporter, reporterId) = await ClientForAsync(Role.Reporter);
+        var (manager, _) = await ClientForAsync(Role.FacilitiesManager);
+
+        var check = await SeedCheckAsync("SNC", reporterId, VerificationStatus.Reopened,
+            dueAt: DateTime.UtcNow.AddDays(-2));
+
+        int laterReport, earlierReport, followUp;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.VerificationChecks.Include(v => v.WorkOrder).SingleAsync(v => v.Id == check);
+            var original = await db.Reports.SingleAsync(r => r.Id == row.WorkOrder!.ReportId);
+
+            row.AgentOutcome = "reopen";
+            row.AgentReason = "Same cutout reported again after the clean.";
+            row.AgentEvidenceJson = """["note: filter cleaned again", "reporter: cut out twice"]""";
+
+            var later = new Report
+            {
+                ReporterId = reporterId, RoomId = original.RoomId, AssetId = row.AssetId,
+                Description = "Cutting out again, same as last week."
+            };
+            var earlier = new Report
+            {
+                ReporterId = reporterId, RoomId = original.RoomId, AssetId = row.AssetId,
+                Description = "Filed before the repair was done."
+            };
+            var order = new WorkOrder
+            {
+                Report = later, AssetId = row.AssetId, Status = WorkOrderStatus.AwaitingApproval,
+                Strategy = WorkOrderStrategy.EscalateReplacement, EstimatedCost = 45_000m
+            };
+            db.AddRange(later, earlier, order);
+            await db.SaveChangesAsync();
+
+            // CreatedAt is stamped on insert, so put the earlier report before completion
+            // by hand.
+            var beforeCompletion = row.WorkOrder!.CompletedAt!.Value.AddDays(-1);
+            await db.Reports.Where(r => r.Id == earlier.Id)
+                .ExecuteUpdateAsync(set => set.SetProperty(r => r.CreatedAt, beforeCompletion));
+
+            (laterReport, earlierReport, followUp) = (later.Id, earlier.Id, order.Id);
+        }
+
+        var managerView = (await (await manager.GetAsync($"/api/verifications/{check}"))
+            .Content.ReadFromJsonAsync<VerificationDetailDto>(JsonOptions))!;
+
+        // Only what came AFTER the repair, and never the report the repair was for.
+        Assert.Equal(new[] { laterReport }, managerView.NewReportsSinceCompletion!.Select(r => r.Id));
+        Assert.DoesNotContain(managerView.NewReportsSinceCompletion!, r => r.Id == earlierReport);
+        Assert.Equal(new[] { followUp }, managerView.FollowUpWorkOrders!.Select(w => w.Id));
+        Assert.Equal(WorkOrderStrategy.EscalateReplacement, managerView.FollowUpWorkOrders![0].Strategy);
+
+        Assert.Equal("reopen", managerView.AgentOutcome);
+        Assert.Equal(new[] { "note: filter cleaned again", "reporter: cut out twice" }, managerView.AgentEvidence);
+
+        // A Reporter reads other people's reports and work orders nowhere else, so not here:
+        // null, not an empty list that would say nothing has happened.
+        var reporterView = (await (await reporter.GetAsync($"/api/verifications/{check}"))
+            .Content.ReadFromJsonAsync<VerificationDetailDto>(JsonOptions))!;
+        Assert.Null(reporterView.NewReportsSinceCompletion);
+        Assert.Null(reporterView.FollowUpWorkOrders);
+        Assert.Equal(managerView.AgentEvidence, reporterView.AgentEvidence);
+    }
+
+    [Fact]
+    public async Task Detail_EvidenceIsNull_WhenTheAgentHasNotJudged_OrWroteSomethingUnreadable()
+    {
+        var (manager, _) = await ClientForAsync(Role.FacilitiesManager);
+        var (_, reporterId) = await ClientForAsync(Role.Reporter);
+
+        var unjudged = await SeedCheckAsync("EV1", reporterId, VerificationStatus.AwaitingReporterResponse);
+        var garbled = await SeedCheckAsync("EV2", reporterId, VerificationStatus.Confirmed);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await db.VerificationChecks.Where(v => v.Id == garbled)
+                .ExecuteUpdateAsync(set => set.SetProperty(v => v.AgentEvidenceJson, "{\"not\": \"an array\"}"));
+        }
+
+        foreach (var id in new[] { unjudged, garbled })
+        {
+            var response = await manager.GetAsync($"/api/verifications/{id}");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Null((await response.Content.ReadFromJsonAsync<VerificationDetailDto>(JsonOptions))!.AgentEvidence);
+        }
+    }
+
+    [Fact]
     public async Task Metrics_AreForAFacilitiesManager_401And403KeptApart()
     {
         var anonymous = await _factory.CreateClient().GetAsync("/api/analytics/verification");

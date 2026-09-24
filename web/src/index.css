@@ -552,7 +552,10 @@ a {
 .warranty,
 .repeat-flag,
 .report-status,
-.step-outcome {
+.step-outcome,
+.verification-status,
+.agent-outcome,
+.overdue-flag {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -2553,4 +2556,189 @@ th.work-order-table__num .sort-button {
 
 .work-order-detail .asset-hero h1 a:hover {
   text-decoration: underline;
+}
+
+/* =====================================================================================
+   VERIFICATION — the checks list, a check's detail, and the metrics dashboard
+   The list and filters reuse the asset catalogue's .asset-table / .asset-filters styles.
+   ===================================================================================== */
+
+/* ---------- pills: modifier is the enum NAME / the agent's stored string ---------- */
+
+.verification-status--Pending,
+.verification-status--AwaitingReporterResponse {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.verification-status--Confirmed,
+.agent-outcome--confirm {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.verification-status--Reopened,
+.agent-outcome--reopen {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.verification-status--Escalated,
+.agent-outcome--escalate,
+.overdue-flag {
+  border-color: #fecdca;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* Expired and an unknown agent outcome stay the neutral grey. */
+
+.overdue-flag {
+  font-weight: 600;
+}
+
+/* An overdue row reads at a glance: a coloured edge as well as the flag, never colour alone. */
+.verification-row--overdue td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.verification-row--overdue {
+  background: var(--danger-bg);
+}
+
+/* ---------- detail ---------- */
+
+.verification-detail .asset-hero h1 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.verification-detail .asset-hero h1 a:hover {
+  text-decoration: underline;
+}
+
+/* The technician's note, verbatim: every line break kept, nothing clamped. */
+.verification-note {
+  white-space: pre-wrap;
+}
+
+.verification-evidence li {
+  white-space: pre-wrap;
+}
+
+.reporter-answer {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+.reporter-answer--yes {
+  color: var(--success);
+}
+
+.reporter-answer--no {
+  color: var(--warn);
+}
+
+.related-list {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.related-list__item {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.related-list__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.related-list__when {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.related-list__text {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+}
+
+.loop-back__gap {
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--warn);
+  border-radius: 0 8px 8px 0;
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+/* ---------- metrics ---------- */
+
+.metrics-panel {
+  margin-bottom: 1.5rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.metrics-panel__head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.metrics-panel__lead {
+  margin: 0.25rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Every state keeps the panel's height, so no chart area is ever an empty box and the page
+   does not jump when the request settles. */
+.metrics-panel__body {
+  display: grid;
+  gap: 1rem;
+  min-height: 12rem;
+  align-content: start;
+}
+
+.metrics-panel__empty {
+  margin: 0;
+}
+
+.metrics-chart {
+  width: 100%;
+}
+
+.metrics-tooltip {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 0.8rem;
+}
+
+.metrics-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.metrics-stats {
+  margin: 0;
 }

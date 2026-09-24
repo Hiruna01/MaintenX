@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
@@ -98,7 +99,7 @@ public class VerificationService : IVerificationService
         _db.VerificationChecks.Add(check);
         await _db.SaveChangesAsync(cancellationToken);
 
-        return ToDto(check, workOrder.Asset?.AssetTag ?? string.Empty);
+        return ToDto(check, workOrder.Asset?.AssetTag ?? string.Empty, IsOverdue(check));
     }
 
     public Task<bool> HasOpenCheckAsync(int workOrderId, CancellationToken cancellationToken = default) =>
@@ -122,6 +123,7 @@ public class VerificationService : IVerificationService
     public async Task<PagedResult<VerificationCheckDto>> GetAllAsync(
         int callerId,
         Role callerRole,
+        string? search = null,
         VerificationStatus? status = null,
         int? assetId = null,
         DateOnly? dateFrom = null,
@@ -143,6 +145,15 @@ public class VerificationService : IVerificationService
         if (!SeesEveryCheck(callerRole))
         {
             query = query.Where(v => v.WorkOrder!.Report!.ReporterId == callerId);
+        }
+
+        // The asset tag — the sticker on the machine, and the one text column a check row
+        // shows. ToLower().Contains(), never EF.Functions.ILike: ILike is Npgsql-only, and
+        // lowering both sides is what makes SQLite and PostgreSQL agree.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim().ToLower();
+            query = query.Where(v => v.Asset!.AssetTag.ToLower().Contains(term));
         }
 
         if (status is not null)
@@ -193,7 +204,7 @@ public class VerificationService : IVerificationService
             .ToListAsync(cancellationToken);
 
         return new PagedResult<VerificationCheckDto>(
-            rows.Select(r => ToDto(r.Check, r.AssetTag)).ToList(),
+            rows.Select(r => ToDto(r.Check, r.AssetTag, IsOverdue(r.Check))).ToList(),
             page,
             pageSize,
             totalCount);
@@ -217,9 +228,43 @@ public class VerificationService : IVerificationService
             return null;
         }
 
-        if (!SeesEveryCheck(callerRole) && check.WorkOrder.Report.ReporterId != callerId)
+        var seesEverything = SeesEveryCheck(callerRole);
+
+        if (!seesEverything && check.WorkOrder.Report.ReporterId != callerId)
         {
             return null;
+        }
+
+        // What has happened to this machine since the repair — other people's reports and
+        // work orders, so a manager's view only (see VerificationDetailDto). Measured from
+        // CompletedAt, the moment the repair was claimed; a check on an order with no
+        // completion time has no "since", and that is null too rather than a guess.
+        IReadOnlyList<VerificationRelatedReportDto>? newReports = null;
+        IReadOnlyList<VerificationFollowUpDto>? followUps = null;
+
+        if (seesEverything && check.WorkOrder.CompletedAt is { } completedAt)
+        {
+            var originalReportId = check.WorkOrder.ReportId;
+
+            newReports = await _db.Reports
+                .AsNoTracking()
+                .Where(r => r.AssetId == check.AssetId
+                            && r.Id != originalReportId
+                            && r.CreatedAt > completedAt)
+                .OrderBy(r => r.CreatedAt)
+                .ThenBy(r => r.Id)
+                .Select(r => new VerificationRelatedReportDto(r.Id, r.Description, r.Status, r.CreatedAt))
+                .ToListAsync(cancellationToken);
+
+            followUps = await _db.WorkOrders
+                .AsNoTracking()
+                .Where(w => w.AssetId == check.AssetId
+                            && w.Id != check.WorkOrderId
+                            && w.CreatedAt > completedAt)
+                .OrderBy(w => w.CreatedAt)
+                .ThenBy(w => w.Id)
+                .Select(w => new VerificationFollowUpDto(w.Id, w.Status, w.Strategy, w.CreatedAt))
+                .ToListAsync(cancellationToken);
         }
 
         return new VerificationDetailDto(
@@ -231,11 +276,15 @@ public class VerificationService : IVerificationService
             check.WorkOrder.CompletedAt,
             check.DueAt,
             check.Status,
+            IsOverdue(check),
             check.ReporterConfirmed,
             check.ReporterComment,
             check.ReporterRespondedAt,
             check.AgentOutcome,
             check.AgentReason,
+            ReadEvidence(check.AgentEvidenceJson),
+            newReports,
+            followUps,
             check.ProcessedAt,
             check.AgentQueuedAt,
             check.ExpiredReason,
@@ -260,7 +309,7 @@ public class VerificationService : IVerificationService
             .Select(v => new { Check = v, AssetTag = v.Asset!.AssetTag })
             .ToListAsync(cancellationToken);
 
-        return rows.Select(r => ToDto(r.Check, r.AssetTag)).ToList();
+        return rows.Select(r => ToDto(r.Check, r.AssetTag, IsOverdue(r.Check))).ToList();
     }
 
     public async Task<VerificationSweepResultDto> ProcessDueChecksAsync(
@@ -596,7 +645,65 @@ public class VerificationService : IVerificationService
             OverdueUnprocessed: overdueUnprocessed);
     }
 
-    private static VerificationCheckDto ToDto(VerificationCheck v, string assetTag) =>
+    /// <summary>
+    /// Whether a check has missed the deadline its current state is waiting on. The same two
+    /// clocks the sweep runs on, read from the same settings:
+    ///
+    ///   * Pending and DueAt passed — due to be asked, and the sweep has not asked yet. This
+    ///     is exactly what VerificationMetricsDto.OverdueUnprocessed counts.
+    ///   * AwaitingReporterResponse for longer than ResponseWindowDays since the reporter was
+    ///     asked (ProcessedAt, falling back to DueAt for seeded rows) — the sweep's own
+    ///     "silent" test.
+    ///
+    /// A closed check is never overdue: there is nothing left to wait for.
+    /// </summary>
+    private bool IsOverdue(VerificationCheck v)
+    {
+        var now = UtcNow;
+
+        return v.Status switch
+        {
+            VerificationStatus.Pending => v.DueAt <= now,
+            VerificationStatus.AwaitingReporterResponse =>
+                (v.ProcessedAt ?? v.DueAt) <= now.AddDays(-_settings.ResponseWindowDays),
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// The agent's evidence array, or null when there is none. Read defensively — it is what
+    /// a model produced — so a value that is not an array of strings is null, never thrown
+    /// on, and a non-string item is skipped.
+    /// </summary>
+    private static IReadOnlyList<string>? ReadEvidence(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            return document.RootElement
+                .EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()!)
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static VerificationCheckDto ToDto(VerificationCheck v, string assetTag, bool isOverdue) =>
         new(v.Id,
             v.WorkOrderId,
             v.AssetId,
@@ -604,6 +711,7 @@ public class VerificationService : IVerificationService
             v.DueAt,
             v.Status,
             v.ReporterConfirmed,
+            isOverdue,
             v.ReporterRespondedAt,
             v.CreatedAt,
             v.UpdatedAt);

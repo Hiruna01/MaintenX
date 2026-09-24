@@ -5,6 +5,8 @@ import useAuth from '../features/auth/hooks/useAuth';
 import {
   DISPATCH_ROLES,
   MANAGER_ROLES,
+  METRICS_ROLES,
+  VERIFICATION_ROLES,
   WORK_ORDER_ROLES,
   hasRole,
 } from '../features/auth/services/roles';
@@ -15,7 +17,8 @@ import {
  * but offering a link that leads to "not authorised" is a bad interface.
  *
  * Approvals is FacilitiesManager only, like the API policy behind it: a Technician never sees
- * the link at all, and neither does an Admin, whom the API would refuse.
+ * the link at all, and neither does an Admin, whom the API would refuse. Metrics is
+ * FacilitiesManager and Admin, exactly as its endpoint says — never a Reporter.
  */
 const NAV_ITEMS = [
   { to: '/dashboard', label: 'Dashboard', roles: null },
@@ -24,6 +27,8 @@ const NAV_ITEMS = [
   { to: '/workflows', label: 'Workflows', roles: MANAGER_ROLES },
   { to: '/workorders', label: 'Work orders', roles: WORK_ORDER_ROLES },
   { to: '/approvals', label: 'Approvals', roles: DISPATCH_ROLES },
+  { to: '/verifications', label: 'Verification', roles: VERIFICATION_ROLES },
+  { to: '/metrics', label: 'Metrics', roles: METRICS_ROLES },
 ];
 
 export function NavBar() {

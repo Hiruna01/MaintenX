@@ -36,6 +36,22 @@ export const WORK_ORDER_ROLES = [ROLES.Technician, ROLES.FacilitiesManager, ROLE
  */
 export const DISPATCH_ROLES = [ROLES.FacilitiesManager];
 
+/**
+ * Who the verification list is FOR: the reporter who answers a check and the managers who
+ * read every one. Nav only — the route is open to every signed-in role, like GET
+ * /api/verifications, which scopes the list from the token. A Technician is left out of the
+ * nav because the check is the reporter's verdict on their work, not their worklist, and
+ * their list would always be empty.
+ */
+export const VERIFICATION_ROLES = [ROLES.Reporter, ROLES.FacilitiesManager, ROLES.Admin];
+
+/**
+ * Who reads the estate-wide metrics. Matches GET /api/analytics/metrics exactly, which names
+ * both roles — `[Authorize(Roles = "FacilitiesManager,Admin")]`. A Reporter and a Technician
+ * never see the link.
+ */
+export const METRICS_ROLES = [ROLES.FacilitiesManager, ROLES.Admin];
+
 const ROLE_LABELS = {
   [ROLES.Reporter]: 'Reporter',
   [ROLES.Technician]: 'Technician',

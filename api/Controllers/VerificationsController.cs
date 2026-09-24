@@ -160,27 +160,6 @@ public class VerificationsController : ControllerBase
     }
 
     /// <summary>
-    /// How well repairs are actually holding — MetricsDto, every figure counted in C#.
-    ///
-    /// On this controller, under an absolute route, because these are the verification
-    /// component's own numbers and nothing else in the API is analytics yet. A second
-    /// controller for one action would be a class with nothing to do.
-    ///
-    /// FacilitiesManager only, like the approval queue and the sweep button: the rates are
-    /// counted across the whole estate, and a Reporter sees only their own checks. An Admin
-    /// is refused too — the policy names one role, with no "or more senior" fallback.
-    /// </summary>
-    [HttpGet("/api/analytics/metrics")]
-    [Authorize(Policy = nameof(Role.FacilitiesManager))]
-    [ProducesResponseType(typeof(MetricsDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<MetricsDto>> GetMetrics(CancellationToken cancellationToken)
-    {
-        return Ok(await _verificationService.GetMetricsAsync(cancellationToken));
-    }
-
-    /// <summary>
     /// Runs one pass of the verification sweep now, rather than waiting for the timer.
     ///
     /// Not optional: Render's free tier sleeps an idle service, and a demo cannot wait an

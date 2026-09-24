@@ -50,7 +50,7 @@ public enum VerificationStatus
     /// <summary>
     /// Asked, never answered, and no longer worth waiting on. Distinct from Confirmed on
     /// purpose: silence is not agreement, and counting it as one would let the confirmation
-    /// rate in <see cref="Dtos.MetricsDto"/> report a success nobody reported.
+    /// rate in <see cref="Dtos.VerificationMetricsDto"/> report a success nobody reported.
     /// </summary>
     Expired
 }

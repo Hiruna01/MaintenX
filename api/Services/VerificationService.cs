@@ -529,7 +529,7 @@ public class VerificationService : IVerificationService
         return ConfirmVerificationOutcome.Success;
     }
 
-    public async Task<MetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default)
+    public async Task<VerificationMetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default)
     {
         var now = UtcNow;
 
@@ -552,16 +552,13 @@ public class VerificationService : IVerificationService
 
         // ANSWERED checks only. Expired ones are excluded on purpose: nobody replied to
         // them, and folding silence into either column would report a result that was
-        // never given. See MetricsDto.
+        // never given. See VerificationMetricsDto.
         var answered = confirmed + reopened;
 
-        var confirmationRate = answered == 0
-            ? 0m
-            : Math.Round(confirmed * 100m / answered, 2);
-
-        var reopenRate = answered == 0
-            ? 0m
-            : Math.Round(reopened * 100m / answered, 2);
+        // The same Percent — and the same denominator — as the reopen rate in
+        // AnalyticsService, so the two pages cannot show two different figures.
+        var confirmationRate = MetricRules.Percent(confirmed, answered);
+        var reopenRate = MetricRules.Percent(reopened, answered);
 
         // Only the two columns the average needs, and the subtraction itself happens in
         // C#. DateTime arithmetic translated into SQL behaves differently on PostgreSQL
@@ -585,7 +582,7 @@ public class VerificationService : IVerificationService
         var overdueUnprocessed = await _db.VerificationChecks
             .CountAsync(v => v.Status == VerificationStatus.Pending && v.DueAt <= now, cancellationToken);
 
-        return new MetricsDto(
+        return new VerificationMetricsDto(
             Total: pending + awaiting + confirmed + reopened + escalated + expired,
             Pending: pending,
             AwaitingReporterResponse: awaiting,

@@ -783,7 +783,7 @@ component ever checked it against the room.
 - **`AgentOutcome` is a string, not an enum, precisely because it is the model's opinion.**
   Giving it a C# enum would imply the system acts on it. `Status` is set by C# from the
   reporter's answer; the agent's label is recorded beside it and read by humans.
-- **`MetricsDto.ConfirmationRate` excludes checks nobody answered.** The denominator is
+- **`VerificationMetricsDto.ConfirmationRate` excludes checks nobody answered.** The denominator is
   `Confirmed + Reopened`, not `Total` — counting an `Expired` check either way reports a
   result that was never given. This is the one number the component exists to produce, and
   every figure in it is computed in C# from counts, never estimated by a model.
@@ -864,10 +864,10 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
   `AgentOutcome` null", so if it has already judged the silence, the re-stamp alone will
   not make it read the late answer. Decide that when the C# runner for it lands; nothing
   drains the queue today.
-- **`GET /api/analytics/metrics`** is `MetricsDto`, on this controller under an absolute
-  route — nothing else is analytics yet. `FacilitiesManager` only; an Admin is refused.
-  Move it to its own `AnalyticsController` when a second analytics read arrives, not
-  before.
+- **The verification numbers are `GET /api/analytics/verification`**
+  (`VerificationMetricsDto`, `IVerificationService.GetMetricsAsync`), on `AnalyticsController`
+  — they sat here under `/api/analytics/metrics` until the estate-wide metrics took that
+  route (see ANALYTICS below). `FacilitiesManager` only; an Admin is refused.
 - **Verified to fail with the rule broken**: the list's visibility `Where` removed, the
   confirm's reporter check removed, and `Confirmed` made a plain `bool` — each fails
   `VerificationEndpointTests`.
@@ -915,6 +915,50 @@ the approval queue and the board's assign-and-schedule path would open empty in 
   verbatim), so the queue and the reasoning panel read them through the real code path.
   **If the agent's output schema changes, change these payloads too.** Still no
   `ServiceRecord` rows, for the usual reason.
+
+## ANALYTICS — counts and arithmetic, no agent
+
+`GET /api/analytics/metrics` → `MetricsDto`, `IAnalyticsService` / `AnalyticsService`
+(`AddScoped`), on `AnalyticsController` beside `GET /api/analytics/verification`. **No agent
+is called and no model output is read as a number** — the clarifier's steps are looked at
+only to learn that it ran.
+
+- **FacilitiesManager AND Admin**, via `[Authorize(Roles = "FacilitiesManager,Admin")]`
+  built from `nameof`. A role LIST, not two stacked policies — two `[Authorize(Policy)]`
+  attributes are ANDed and would admit nobody. Both roles are named, so there is still no
+  implicit seniority. The verification read beside it stays FacilitiesManager only.
+- `fromDate` / `toDate` are optional UTC days, both ends inclusive; from-after-to is a
+  **400**, because it would otherwise be a page of zeros that reads as data.
+- **Counting and grouping are SQL aggregates; rates, the median, money and `DateOnly`
+  arithmetic are C#** over the aggregated rows — SQLite has no median, stores `decimal` as
+  TEXT, and does not translate `DateOnly` arithmetic. Same split as the failure summary.
+- **Every rate goes through `MetricRules.Percent`** (0–100, two decimals, **0 when the
+  denominator is 0**), and travels with its counts so "0% of nothing" is tellable from 0%.
+  `VerificationService` uses the same function. **`MedianHoursToAnswer` is null, not 0,
+  when nothing was answered** — a median of 0 hours would claim instant answers.
+- **Reopen rate = Reopened / (Confirmed + Reopened)** — the answered-only denominator of
+  `VerificationMetricsDto`, never every check. Ranged by `DueAt`, the verification list's
+  date. Per category worst-first, only categories with an answered check. The trend is
+  **always six months**, ending in the month of `toDate` (or today) and stopping at `toDate`;
+  `fromDate` does not trim it.
+- **Clarification** is over reports FILED in the range. A report counts as clarified only
+  with an `Ok` clarifier **agent-run** step (`AgentAnalysis.IsAgentRunStep` — the
+  clarifier's tool calls carry the same name and `Ok`) or with questions. A failed run is not
+  "needed no questions". `AgentRunResponse.ClarifierAgentName` is the name, used by the
+  runner and the seeder too.
+- **Repeat failures read `FailureRules`** — the 90-day window, the 3-visit threshold and
+  the warranty rule, **shared with `AssetService.GetFailureSummaryAsync`** so an asset on
+  this list is always `isRepeatFailure` on its own page. The window ends on `toDate`, or
+  today (so with no range the two agree exactly). **A `ServiceRecord` has no cost**: the cost
+  is the linked work order's `ActualCost`, each order once; a visit with no order (all seeded
+  history) or no actual cost adds nothing and is counted in `VisitsWithoutCost`. Ranked by
+  cost, then failure count, then `Id`.
+- `AnalyticsTests` pins it, each test on its own `FixedClockApiFactory` (31 May 2026).
+  **Verified to fail with the rule broken**: every check in the reopen denominator, tool
+  calls counted as clarifier runs, a failed run counted, `>` for the day-90 visit, an
+  exclusive `toDate`, and the zero guard removed (a 500).
+
+---
 
 ## AGENT SERVICE — Python, `agent/`
 
@@ -1247,6 +1291,8 @@ flakiness to retry away.
   - `TimetableSyncTests` — the Google sync, including Google down → degraded with the cache
     kept, and the slot finder still reading that cache.
   - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
+  - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
+    of the three figures on its boundaries.
   - `VerificationTests` — the check's rules through the service (delay, one answer, the
     confirmation rate). `VerificationSweepTests` — the sweep and its button.
     `VerificationEndpointTests` — the reporter's list, detail and confirm, and the metrics

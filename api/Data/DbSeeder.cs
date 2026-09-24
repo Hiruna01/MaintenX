@@ -837,7 +837,7 @@ public static class DbSeeder
 
                 // Clarifier, diagnostic, strategist — the order and shape WorkflowRunner
                 // writes. The report was clear enough that nothing needed asking.
-                workflow.Steps.Add(SeededAgentStep("clarifier", new { questions = Array.Empty<object>() }, 7_800));
+                workflow.Steps.Add(SeededAgentStep(AgentRunResponse.ClarifierAgentName, new { questions = Array.Empty<object>() }, 7_800));
                 workflow.Steps.Add(SeededAgentStep(AgentRunResponse.DiagnosticAgentName, seed.Diagnosis, 0));
                 workflow.Steps.Add(SeededAgentStep(AgentRunResponse.StrategistAgentName, seed.Proposal, 0));
 

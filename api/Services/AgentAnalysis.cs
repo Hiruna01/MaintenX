@@ -25,16 +25,22 @@ public static class AgentAnalysis
     /// enough: an agent-run row carries the empty array in ToolCallsJson, a tool-call row
     /// names its tool there. The web client's agentSteps.js tells them apart the same way.
     /// </summary>
-    public static bool IsAgentRunStep(AgentStep step)
+    public static bool IsAgentRunStep(AgentStep step) => IsAgentRunStep(step.ToolCallsJson);
+
+    /// <summary>
+    /// The same test on the column alone, for a query that projects ToolCallsJson rather
+    /// than loading whole steps (AnalyticsService).
+    /// </summary>
+    public static bool IsAgentRunStep(string? toolCallsJson)
     {
-        if (string.IsNullOrWhiteSpace(step.ToolCallsJson))
+        if (string.IsNullOrWhiteSpace(toolCallsJson))
         {
             return true;
         }
 
         try
         {
-            using var calls = JsonDocument.Parse(step.ToolCallsJson);
+            using var calls = JsonDocument.Parse(toolCallsJson);
             return calls.RootElement.ValueKind == JsonValueKind.Array
                    && calls.RootElement.GetArrayLength() == 0;
         }

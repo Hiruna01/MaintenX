@@ -534,6 +534,49 @@ manager actions too — same reasoning as `PATCH /api/reports/{id}/status`.
   step fail after the first save and asserts none of it survived — verified to fail with
   the transaction removed.
 
+### Scheduling — offered slots are computed, booked slots are re-checked
+
+`GET /api/workorders/slots/available?assetId=&durationMinutes=&fromDate=&toDate=` (optional
+`technicianId`) and `POST /api/workorders/{id}/schedule`, both `FacilitiesManager`. A slot is
+free when it is inside the working day, has not started, clears every class in the asset's
+room by the buffer either side, and — when a technician is named — overlaps none of their
+visits on live orders (`Approved` / `Scheduled` / `InProgress`). At most 20, earliest first,
+on a 30-minute grid.
+
+- **The rule is `SlotRules`, pure functions with no database**, and `Overlaps` is the only
+  overlap test in it: `existing.StartsAt < candidate.EndsAt && existing.EndsAt >
+  candidate.StartsAt`. Strict on both sides, so blocks that merely touch do not overlap. It
+  is `internal` with `InternalsVisibleTo("api.Tests")` rather than private, so
+  `SlotRulesTests` can pin every boundary to the minute without reflection. Each of these
+  was verified to be caught by a failing test: `<=` in `Overlaps`, a dropped buffer, and a
+  booking that skips the re-check.
+- **Offering and booking run the same `SlotRules.Check`.** `FindFreeSlots` keeps a
+  candidate only if `Check` says `Free`, and `ScheduleAsync` calls `Check` again on the
+  submitted times. There is no booking-side copy of the rule to drift. `Check` reports the
+  shape (outside hours) before the time (in the past) before a conflict, which is how the
+  booking tells a 400 from a 409.
+- **The database query only decides what to load**, widened by a day either side, so an
+  off-by-one there can only over-fetch. The boundary decision is `Overlaps`, in C#.
+- **Working hours are campus-local, not UTC.** `SchedulingSettings` (`Scheduling:TimeZone`,
+  default `Asia/Colombo`; `WorkdayStart` 08:00, `WorkdayEnd` 17:00, `ClassBufferMinutes` 15)
+  is read from configuration and the zone is resolved at startup. Every stored time is UTC,
+  and 08:00–17:00 measured in UTC would be 13:30–22:30 in Colombo. `fromDate`/`toDate` are
+  campus-local calendar dates, both inclusive, at most 31 days apart. The slots come back
+  in UTC with a `Z`.
+- **Closing time is inclusive** — a visit may end exactly at 17:00 — and a visit must start
+  and end on the same weekday. Public holidays are not modelled.
+- **An offer is not a reservation.** `schedule` re-runs `Check` against the order's own
+  asset and assigned technician: taken since it was offered → **409**, never bookable
+  (outside hours, started, backwards, or a time sent with no offset) → **400**. The order
+  must be assigned (409 otherwise) — `Scheduled` means assigned *and* booked — and it moves
+  `Approved` → `Scheduled`. A second visit on an order already `Scheduled` or `InProgress`
+  leaves its status alone. 201 via `CreatedAtAction` on the order.
+- **The re-check and the insert are one `Serializable` transaction.** Re-checking catches a
+  slot taken thirty seconds ago. Serializable catches two managers booking the same
+  technician in the same instant: PostgreSQL aborts one with SQLSTATE `40001`, read off
+  `DbException.SqlState` so no provider type is named, and it becomes the same 409. That
+  concurrent case is not covered by a test; the sequential one is.
+
 ---
 
 ## VERIFICATION — did the repair actually hold?

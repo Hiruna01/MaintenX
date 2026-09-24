@@ -7,6 +7,11 @@
     <UserSecretsId>75a6ca1d-506e-4caa-b5f6-be339673aba9</UserSecretsId>
   </PropertyGroup>
 
+  <!-- SlotRules is internal: the tests call its boundary checks directly, nothing else does. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="api.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.8" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.8">

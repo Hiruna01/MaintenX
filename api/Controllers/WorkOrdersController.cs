@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
@@ -272,6 +273,136 @@ public class WorkOrdersController : ControllerBase
         var outcome = await _workOrderService.RequestRevisionAsync(id, dto.Note, cancellationToken);
 
         return ToActionResult(id, outcome, field: null, AwaitingApprovalOnly);
+    }
+
+    /// <summary>
+    /// Free blocks of time for work on an asset, earliest first, at most twenty.
+    /// FacilitiesManager only — whoever books the work.
+    ///
+    /// <paramref name="fromDate"/> and <paramref name="toDate"/> are CAMPUS-LOCAL calendar
+    /// dates, both inclusive; the slots come back in UTC, ready to post to
+    /// POST {id}/schedule unchanged. <paramref name="technicianId"/> is optional: without it
+    /// only the room is checked, which is what a manager wants before choosing who to send.
+    ///
+    /// The rules — working hours, the class buffer, the overlap test — are SlotRules, in C#.
+    /// An empty list is a 200: "nothing free in that range" is an answer, not an error.
+    /// </summary>
+    [HttpGet("slots/available")]
+    [Authorize(Policy = nameof(Role.FacilitiesManager))]
+    [ProducesResponseType(typeof(IReadOnlyList<AvailableSlotDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<IReadOnlyList<AvailableSlotDto>>> GetAvailableSlots(
+        [FromQuery, Required, Range(1, int.MaxValue)] int? assetId,
+        [FromQuery, Range(1, int.MaxValue)] int? technicianId,
+        [FromQuery, Required, Range(15, 1440)] int? durationMinutes,
+        [FromQuery, Required] DateOnly? fromDate,
+        [FromQuery, Required] DateOnly? toDate,
+        CancellationToken cancellationToken)
+    {
+        var result = await _workOrderService.GetAvailableSlotsAsync(
+            assetId!.Value, technicianId, durationMinutes!.Value, fromDate!.Value, toDate!.Value,
+            cancellationToken);
+
+        switch (result.Outcome)
+        {
+            case AvailableSlotsOutcome.Success:
+                return Ok(result.Slots);
+
+            case AvailableSlotsOutcome.AssetNotFound:
+                return QueryInvalid(nameof(assetId), $"Asset {assetId} does not exist.");
+
+            case AvailableSlotsOutcome.NotATechnician:
+                return QueryInvalid(nameof(technicianId), "That user does not exist or is not a Technician.");
+
+            case AvailableSlotsOutcome.InvalidDateRange:
+                return QueryInvalid(nameof(toDate),
+                    "toDate must be on or after fromDate, and the range may cover at most 31 days.");
+
+            case AvailableSlotsOutcome.DurationTooLong:
+                return QueryInvalid(nameof(durationMinutes), "The job is longer than the working day.");
+
+            default:
+                throw new InvalidOperationException($"Unhandled available-slots outcome '{result.Outcome}'.");
+        }
+    }
+
+    /// <summary>
+    /// Books one visit. FacilitiesManager only. 201 with the new slot, via CreatedAtAction on
+    /// the order — which is where its slots are read back.
+    ///
+    /// AN OFFERED SLOT IS RE-CHECKED HERE, NEVER TRUSTED. Taken since it was offered is a
+    /// 409; a slot that could never have been offered (outside the working day, already
+    /// started, no UTC offset) is a 400. The order must be assigned first.
+    /// </summary>
+    [HttpPost("{id:int}/schedule")]
+    [Authorize(Policy = nameof(Role.FacilitiesManager))]
+    [ProducesResponseType(typeof(ScheduledSlotDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ScheduledSlotDto>> Schedule(
+        int id,
+        ScheduleWorkOrderDto dto,
+        CancellationToken cancellationToken)
+    {
+        var result = await _workOrderService.ScheduleAsync(id, dto, cancellationToken);
+
+        switch (result.Outcome)
+        {
+            case ScheduleOutcome.Success:
+                return CreatedAtAction(nameof(GetById), new { id }, result.Slot);
+
+            case ScheduleOutcome.NotFound:
+                return NotFound();
+
+            case ScheduleOutcome.InvalidState:
+                return Conflict(new ProblemDetails
+                {
+                    Status = StatusCodes.Status409Conflict,
+                    Title = "Work order is not in a state that allows this",
+                    Detail = $"Work order {id} cannot be scheduled from where it is now. Only an "
+                           + "order that has cleared approval and is not yet finished can be booked."
+                });
+
+            case ScheduleOutcome.NoTechnicianAssigned:
+                return Conflict(new ProblemDetails
+                {
+                    Status = StatusCodes.Status409Conflict,
+                    Title = "No technician assigned",
+                    Detail = $"Work order {id} has nobody assigned to it. Assign a technician "
+                           + "before booking a visit — a booking is time in somebody's diary."
+                });
+
+            case ScheduleOutcome.NotBookable:
+                ModelState.AddModelError(nameof(dto.StartsAt),
+                    "That slot is not bookable: it must be inside the working day (Monday to "
+                    + "Friday), not already started, end after it starts, and be sent in UTC "
+                    + "with its offset, as GET slots/available returns it.");
+                return ValidationProblem(ModelState);
+
+            case ScheduleOutcome.SlotTaken:
+                return Conflict(new ProblemDetails
+                {
+                    Status = StatusCodes.Status409Conflict,
+                    Title = "Slot no longer available",
+                    Detail = "That time now overlaps a class in the room or another visit for "
+                           + "the technician. Ask for available slots again."
+                });
+
+            default:
+                throw new InvalidOperationException($"Unhandled schedule outcome '{result.Outcome}'.");
+        }
+    }
+
+    /// <summary>A 400 against one query parameter, in the same ValidationProblem shape as a body.</summary>
+    private ActionResult QueryInvalid(string parameter, string detail)
+    {
+        ModelState.AddModelError(parameter, detail);
+        return ValidationProblem(ModelState);
     }
 
     private const string AwaitingApprovalOnly =

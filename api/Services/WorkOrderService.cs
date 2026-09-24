@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using System.Linq.Expressions;
 using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Dtos;
@@ -28,20 +30,30 @@ public class WorkOrderService : IWorkOrderService
     private readonly IWorkflowQueue _workflowQueue;
     private readonly IVerificationService _verificationService;
     private readonly TimeProvider _time;
+    private readonly SchedulingSettings _scheduling;
 
     public WorkOrderService(
         AppDbContext db,
         ApprovalSettings approval,
         IWorkflowQueue workflowQueue,
         IVerificationService verificationService,
-        TimeProvider time)
+        TimeProvider time,
+        SchedulingSettings scheduling)
     {
         _db = db;
         _approval = approval;
         _workflowQueue = workflowQueue;
         _verificationService = verificationService;
         _time = time;
+        _scheduling = scheduling;
     }
+
+    /// <summary>
+    /// The longest date range one availability search covers, inclusive. Twenty slots are
+    /// usually found in the first day or two; the cap stops a mistyped year from loading a
+    /// year of timetable to find them.
+    /// </summary>
+    private const int MaxSlotSearchDays = 31;
 
     /// <summary>
     /// THE VISIBILITY RULE, written as "who sees everything" so it FAILS CLOSED — the same
@@ -317,10 +329,7 @@ public class WorkOrderService : IWorkOrderService
 
         // A Technician, not merely a user. Handing a repair to a Reporter would put it in
         // a queue nobody reads, since only a Technician can complete one.
-        var isTechnician = await _db.Users.AnyAsync(
-            u => u.Id == technicianId && u.Role == Role.Technician, cancellationToken);
-
-        if (!isTechnician)
+        if (!await IsTechnicianAsync(technicianId, cancellationToken))
         {
             return WorkOrderActionOutcome.NotATechnician;
         }
@@ -542,6 +551,208 @@ public class WorkOrderService : IWorkOrderService
 
         return WorkOrderActionOutcome.Success;
     }
+
+    public async Task<AvailableSlotsResult> GetAvailableSlotsAsync(
+        int assetId,
+        int? technicianId,
+        int durationMinutes,
+        DateOnly fromDate,
+        DateOnly toDate,
+        CancellationToken cancellationToken = default)
+    {
+        if (toDate < fromDate || toDate.DayNumber - fromDate.DayNumber >= MaxSlotSearchDays)
+        {
+            return new AvailableSlotsResult(AvailableSlotsOutcome.InvalidDateRange);
+        }
+
+        var duration = TimeSpan.FromMinutes(durationMinutes);
+
+        if (duration > _scheduling.WorkdayEnd - _scheduling.WorkdayStart)
+        {
+            return new AvailableSlotsResult(AvailableSlotsOutcome.DurationTooLong);
+        }
+
+        // The room is what the timetable is kept against, and the asset is how the caller
+        // names it. A projector is worked on where it hangs.
+        var roomId = await _db.Assets
+            .Where(a => a.Id == assetId)
+            .Select(a => (int?)a.RoomId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (roomId is null)
+        {
+            return new AvailableSlotsResult(AvailableSlotsOutcome.AssetNotFound);
+        }
+
+        if (technicianId is not null && !await IsTechnicianAsync(technicianId.Value, cancellationToken))
+        {
+            return new AvailableSlotsResult(AvailableSlotsOutcome.NotATechnician);
+        }
+
+        // The search window in UTC: local midnight at the start of fromDate to local midnight
+        // after toDate. Only used to decide what to LOAD — which candidates exist is
+        // SlotRules' business, from the same two dates.
+        var zone = _scheduling.TimeZone;
+        var windowStart = TimeZoneInfo.ConvertTimeToUtc(fromDate.ToDateTime(TimeOnly.MinValue), zone);
+        var windowEnd = TimeZoneInfo.ConvertTimeToUtc(toDate.AddDays(1).ToDateTime(TimeOnly.MinValue), zone);
+
+        var busy = await LoadBusyIntervalsAsync(roomId.Value, technicianId, windowStart, windowEnd, cancellationToken);
+
+        var slots = SlotRules.FindFreeSlots(
+            fromDate, toDate, duration, busy, _time.GetUtcNow().UtcDateTime, _scheduling);
+
+        return new AvailableSlotsResult(AvailableSlotsOutcome.Success, slots);
+    }
+
+    public async Task<ScheduleWorkOrderResult> ScheduleAsync(
+        int id,
+        ScheduleWorkOrderDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await _db.WorkOrders
+            .Include(w => w.Asset)
+            .FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
+
+        if (order is null)
+        {
+            return new ScheduleWorkOrderResult(ScheduleOutcome.NotFound);
+        }
+
+        // State before content, the same order as assign and complete.
+        if (!ActiveStatuses.Contains(order.Status))
+        {
+            return new ScheduleWorkOrderResult(ScheduleOutcome.InvalidState);
+        }
+
+        if (order.AssignedTechnicianId is null)
+        {
+            return new ScheduleWorkOrderResult(ScheduleOutcome.NoTechnicianAssigned);
+        }
+
+        // [Required] has refused a missing value already. A time with no offset is refused
+        // here: it could have been read off any clock, and guessing is how a visit lands
+        // five and a half hours from where the manager put it. One with an offset is
+        // converted, so "Z" and "+05:30" both work.
+        if (dto.StartsAt!.Value.Kind == DateTimeKind.Unspecified
+            || dto.EndsAt!.Value.Kind == DateTimeKind.Unspecified)
+        {
+            return new ScheduleWorkOrderResult(ScheduleOutcome.NotBookable);
+        }
+
+        var startsAt = dto.StartsAt.Value.ToUniversalTime();
+        var endsAt = dto.EndsAt.Value.ToUniversalTime();
+
+        // THE RE-CHECK AND THE INSERT ARE ONE SERIALIZABLE TRANSACTION. Re-running the check
+        // is what catches a slot taken in the thirty seconds since it was offered. Doing it
+        // serializably is what catches two managers booking the same technician in the same
+        // instant: each would read "free" and insert, and neither insert conflicts with a
+        // row the other can see. Under SERIALIZABLE, PostgreSQL notices that the two reads
+        // and writes cannot both have happened in some order and aborts one of them —
+        // which becomes the same 409 as any other taken slot. SQLite serializes every write
+        // transaction anyway.
+        try
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken);
+
+            var busy = await LoadBusyIntervalsAsync(
+                order.Asset!.RoomId, order.AssignedTechnicianId, startsAt, endsAt, cancellationToken);
+
+            // The very function the offer list was built with — not a booking-side copy of it.
+            var check = SlotRules.Check(startsAt, endsAt, busy, _time.GetUtcNow().UtcDateTime, _scheduling);
+
+            if (check == SlotCheck.Conflict)
+            {
+                return new ScheduleWorkOrderResult(ScheduleOutcome.SlotTaken);
+            }
+
+            if (check != SlotCheck.Free)
+            {
+                return new ScheduleWorkOrderResult(ScheduleOutcome.NotBookable);
+            }
+
+            var slot = new ScheduledSlot { WorkOrderId = order.Id, StartsAt = startsAt, EndsAt = endsAt };
+            _db.ScheduledSlots.Add(slot);
+
+            // Approved -> Scheduled: assigned and now booked. An order already Scheduled or
+            // InProgress is booking another visit, and stays where it is.
+            if (order.Status == WorkOrderStatus.Approved)
+            {
+                order.Status = WorkOrderStatus.Scheduled;
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+
+            return new ScheduleWorkOrderResult(
+                ScheduleOutcome.Success,
+                new ScheduledSlotDto(slot.Id, slot.WorkOrderId, slot.StartsAt, slot.EndsAt, slot.CreatedAt, slot.UpdatedAt));
+        }
+        catch (Exception ex) when (IsSerializationFailure(ex))
+        {
+            // The concurrent booking won. Nothing of ours was committed.
+            return new ScheduleWorkOrderResult(ScheduleOutcome.SlotTaken);
+        }
+    }
+
+    /// <summary>
+    /// Everything that makes time unavailable in a room — its classes, widened by the
+    /// buffer — and, when a technician is named, for that technician: their visits on
+    /// orders still live. A cancelled or rejected order's bookings free the diary again.
+    ///
+    /// THE QUERY ONLY DECIDES WHAT TO LOAD, NEVER WHAT IS FREE. Its bounds are widened by a
+    /// whole day either side, so an off-by-one here can only fetch a row too many and never
+    /// drop one that matters; the boundary decision is SlotRules.Overlaps, in C#, and
+    /// nowhere else.
+    /// </summary>
+    private async Task<IReadOnlyList<BusyInterval>> LoadBusyIntervalsAsync(
+        int roomId,
+        int? technicianId,
+        DateTime windowStart,
+        DateTime windowEnd,
+        CancellationToken cancellationToken)
+    {
+        var loadFrom = windowStart.AddDays(-1);
+        var loadTo = windowEnd.AddDays(1);
+
+        var classes = await _db.ClassScheduleSlots
+            .AsNoTracking()
+            .Where(c => c.RoomId == roomId && c.StartsAt < loadTo && c.EndsAt > loadFrom)
+            .Select(c => new { c.StartsAt, c.EndsAt })
+            .ToListAsync(cancellationToken);
+
+        var busy = classes
+            .Select(c => SlotRules.ClassWithBuffer(c.StartsAt, c.EndsAt, _scheduling))
+            .ToList();
+
+        if (technicianId is not null)
+        {
+            var visits = await _db.ScheduledSlots
+                .AsNoTracking()
+                .Where(s => s.WorkOrder!.AssignedTechnicianId == technicianId
+                         && ActiveStatuses.Contains(s.WorkOrder.Status)
+                         && s.StartsAt < loadTo && s.EndsAt > loadFrom)
+                .Select(s => new { s.StartsAt, s.EndsAt })
+                .ToListAsync(cancellationToken);
+
+            busy.AddRange(visits.Select(v => new BusyInterval(v.StartsAt, v.EndsAt)));
+        }
+
+        return busy;
+    }
+
+    private Task<bool> IsTechnicianAsync(int userId, CancellationToken cancellationToken) =>
+        _db.Users.AnyAsync(u => u.Id == userId && u.Role == Role.Technician, cancellationToken);
+
+    /// <summary>
+    /// PostgreSQL's "could not serialize access" (SQLSTATE 40001), which it raises on the
+    /// losing side of a concurrent booking — from SaveChanges wrapped in a
+    /// DbUpdateException, or from Commit directly. Read off DbException.SqlState so the
+    /// check names no provider type.
+    /// </summary>
+    private static bool IsSerializationFailure(Exception ex) =>
+        ex is DbException { SqlState: "40001" }
+        || ex.InnerException is DbException { SqlState: "40001" };
 
     /// <summary>
     /// The workflow a work order's state changes are applied to: the most recent one raised

@@ -184,6 +184,60 @@ if (verificationSettings.SweepIntervalMinutes <= 0)
 builder.Services.AddSingleton(verificationSettings);
 
 // ---------------------------------------------------------------------------
+// Scheduling
+//
+// The campus working day, the time zone it is measured in, and the clear time required
+// either side of a class. From configuration, never literals in a service — see
+// SchedulingSettings. Falls back to the SCHEDULING_* names used by the root .env.example,
+// then to the class's own defaults. A blank value counts as unset.
+// ---------------------------------------------------------------------------
+string? FirstSet(params string[] keys) =>
+    keys.Select(key => builder.Configuration[key]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+
+var schedulingSettings = new SchedulingSettings
+{
+    TimeZoneId = FirstSet("Scheduling:TimeZone", "SCHEDULING_TIME_ZONE")
+        ?? SchedulingSettings.DefaultTimeZoneId,
+    WorkdayStart = FirstSet("Scheduling:WorkdayStart", "SCHEDULING_WORKDAY_START") is { } start
+        ? TimeOnly.Parse(start, System.Globalization.CultureInfo.InvariantCulture)
+        : SchedulingSettings.DefaultWorkdayStart,
+    WorkdayEnd = FirstSet("Scheduling:WorkdayEnd", "SCHEDULING_WORKDAY_END") is { } end
+        ? TimeOnly.Parse(end, System.Globalization.CultureInfo.InvariantCulture)
+        : SchedulingSettings.DefaultWorkdayEnd,
+    ClassBufferMinutes = FirstSet("Scheduling:ClassBufferMinutes", "SCHEDULING_CLASS_BUFFER_MINUTES") is { } buffer
+        ? int.Parse(buffer, System.Globalization.CultureInfo.InvariantCulture)
+        : SchedulingSettings.DefaultClassBufferMinutes
+};
+
+// Resolved now rather than on the first slot search, so a misspelt zone stops the API
+// booting with a clear message instead of turning every availability request into a 500.
+try
+{
+    _ = schedulingSettings.TimeZone;
+}
+catch (TimeZoneNotFoundException)
+{
+    throw new InvalidOperationException(
+        $"Unknown scheduling time zone '{schedulingSettings.TimeZoneId}' (Scheduling:TimeZone / " +
+        "SCHEDULING_TIME_ZONE). Use an IANA id such as Asia/Colombo.");
+}
+
+if (schedulingSettings.WorkdayEnd <= schedulingSettings.WorkdayStart)
+{
+    throw new InvalidOperationException(
+        "The scheduling working day must end after it starts (Scheduling:WorkdayStart / WorkdayEnd).");
+}
+
+if (schedulingSettings.ClassBufferMinutes < 0)
+{
+    throw new InvalidOperationException(
+        "The class buffer (Scheduling:ClassBufferMinutes / SCHEDULING_CLASS_BUFFER_MINUTES) " +
+        "cannot be negative.");
+}
+
+builder.Services.AddSingleton(schedulingSettings);
+
+// ---------------------------------------------------------------------------
 // Photo storage (Supabase Storage)
 //
 // Falls back to the SUPABASE_* names used by the root .env.example. Like the agent settings,

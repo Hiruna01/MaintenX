@@ -9,10 +9,23 @@ namespace CampusFacilities.Api.Dtos;
 ///
 /// AssetTag is denormalised onto the row for the same reason ReportListItemDto carries
 /// RoomName: a list shows the sticker on the machine, not an object describing it.
+///
+/// ReportDescription and WorkOrderCompletedAt are denormalised for the reporter's side of the
+/// same list: a reporter is not expected to know an asset tag (see Report.AssetId), so a row
+/// that said only "PRJ-MAB101-01" would not tell them which of their faults they are being
+/// asked about. What they reported and when it was repaired does.
 /// </summary>
 public record VerificationCheckDto(
     int Id,
     int WorkOrderId,
+
+    // The report whose fault the repair was for, and its description verbatim.
+    int ReportId,
+    string ReportDescription,
+
+    // When the technician claimed the repair — the "since" the question is about.
+    DateTime? WorkOrderCompletedAt,
+
     int AssetId,
     string AssetTag,
     DateTime DueAt,

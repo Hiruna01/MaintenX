@@ -9,6 +9,8 @@ import '../../core/paged_result.dart';
 import '../../widgets/empty_view.dart';
 import '../../widgets/error_view.dart';
 import '../../widgets/loading_view.dart';
+import '../verification/confirm_fix_screen.dart';
+import '../verification/verification_status_chip.dart';
 import 'clarification_screen.dart';
 import 'report.dart';
 import 'report_status_chip.dart';
@@ -263,14 +265,22 @@ class _ReportCard extends StatelessWidget {
     final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
     final waiting = report.isWaitingOnReporter;
     final count = report.unansweredQuestionCount;
+    final verification = report.verification;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        // Only a report with questions open goes anywhere. Every other row is a status to
-        // read, and a tap that led to an empty page would be worse than no tap.
-        onTap: waiting ? () => context.go(ClarificationScreen.location(report.id)) : null,
+        // Only a report with something behind it goes anywhere: open questions, or a repair
+        // check — which is either a question waiting on the reporter or the status of what
+        // their answer did. Every other row is a status to read, and a tap that led to an
+        // empty page would be worse than no tap. Pushed rather than gone to, so back comes
+        // here and not to the pending list the check screen is nested under.
+        onTap: waiting
+            ? () => context.go(ClarificationScreen.location(report.id))
+            : verification != null
+                ? () => context.push(ConfirmFixScreen.location(verification.id))
+                : null,
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Column(
@@ -317,6 +327,12 @@ class _ReportCard extends StatelessWidget {
                     Icon(Icons.chevron_right, color: theme.colorScheme.primary),
                   ],
                 ),
+              ],
+              if (verification != null) ...[
+                const SizedBox(height: 10),
+                const Divider(height: 1),
+                const SizedBox(height: 10),
+                ReportVerificationLine(verification: verification),
               ],
             ],
           ),

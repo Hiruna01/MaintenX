@@ -210,9 +210,35 @@ public class ReportService : IReportService
                 // The one thing a list needs to say about clarification — "this report is
                 // waiting on you" — without pulling the questions themselves.
                 r.ClarificationQuestions.Count(q => q.Answer == null),
+                // Filled in below, from one more query for the whole page.
+                null,
                 r.CreatedAt,
                 r.UpdatedAt))
             .ToListAsync(cancellationToken);
+
+        // The latest verification check per report on this page. ONE query for the page, not
+        // one per row, and the pick of the newest is done here in C#: a "first per group"
+        // inside the projection needs a lateral join, which SQLite — the default test
+        // database — cannot run. Newest by Id, which is also creation order.
+        var reportIds = items.Select(i => i.Id).ToList();
+
+        var checks = await _db.VerificationChecks
+            .AsNoTracking()
+            .Where(v => reportIds.Contains(v.WorkOrder!.ReportId))
+            .Select(v => new { v.WorkOrder!.ReportId, v.Id, v.Status, v.AgentOutcome })
+            .ToListAsync(cancellationToken);
+
+        var latestCheck = checks
+            .GroupBy(c => c.ReportId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.MaxBy(c => c.Id)!);
+
+        items = items
+            .Select(i => latestCheck.TryGetValue(i.Id, out var c)
+                ? i with { Verification = new ReportVerificationDto(c.Id, c.Status, c.AgentOutcome) }
+                : i)
+            .ToList();
 
         return new PagedResult<ReportListItemDto>(items, page, pageSize, totalCount);
     }

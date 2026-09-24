@@ -62,6 +62,7 @@ public class VerificationService : IVerificationService
     {
         var workOrder = await _db.WorkOrders
             .Include(w => w.Asset)
+            .Include(w => w.Report)
             .FirstOrDefaultAsync(w => w.Id == workOrderId, cancellationToken);
 
         if (workOrder is null)
@@ -99,7 +100,8 @@ public class VerificationService : IVerificationService
         _db.VerificationChecks.Add(check);
         await _db.SaveChangesAsync(cancellationToken);
 
-        return ToDto(check, workOrder.Asset?.AssetTag ?? string.Empty, IsOverdue(check));
+        return ToDto(check, workOrder.Asset?.AssetTag ?? string.Empty, workOrder.ReportId,
+            workOrder.Report?.Description ?? string.Empty, workOrder.CompletedAt, IsOverdue(check));
     }
 
     public Task<bool> HasOpenCheckAsync(int workOrderId, CancellationToken cancellationToken = default) =>
@@ -200,11 +202,18 @@ public class VerificationService : IVerificationService
         var rows = await query
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(v => new { Check = v, AssetTag = v.Asset!.AssetTag })
+            .Select(v => new
+            {
+                Check = v,
+                AssetTag = v.Asset!.AssetTag,
+                v.WorkOrder!.ReportId,
+                ReportDescription = v.WorkOrder.Report!.Description,
+                v.WorkOrder.CompletedAt
+            })
             .ToListAsync(cancellationToken);
 
         return new PagedResult<VerificationCheckDto>(
-            rows.Select(r => ToDto(r.Check, r.AssetTag, IsOverdue(r.Check))).ToList(),
+            rows.Select(r => ToDto(r.Check, r.AssetTag, r.ReportId, r.ReportDescription, r.CompletedAt, IsOverdue(r.Check))).ToList(),
             page,
             pageSize,
             totalCount);
@@ -271,6 +280,7 @@ public class VerificationService : IVerificationService
             check.Id,
             check.WorkOrderId,
             check.WorkOrder.ReportId,
+            check.WorkOrder.Report.Description,
             ToAssetDto(check.Asset),
             check.WorkOrder.ResolutionNote,
             check.WorkOrder.CompletedAt,
@@ -306,10 +316,17 @@ public class VerificationService : IVerificationService
             // sequence — the first repair, then whatever followed it being reopened — and
             // that only reads as a sequence in the order it happened.
             .OrderBy(v => v.Id)
-            .Select(v => new { Check = v, AssetTag = v.Asset!.AssetTag })
+            .Select(v => new
+            {
+                Check = v,
+                AssetTag = v.Asset!.AssetTag,
+                v.WorkOrder!.ReportId,
+                ReportDescription = v.WorkOrder.Report!.Description,
+                v.WorkOrder.CompletedAt
+            })
             .ToListAsync(cancellationToken);
 
-        return rows.Select(r => ToDto(r.Check, r.AssetTag, IsOverdue(r.Check))).ToList();
+        return rows.Select(r => ToDto(r.Check, r.AssetTag, r.ReportId, r.ReportDescription, r.CompletedAt, IsOverdue(r.Check))).ToList();
     }
 
     public async Task<VerificationSweepResultDto> ProcessDueChecksAsync(
@@ -703,9 +720,18 @@ public class VerificationService : IVerificationService
         }
     }
 
-    private static VerificationCheckDto ToDto(VerificationCheck v, string assetTag, bool isOverdue) =>
+    private static VerificationCheckDto ToDto(
+        VerificationCheck v,
+        string assetTag,
+        int reportId,
+        string reportDescription,
+        DateTime? completedAt,
+        bool isOverdue) =>
         new(v.Id,
             v.WorkOrderId,
+            reportId,
+            reportDescription,
+            completedAt,
             v.AssetId,
             assetTag,
             v.DueAt,

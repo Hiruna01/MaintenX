@@ -50,13 +50,16 @@ public class InternalToolsController : ControllerBase
             ["get_asset_service_history"] = (controller, id, ct) =>
                 controller.GetAssetServiceHistoryAsync(id, ct),
             ["get_related_open_reports"] = (controller, id, ct) =>
-                controller.GetRelatedOpenReportsAsync(id, ct)
+                controller.GetRelatedOpenReportsAsync(id, ct),
+            ["get_open_work_orders"] = (controller, id, ct) =>
+                controller.GetOpenWorkOrdersAsync(id, ct)
         };
 
     private readonly IRoomService _roomService;
     private readonly IBuildingService _buildingService;
     private readonly IAssetService _assetService;
     private readonly IReportService _reportService;
+    private readonly IWorkOrderService _workOrderService;
     private readonly IWorkflowService _workflowService;
     private readonly ILogger<InternalToolsController> _logger;
 
@@ -65,6 +68,7 @@ public class InternalToolsController : ControllerBase
         IBuildingService buildingService,
         IAssetService assetService,
         IReportService reportService,
+        IWorkOrderService workOrderService,
         IWorkflowService workflowService,
         ILogger<InternalToolsController> logger)
     {
@@ -72,6 +76,7 @@ public class InternalToolsController : ControllerBase
         _buildingService = buildingService;
         _assetService = assetService;
         _reportService = reportService;
+        _workOrderService = workOrderService;
         _workflowService = workflowService;
         _logger = logger;
     }
@@ -160,7 +165,7 @@ public class InternalToolsController : ControllerBase
     // unauditable the moment it mattered. What the facts MEAN is the agent's job upstream,
     // and any rule the system acts on is C# somewhere a person can read it.
     //
-    // The three asset tools are shaped for a model's context window rather than a page:
+    // The asset tools are shaped for a model's context window rather than a page:
     // names instead of nested DTOs, newest first, and a row cap the caller cannot widen.
     // ---------------------------------------------------------------------------
 
@@ -181,6 +186,12 @@ public class InternalToolsController : ControllerBase
     // Also the asset's id. Same null-versus-empty distinction as above.
     private async Task<object?> GetRelatedOpenReportsAsync(int id, CancellationToken cancellationToken) =>
         await _reportService.GetOpenReportsForAssetAsync(id, cancellationToken);
+
+    // Also the asset's id — the open orders on it AND on everything else in its room, so
+    // the strategist can see a visit it might share. Facts only: which orders SHOULD be
+    // combined is the strategist's proposal, never this tool's answer.
+    private async Task<object?> GetOpenWorkOrdersAsync(int id, CancellationToken cancellationToken) =>
+        await _workOrderService.GetOpenWorkOrdersInAssetRoomAsync(id, cancellationToken);
 
     private static string SerializeToolCall(string toolName, int id) =>
         // An array because a step may eventually carry several calls; today it is one.

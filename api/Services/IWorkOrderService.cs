@@ -6,6 +6,15 @@ namespace CampusFacilities.Api.Services;
 public interface IWorkOrderService
 {
     /// <summary>
+    /// The most work orders `get_open_work_orders` will return.
+    ///
+    /// A constant, not a field on <see cref="ToolCallRequest"/>, for the same reason as
+    /// IReportService.MaxToolRelatedReports: the agent names a tool and an id, and how much
+    /// one call can pull is not the caller's to widen.
+    /// </summary>
+    const int MaxToolOpenWorkOrders = 10;
+
+    /// <summary>
     /// One page of work orders, filtered and sorted, through the existing PagedResult&lt;T&gt;.
     ///
     /// WHO MAY SEE WHAT IS DECIDED HERE, NOT BY THE CALLER. A FacilitiesManager and an Admin
@@ -43,6 +52,28 @@ public interface IWorkOrderService
 
     /// <summary>Whether a work order exists AT ALL, ignoring who is asking.</summary>
     Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Work orders still open — not Completed, Rejected or Cancelled — on ANY asset in the
+    /// same room as this one, this asset's own included. Newest first, capped at
+    /// <see cref="MaxToolOpenWorkOrders"/>. What `get_open_work_orders` returns.
+    ///
+    /// One id and two questions: "is work already open on this machine" and "is anyone
+    /// already going to this room". The second is the one consolidation needs — a
+    /// technician in the room for the projector can look at the air conditioner in the same
+    /// visit — and a room is reached through an asset because every strategist tool takes
+    /// the asset's id.
+    ///
+    /// No visibility scope: the caller is the agent service, behind the shared secret, not
+    /// a user with a role. Facts, never a judgement — nothing here says which orders SHOULD
+    /// be combined; that is the strategist's proposal, and C# decides what is raised.
+    ///
+    /// NULL means no asset has that id; an EMPTY LIST means nothing is open in its room —
+    /// the same null-versus-empty rule as every other tool.
+    /// </summary>
+    Task<IReadOnlyList<WorkOrderDto>?> GetOpenWorkOrdersInAssetRoomAsync(
+        int assetId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Raises a work order from a report and routes it through THE APPROVAL GATE:

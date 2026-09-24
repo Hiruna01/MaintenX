@@ -15,12 +15,21 @@ namespace CampusFacilities.Api.Dtos;
 /// The scheduled slots are on the DETAIL DTO and not the list one, the same way the asset
 /// registry keeps service history off AssetDto: a list of work orders would otherwise pull
 /// every slot for every row to render something no list shows.
+///
+/// Room and Diagnosis are here for the technician, who reads this DTO and nothing else
+/// before a visit: a Technician cannot open the report (ReportService scopes it to the
+/// reporter) nor the approval queue (FacilitiesManager only), and should still arrive
+/// knowing where the machine is and what the agent thinks is wrong with it.
 /// </summary>
 public record WorkOrderDetailDto(
     int Id,
     int ReportId,
     string ReportDescription,
     AssetDto Asset,
+
+    // Where the asset is. Resolved rather than Asset.RoomId, because "MAB101 · Lecture
+    // Hall A" is where a technician walks to and "12" is not.
+    RoomDto Room,
 
     // Null while the order is unassigned; a whole UserDto rather than a name because a
     // detail view offers to contact whoever is going.
@@ -58,4 +67,9 @@ public record WorkOrderDetailDto(
 
     // Every visit booked for this order, oldest-first — a job can take more than one, and
     // a rescheduled order keeps the slot it was moved from.
-    IReadOnlyList<ScheduledSlotDto> ScheduledSlots);
+    IReadOnlyList<ScheduledSlotDto> ScheduledSlots,
+
+    // The diagnostic agent's latest answer for the report — the same reading, by the same
+    // code, as ApprovalCaseDto.Diagnosis. ADVICE, never a decision. NULL IS NOT EMPTY: null
+    // means no diagnosis was ever recorded; a failed run comes back with its reason.
+    AgentDiagnosisDto? Diagnosis);

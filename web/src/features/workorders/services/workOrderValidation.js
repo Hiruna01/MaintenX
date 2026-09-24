@@ -11,8 +11,8 @@
 /** RejectWorkOrderDto.Reason and RequestRevisionDto.Note: [Required], [MaxLength(1000)]. */
 export const DECISION_NOTE_MAX = 1000;
 
-/** CompleteWorkOrderDto: ResolutionNote [StringLength(2000, MinimumLength = 10)]. */
-export const RESOLUTION_NOTE_MIN = 10;
+/** CompleteWorkOrderDto: ResolutionNote [StringLength(2000, MinimumLength = 20)]. */
+export const RESOLUTION_NOTE_MIN = 20;
 export const RESOLUTION_NOTE_MAX = 2000;
 
 /** CompleteWorkOrderDto: CompletionPhotoUrl [MaxLength(500)]. */

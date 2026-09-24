@@ -343,6 +343,29 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Complete_WithANoteUnderTwentyCharacters_Is400_AndWritesNoHistory()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, technicianId) = await ClientAsync(Role.Technician);
+        var order = await RaiseAsync(manager, await NewFaultAsync(), 10m);
+        await AssignAsync(manager, order.Id, technicianId);
+
+        // "done" is what the floor exists to refuse; nineteen characters is its boundary.
+        var done = await technician.PostAsJsonAsync($"/api/workorders/{order.Id}/complete",
+            new CompleteWorkOrderDto(100m, ServiceOutcome.Resolved, "done", null), JsonOptions);
+        var nineteen = await technician.PostAsJsonAsync($"/api/workorders/{order.Id}/complete",
+            new CompleteWorkOrderDto(100m, ServiceOutcome.Resolved, new string('x', 19), null), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, done.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, nineteen.StatusCode);
+        Assert.Equal(0, await CountServiceRecordsForOrderAsync(order.Id));
+
+        var twenty = await technician.PostAsJsonAsync($"/api/workorders/{order.Id}/complete",
+            new CompleteWorkOrderDto(100m, ServiceOutcome.Resolved, new string('x', 20), null), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, twenty.StatusCode);
+    }
+
+    [Fact]
     public async Task Complete_ByAnyoneButTheAssignedTechnician_Is403()
     {
         var (manager, _) = await ClientAsync(Role.FacilitiesManager);
@@ -384,7 +407,8 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
                 new FailingVerificationService(),
                 TimeProvider.System,
                 sp.GetRequiredService<SchedulingSettings>(),
-                sp.GetRequiredService<IAssetService>());
+                sp.GetRequiredService<IAssetService>(),
+                sp.GetRequiredService<IFileStorageService>());
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteAsync(
                 order.Id, technicianId,
@@ -439,6 +463,42 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         var managerPage = await manager.GetFromJsonAsync<PagedResult<WorkOrderDto>>(
             $"/api/workorders?technicianId={theirId}", JsonOptions);
         Assert.Equal(theirOrder.Id, Assert.Single(managerPage!.Items).Id);
+    }
+
+    [Fact]
+    public async Task Detail_ForTheAssignedTechnician_CarriesTheRoomAndTheDiagnosis()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, technicianId) = await ClientAsync(Role.Technician);
+        var fault = await NewFaultAsync();
+        var order = await RaiseAsync(manager, fault, 10m);
+        await AssignAsync(manager, order.Id, technicianId);
+
+        // Nothing recorded yet: null, not an empty diagnosis.
+        var before = await technician.GetFromJsonAsync<WorkOrderDetailDto>($"/api/workorders/{order.Id}", JsonOptions);
+        Assert.Null(before!.Diagnosis);
+        Assert.Equal(await RoomOfAsync(fault.AssetId), before.Room.Id);
+        Assert.Equal("Lecture Hall A", before.Room.Name);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var workflows = scope.ServiceProvider.GetRequiredService<IWorkflowService>();
+            Assert.True(await workflows.RecordStepAsync(
+                await WorkflowIdAsync(fault.ReportId), AgentRunResponse.DiagnosticAgentName, "[]",
+                """
+                {"hypotheses":[{"cause":"Overheating due to a failing cooling fan","confidence":"high",
+                  "evidence":["2026-09-02: fan bearing weak, temporary fix."]}],
+                 "primary_hypothesis_index":0,"recommended_next_action":"replace",
+                 "reasoning_summary":"Cleaning is not holding."}
+                """,
+                0, "Ok", null));
+        }
+
+        var after = await technician.GetFromJsonAsync<WorkOrderDetailDto>($"/api/workorders/{order.Id}", JsonOptions);
+        var hypothesis = Assert.Single(after!.Diagnosis!.Hypotheses);
+        Assert.Equal("Overheating due to a failing cooling fan", hypothesis.Cause);
+        Assert.Equal("2026-09-02: fan bearing weak, temporary fix.", Assert.Single(hypothesis.Evidence));
+        Assert.Equal("replace", after.Diagnosis.RecommendedNextAction);
     }
 
     [Fact]

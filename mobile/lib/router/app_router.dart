@@ -11,6 +11,9 @@ import '../features/home/home_screen.dart';
 import '../features/reports/clarification_screen.dart';
 import '../features/reports/my_reports_screen.dart';
 import '../features/reports/submit_report_screen.dart';
+import '../features/workorders/complete_job_screen.dart';
+import '../features/workorders/job_detail_screen.dart';
+import '../features/workorders/my_jobs_screen.dart';
 
 /// Bridges Riverpod to go_router: go_router re-runs its redirect when this notifies, and
 /// it notifies whenever the sign-in status changes.
@@ -69,6 +72,27 @@ final routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) => ClarificationScreen(
                   reportId: int.tryParse(state.pathParameters['id'] ?? ''),
                 ),
+              ),
+            ],
+          ),
+          GoRoute(
+            path: MyJobsScreen.subPath,
+            builder: (context, state) => const MyJobsScreen(),
+            routes: [
+              GoRoute(
+                path: JobDetailScreen.subPath,
+                // A non-numeric id becomes null and the screen renders an error, not a crash.
+                builder: (context, state) => JobDetailScreen(
+                  workOrderId: int.tryParse(state.pathParameters['id'] ?? ''),
+                ),
+                routes: [
+                  GoRoute(
+                    path: CompleteJobScreen.subPath,
+                    builder: (context, state) => CompleteJobScreen(
+                      workOrderId: int.tryParse(state.pathParameters['id'] ?? ''),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

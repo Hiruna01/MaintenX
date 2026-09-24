@@ -409,7 +409,7 @@ builder.Services.AddScoped<IWorkOrderService, WorkOrderService>();
 // Users by role — the technician picker behind assigning and filtering work orders.
 builder.Services.AddScoped<IUserService, UserService>();
 
-// File storage — report photos today, completion photos next. Scoped like the services
+// File storage — report photos and completion photos, one path. Scoped like the services
 // above; it takes its HttpClient from the factory per upload, so the handler is pooled
 // rather than a new HttpClient being built for every photo.
 builder.Services.AddHttpClient(SupabaseStorageService.HttpClientName, client =>

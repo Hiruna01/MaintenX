@@ -561,6 +561,25 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
   (403 for anyone else, checked before state). Pinned by a test that makes the verification
   step fail after the first save and asserts none of it survived — verified to fail with
   the transaction removed.
+- **`ResolutionNote` is at least 20 characters** (`[StringLength(2000, MinimumLength = 20)]`,
+  and the same floor in both clients). It becomes the `ServiceRecord` note the diagnostic
+  agent reads months later, and "done" teaches it nothing. The floor is the API's; a bound
+  only the clients kept would be one `curl` away.
+- **`POST /api/workorders/{id}/photo` is the completion photo** — the report photo's path, not
+  a second one: `ImageUploadRules`, then `IFileStorageService.UploadAsync` under
+  `workorders/{id}`, only the URL stored (`CompletionPhotoUrl`), 201 with
+  `CompletionPhotoDto`, a storage failure a 503 that writes nothing. Technician policy, then
+  the ASSIGNED technician (403), then live work only — `Approved` / `Scheduled` /
+  `InProgress` (409). **It is called BEFORE `complete`**, because completing cannot be undone:
+  a failed upload leaves the job open to retry or finish without it. So `CompleteAsync` keeps
+  the uploaded URL when `CompleteWorkOrderDto.CompletionPhotoUrl` is null — without that the
+  phone's own completion would erase the photo it had just attached. Pinned by
+  `WorkOrderPhotoTests`.
+- **`WorkOrderDetailDto` carries `Room` and `Diagnosis`** for the technician, who can read
+  neither the report (scoped to the reporter) nor the approval queue. `Diagnosis` is the same
+  `LatestAgentAnalysisAsync` reading as `ApprovalCaseDto.Diagnosis` — so it appears twice in a
+  queue case, deliberately, rather than a second reading — and null still means never
+  diagnosed, not failed. It is read only after the visibility check passes.
 
 ### Scheduling — offered slots are computed, booked slots are re-checked
 
@@ -1373,9 +1392,10 @@ mobile/lib/features/<name>/   screens, that feature's API class and its provider
 - **Every screen that waits on the API renders all of its states** — `LoadingView`,
   `ErrorView`, `EmptyView`, success. A blank screen while loading is a bug, and an empty
   list is not a failure and must not look like one.
-- **Enums are matched by NAME, never by ordinal** — `Roles` in `features/auth/auth_state.dart`
-  and `AssetStatuses` / `ServiceOutcomes` in `features/assets/asset.dart` hold the same
-  strings the API sends and accepts.
+- **Enums are matched by NAME, never by ordinal** — `Roles` in `features/auth/auth_state.dart`,
+  `AssetStatuses` / `ServiceOutcomes` in `features/assets/asset.dart` and
+  `WorkOrderStatuses` in `features/workorders/work_order.dart` hold the same strings the API
+  sends and accepts.
 
 ### The token lives in flutter_secure_storage — this is the point, not a detail
 
@@ -1504,6 +1524,35 @@ indeterminate ("Saving photo…"): the bytes are out and the API is still storin
   the phone's own file name has no reason to leave the phone.
 - `imagePickerProvider` exists so tests can hand the screen a fake picker — a test has no
   camera and no gallery.
+
+### Work orders — `features/workorders/`
+
+A Technician's side of the job. `/jobs` (`MyJobsScreen`), `/jobs/:id` (`JobDetailScreen`),
+`/jobs/:id/complete` (`CompleteJobScreen`). The home card is shown to a Technician only.
+
+- **Whose jobs is the API's rule.** `GET /api/workorders` scopes a Technician to the orders
+  assigned to them; no `technicianId` is sent. The status filter is server-side, by NAME, and
+  offers only `WorkOrderStatuses.technicianFilters` — an order is assignable only once
+  approved, so a Draft or AwaitingApproval chip could only ever come back empty. No jobs is
+  an `EmptyView`, and "nothing assigned" and "nothing in this status" are two different ones.
+- **`JobDetailScreen` is one request** — the asset, the room, the booked slots (instants,
+  shown in local time), the parts, the report verbatim and the agent's diagnosis with its
+  evidence verbatim, labelled advice. No diagnosis, a failed one and an unreadable one are
+  three different sentences. "Service history" links to the asset screen rather than
+  copying it. The Complete button shows only on live work assigned to the signed-in user
+  (`currentUserIdProvider`); the API is the rule either way.
+- **`CompleteJobScreen` uploads the photo FIRST, then completes** — the reverse of the report,
+  because here the second step is the irreversible one. A failed upload says **"the job has
+  not been completed yet"** with Retry upload and Complete without photo; an uploaded photo
+  is not sent again when completion is retried. The outcome picker has **no default**.
+  `validateCompletion` in `completion.dart` mirrors `CompleteWorkOrderDto`: outcome
+  required, cost in rupees with at most two decimals up to 10,000,000, note 20–2000 after
+  trimming.
+- The cost goes out through `costForApi` as a JSON number: validated to at most ten
+  significant digits, which a double writes back out as exactly the text typed. Nothing on
+  the phone adds, rounds or compares money; `formatMoney` only formats.
+- **One photo picker for the app**: `choosePhoto` in `reports/report_photo.dart`, called by
+  both the report form and the completion form, with the same `PickedPhoto` limits.
 
 ### `POST /api/reports` — landed
 

@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/api_client.dart';
 import '../../widgets/app_form_field.dart';
@@ -81,43 +79,9 @@ class _SubmitReportScreenState extends ConsumerState<SubmitReportScreen> {
   }
 
   Future<void> _pickPhoto() async {
-    final source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Take a photo'),
-              onTap: () => Navigator.pop(context, ImageSource.camera),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Choose from gallery'),
-              onTap: () => Navigator.pop(context, ImageSource.gallery),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (source == null || !mounted) return;
-
     try {
-      // Scaled and re-encoded on the phone: a fault photo does not need 48 megapixels, and
-      // this keeps it well inside the API's 5 MB. With a quality set, iOS also re-encodes a
-      // HEIC photo as JPEG, which is one of the two types the API accepts.
-      final file = await ref.read(imagePickerProvider).pickImage(
-            source: source,
-            maxWidth: 2048,
-            maxHeight: 2048,
-            imageQuality: 85,
-          );
-      if (file == null) return; // Cancelled — not an error.
-
-      final photo = await PickedPhoto.fromFile(file);
-      if (mounted) {
+      final photo = await choosePhoto(context, ref.read(imagePickerProvider));
+      if (photo != null && mounted) {
         setState(() {
           _photo = photo;
           _photoError = null;
@@ -125,17 +89,6 @@ class _SubmitReportScreenState extends ConsumerState<SubmitReportScreen> {
       }
     } on PhotoRejected catch (error) {
       if (mounted) setState(() => _photoError = error.message);
-    } on PlatformException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _photoError = switch (error.code) {
-          'camera_access_denied' =>
-            'Camera access is off. Allow it in Settings, or choose from the gallery.',
-          'photo_access_denied' =>
-            'Photo access is off. Allow it in Settings, or take a photo instead.',
-          _ => 'Could not open the camera or gallery.',
-        };
-      });
     }
   }
 

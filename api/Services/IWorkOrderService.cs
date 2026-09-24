@@ -134,6 +134,27 @@ public interface IWorkOrderService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Uploads the evidence photo for a job and records its URL on the order. The same path
+    /// as IReportService.AttachPhotoAsync — ImageUploadRules, then IFileStorageService — and
+    /// not a second upload mechanism.
+    ///
+    /// Identity before state before content, like <see cref="CompleteAsync"/>: only the
+    /// assigned technician, only while the job is still live work (Approved, Scheduled,
+    /// InProgress), and only then the file checks. The photo is attached BEFORE completing,
+    /// because completing is the step that cannot be undone — a failed upload leaves the job
+    /// open to retry, rather than a finished job with its evidence missing.
+    ///
+    /// Storage failure writes nothing: the order keeps whatever photo it had.
+    /// </summary>
+    Task<CompletionPhotoResult> AttachCompletionPhotoAsync(
+        int id,
+        int callerId,
+        Stream content,
+        string? contentType,
+        long length,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// A manager's yes: Approved, with who and when recorded, and the workflow to
     /// WorkOrderRaised. Only from AwaitingApproval.
     /// </summary>
@@ -259,6 +280,43 @@ public enum WorkOrderActionOutcome
     /// </summary>
     NoWorkflow
 }
+
+/// <summary>
+/// Why an <see cref="IWorkOrderService.AttachCompletionPhotoAsync"/> call ended as it did.
+/// The work order's own three refusals, then AttachPhotoOutcome's file and storage ones.
+/// </summary>
+public enum CompletionPhotoOutcome
+{
+    /// <summary>Uploaded and recorded. A 201 carrying the URL.</summary>
+    Success,
+
+    /// <summary>No work order has that id. A 404.</summary>
+    NotFound,
+
+    /// <summary>The caller is not the technician the order is assigned to. A 403.</summary>
+    NotAssignedToCaller,
+
+    /// <summary>
+    /// The order is not live work — not yet approved, or already Completed, Rejected or
+    /// Cancelled. A 409: a finished job's record is not reopened to add evidence to it.
+    /// </summary>
+    InvalidState,
+
+    /// <summary>The content type is not image/jpeg or image/png. A 400.</summary>
+    UnsupportedContentType,
+
+    /// <summary>Larger than <see cref="ImageUploadRules.MaxBytes"/>. A 400.</summary>
+    TooLarge,
+
+    /// <summary>The bytes do not start the way the claimed type always starts. A 400.</summary>
+    ContentDoesNotMatchType,
+
+    /// <summary>Storage was unreachable or refused the upload; nothing was recorded. A 503.</summary>
+    StorageUnavailable
+}
+
+/// <summary><see cref="PhotoUrl"/> is set only on <see cref="CompletionPhotoOutcome.Success"/>.</summary>
+public record CompletionPhotoResult(CompletionPhotoOutcome Outcome, string? PhotoUrl = null);
 
 /// <summary>
 /// Why a <see cref="IWorkOrderService.GetAvailableSlotsAsync"/> call ended as it did. Every

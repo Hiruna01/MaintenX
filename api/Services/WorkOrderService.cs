@@ -398,6 +398,23 @@ public class WorkOrderService : IWorkOrderService
             .ToListAsync(cancellationToken);
     }
 
+    public Task<WorkOrderFactsDto?> GetWorkOrderFactsAsync(int id, CancellationToken cancellationToken = default) =>
+        _db.WorkOrders
+            .AsNoTracking()
+            .Where(w => w.Id == id)
+            .Select(w => new WorkOrderFactsDto(
+                w.Id,
+                w.ReportId,
+                w.AssetId,
+                w.Asset!.AssetTag,
+                w.Status,
+                w.Strategy,
+                w.EstimatedCost,
+                w.ActualCost,
+                w.ResolutionNote,
+                w.CompletedAt))
+            .FirstOrDefaultAsync(cancellationToken);
+
     public async Task<CreateWorkOrderResult> CreateAsync(
         CreateWorkOrderDto dto,
         CancellationToken cancellationToken = default)

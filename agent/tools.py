@@ -110,9 +110,30 @@ SEEDED_PROJECTOR_RESULTS: dict[str, Any] = {
     "get_open_work_orders": [],
 }
 
+# The repair on PRJ-MAB101-01 whose verification DbSeeder seeds as Reopened, in the shape
+# get_work_order returns. The resolution note and the money are VERBATIM from DbSeeder's
+# VerificationSeed; the ids and completedAt are not, because the seed assigns ids on insert
+# and completes the order 15 days before whenever it runs. If the seed changes, change this.
+SEEDED_REOPENED_WORK_ORDER: dict[str, Any] = {
+    "id": 3,
+    "reportId": 3,
+    "assetId": 1,
+    "assetTag": "PRJ-MAB101-01",
+    "status": "Completed",
+    "strategy": "SingleJob",
+    "estimatedCost": 9500.00,
+    "actualCost": 9500.00,
+    "resolutionNote": (
+        "filter cleaned again + thermal paste redone on lamp housing. ran 40min continuous, "
+        "no cutout on test."
+    ),
+    "completedAt": "2026-09-09T06:00:00Z",
+}
+
 # Fixed context used in STUB_MODE so tests never need a running API.
 _STUB_RESULTS: dict[str, Any] = {
     **SEEDED_PROJECTOR_RESULTS,
+    "get_work_order": SEEDED_REOPENED_WORK_ORDER,
     "get_room": {
         "id": 1,
         "buildingId": 1,

@@ -52,7 +52,9 @@ public class InternalToolsController : ControllerBase
             ["get_related_open_reports"] = (controller, id, ct) =>
                 controller.GetRelatedOpenReportsAsync(id, ct),
             ["get_open_work_orders"] = (controller, id, ct) =>
-                controller.GetOpenWorkOrdersAsync(id, ct)
+                controller.GetOpenWorkOrdersAsync(id, ct),
+            ["get_work_order"] = (controller, id, ct) =>
+                controller.GetWorkOrderAsync(id, ct)
         };
 
     private readonly IRoomService _roomService;
@@ -192,6 +194,12 @@ public class InternalToolsController : ControllerBase
     // combined is the strategist's proposal, never this tool's answer.
     private async Task<object?> GetOpenWorkOrdersAsync(int id, CancellationToken cancellationToken) =>
         await _workOrderService.GetOpenWorkOrdersInAssetRoomAsync(id, cancellationToken);
+
+    // The WORK ORDER's id — the one tool that is not keyed by an asset, because the
+    // verification agent is asked about one specific repair. What it did, how, for how much
+    // and when it finished; never whether it held — that is the question being asked.
+    private async Task<object?> GetWorkOrderAsync(int id, CancellationToken cancellationToken) =>
+        await _workOrderService.GetWorkOrderFactsAsync(id, cancellationToken);
 
     private static string SerializeToolCall(string toolName, int id) =>
         // An array because a step may eventually carry several calls; today it is one.

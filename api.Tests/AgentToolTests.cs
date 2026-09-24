@@ -280,6 +280,69 @@ public class AgentToolTests : IClassFixture<ApiFactory>
         Assert.False(unknown.GetProperty("found").GetBoolean());
     }
 
+    [Fact]
+    public async Task GetWorkOrder_ReturnsTheOrdersFacts_ResolutionNoteVerbatim()
+    {
+        var (admin, reporterId) = await CreateAuthenticatedClientAsync(Role.Admin);
+        var asset = await CreateAssetAsync(admin);
+        var workflow = await StartWorkflowAsync(admin);
+        var reportId = (await SeedReportsAsync(asset, reporterId, 1, ReportStatus.WorkOrderRaised)).Single();
+
+        const string note = "temporary fix, compressor weak - regassed, will need replacing";
+        var completedAt = new DateTime(2026, 9, 1, 10, 30, 0, DateTimeKind.Utc);
+
+        int orderId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var order = new WorkOrder
+            {
+                ReportId = reportId,
+                AssetId = asset.Id,
+                Status = WorkOrderStatus.Completed,
+                Strategy = WorkOrderStrategy.KnownFix,
+                EstimatedCost = 6500.00m,
+                ActualCost = 7250.50m,
+                ResolutionNote = note,
+                CompletedAt = completedAt
+            };
+            db.WorkOrders.Add(order);
+            await db.SaveChangesAsync();
+            orderId = order.Id;
+        }
+
+        var body = await CallToolAsync("get_work_order", workflow.Id, orderId);
+
+        Assert.True(body.GetProperty("found").GetBoolean());
+        var result = body.GetProperty("result");
+        Assert.Equal(orderId, result.GetProperty("id").GetInt32());
+        Assert.Equal(asset.AssetTag, result.GetProperty("assetTag").GetString());
+        Assert.Equal(note, result.GetProperty("resolutionNote").GetString());
+        Assert.Equal("KnownFix", result.GetProperty("strategy").GetString());
+        Assert.Equal("Completed", result.GetProperty("status").GetString());
+        Assert.Equal(7250.50m, result.GetProperty("actualCost").GetDecimal());
+        // Compared as text: SQLite hands the timestamp back without a zone, PostgreSQL with a
+        // Z, and parsing it would read the first as local time. The instant is the same.
+        Assert.StartsWith("2026-09-01T10:30:00", result.GetProperty("completedAt").GetString());
+
+        // Facts only: nothing in the reply says whether the repair held, and nobody's name.
+        var fields = result.EnumerateObject().Select(p => p.Name).ToHashSet();
+        Assert.DoesNotContain("assignedTechnicianName", fields);
+        Assert.DoesNotContain(fields, f => f.Contains("verif", StringComparison.OrdinalIgnoreCase)
+                                        || f.Contains("held", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task GetWorkOrder_ForAnUnknownId_Returns200WithFoundFalse()
+    {
+        var (admin, _) = await CreateAuthenticatedClientAsync(Role.Admin);
+        var workflow = await StartWorkflowAsync(admin);
+
+        var body = await CallToolAsync("get_work_order", workflow.Id, 999999);
+
+        Assert.False(body.GetProperty("found").GetBoolean());
+    }
+
     /// <summary>
     /// The strategist proposes; C# decides. There is no tool through which an agent could
     /// approve, raise or re-cost a work order — a request for one is an unknown tool.

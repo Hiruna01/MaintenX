@@ -255,8 +255,9 @@ public class AssetService : IAssetService
         // Ninety days, and IsRepeatFailure below reads this SAME cut-off rather than a
         // second one of its own. AddMonths(-3) would be a window of 89, 90, 91 or 92 days
         // depending on the month, and a summary reporting two visits this quarter next to
-        // a repeat-failure flag would be read as a bug — and would be one.
-        var ninetyDaysAgo = today.AddDays(-90);
+        // a repeat-failure flag would be read as a bug — and would be one. The window is
+        // FailureRules', shared with the estate-wide repeat-failure list in AnalyticsService.
+        var ninetyDaysAgo = FailureRules.RepeatFailureWindowStart(today);
 
         var history = asset.ServiceRecords;
 
@@ -284,11 +285,11 @@ public class AssetService : IAssetService
             // A null WarrantyExpiresOn is "none recorded", which is not "expired" but is
             // not cover either. Today counts as covered — a warranty runs to the end of
             // the day it expires on, which is exactly why this column is a DateOnly.
-            asset.WarrantyExpiresOn is not null && asset.WarrantyExpiresOn >= today,
+            FailureRules.IsUnderWarranty(asset.WarrantyExpiresOn, today),
             // The whole rule, in one line, where anyone can read it: three or more visits
             // inside ninety days. Not a prompt, not a model's judgement, and not a number
             // that changes between two calls with the same history.
-            failureCount3Months >= 3,
+            FailureRules.IsRepeatFailure(failureCount3Months),
             history
                 .Select(s => s.Outcome)
                 .Distinct()

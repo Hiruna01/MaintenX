@@ -77,7 +77,7 @@ public class WorkflowRunner : BackgroundService
 
         await workflows.RecordStepAsync(
             workflowId,
-            agentName: call.Response?.Agent ?? "clarifier",
+            agentName: call.Response?.Agent ?? AgentRunResponse.ClarifierAgentName,
             toolCallsJson: "[]",
             // The agent's output verbatim, into the jsonb column that exists for exactly
             // this. Note what is NOT written: AgentWorkflow.PlanJson stays null, because

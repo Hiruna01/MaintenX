@@ -202,21 +202,21 @@ public class VerificationEndpointTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Metrics_AreForAFacilitiesManager_401And403KeptApart()
     {
-        var anonymous = await _factory.CreateClient().GetAsync("/api/analytics/metrics");
+        var anonymous = await _factory.CreateClient().GetAsync("/api/analytics/verification");
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
 
         // Admin included — the policy names one role.
         foreach (var role in new[] { Role.Reporter, Role.Technician, Role.Admin })
         {
             var (client, _) = await ClientForAsync(role);
-            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/analytics/metrics")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/analytics/verification")).StatusCode);
         }
 
         var (manager, _) = await ClientForAsync(Role.FacilitiesManager);
-        var response = await manager.GetAsync("/api/analytics/metrics");
+        var response = await manager.GetAsync("/api/analytics/verification");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.NotNull(await response.Content.ReadFromJsonAsync<MetricsDto>(JsonOptions));
+        Assert.NotNull(await response.Content.ReadFromJsonAsync<VerificationMetricsDto>(JsonOptions));
     }
 
     // ---------------------------------------------------------------------------

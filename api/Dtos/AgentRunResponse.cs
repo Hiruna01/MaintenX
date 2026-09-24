@@ -36,6 +36,13 @@ public record AgentRunResponse(
     public const string SafeFailureStatus = "safe_failure";
 
     /// <summary>
+    /// The AgentStep.AgentName the clarifier's run is recorded under — the agent service's
+    /// own name for it, and the runner's fallback when the call never returned one.
+    /// AnalyticsService reads clarifier runs back by this name.
+    /// </summary>
+    public const string ClarifierAgentName = "clarifier";
+
+    /// <summary>
     /// The AgentStep.AgentName the diagnostic's result is recorded under. Taken from WHICH
     /// FIELD the result arrived in, never from the envelope's own `agent` value: the field is
     /// the contract, and the approval queue reads the step back by this exact name.

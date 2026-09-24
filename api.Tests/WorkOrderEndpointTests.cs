@@ -915,6 +915,6 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         public Task<IReadOnlyList<VerificationCheckDto>> GetForWorkOrderAsync(int workOrderId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<VerificationSweepResultDto> ProcessDueChecksAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<ConfirmVerificationOutcome> RecordReporterResponseAsync(int id, int callerId, ReporterConfirmationDto dto, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<MetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<VerificationMetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 }

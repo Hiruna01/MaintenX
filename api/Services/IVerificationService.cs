@@ -145,10 +145,10 @@ public interface IVerificationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// How well repairs are actually holding, counted across every check. See MetricsDto —
-    /// every figure is computed here in C#, never by a model.
+    /// How well repairs are actually holding, counted across every check. See
+    /// VerificationMetricsDto — every figure is computed here in C#, never by a model.
     /// </summary>
-    Task<MetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default);
+    Task<VerificationMetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>

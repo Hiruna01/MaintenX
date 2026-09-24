@@ -73,8 +73,8 @@ public class VerificationTests : IClassFixture<ApiFactory>
         var overdue = await SeedCheckAsync(db, "SWPA", DateTime.UtcNow.AddDays(-2), VerificationStatus.Pending);
         var notYetDue = await SeedCheckAsync(db, "SWPB", DateTime.UtcNow.AddDays(5), VerificationStatus.Pending);
 
-        var moved = await service.ProcessDueChecksAsync();
-        Assert.True(moved >= 1);
+        var result = await service.ProcessDueChecksAsync();
+        Assert.True(result.AskedReporter >= 1);
 
         db.ChangeTracker.Clear();
 
@@ -185,7 +185,8 @@ public class VerificationTests : IClassFixture<ApiFactory>
         return check;
     }
 
-    private static async Task<WorkOrder> SeedCompletedWorkOrderAsync(
+    /// <summary>A completed work order with its report, reporter, room and asset. Shared with VerificationSweepTests.</summary>
+    internal static async Task<WorkOrder> SeedCompletedWorkOrderAsync(
         AppDbContext db, string prefix, DateTime completedAt)
     {
         var building = new Building { Name = $"Block {prefix}", Code = prefix };

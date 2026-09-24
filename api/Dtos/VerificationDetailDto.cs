@@ -36,5 +36,10 @@ public record VerificationDetailDto(
     string? AgentReason,
 
     DateTime? ProcessedAt,
+
+    // When the sweep handed it to the agent, and — only when Expired — why it gave up.
+    DateTime? AgentQueuedAt,
+    string? ExpiredReason,
+
     DateTime CreatedAt,
     DateTime UpdatedAt);

@@ -652,8 +652,9 @@ which iCalendar requires.
 
 `VerificationCheck` in `Models/`, with `VerificationStatus` (`Pending` /
 `AwaitingReporterResponse` / `Confirmed` / `Reopened` / `Escalated` / `Expired`) persisted
-as a string. `IVerificationService` / `VerificationService`, `AddScoped`. There is no
-controller and no hosted service yet.
+as a string. `IVerificationService` / `VerificationService`, `AddScoped`, run on a timer by
+`VerificationSweepService` and on demand by `VerificationsController` — see "The sweep"
+below.
 
 A completed work order is the technician's account of the work, and nothing before this
 component ever checked it against the room.
@@ -664,8 +665,9 @@ component ever checked it against the room.
   that means nothing is worse than no confirmation, because it enters the metrics as a
   success. `DueAt` is measured **from completion, not from now**, so a check raised late by
   a backfill still falls due when it should have.
-- `VerificationSettings` also carries `SweepIntervalMinutes` (default 60). Both from
-  configuration, never literals; startup refuses a non-positive value for either.
+- `VerificationSettings` also carries `SweepIntervalMinutes` (default 60) and
+  `ResponseWindowDays` (default 3). All from configuration, never literals; startup refuses
+  a non-positive value for any of them.
 - **`ReporterConfirmed` is `bool?`, not `bool`.** "Not answered yet" and "answered no" are
   completely different facts, and a non-nullable bool would quietly record every unanswered
   check as a failed repair.
@@ -696,6 +698,47 @@ component ever checked it against the room.
   `Confirmed + Reopened`, not `Total` — counting an `Expired` check either way reports a
   result that was never given. This is the one number the component exists to produce, and
   every figure in it is computed in C# from counts, never estimated by a model.
+
+### The sweep — a timer, a button, and one row at a time
+
+`VerificationSweepService` is a `BackgroundService` shaped exactly like `WorkflowRunner` and
+`TimetableSyncWorker`: a singleton holding **no `DbContext` and no `IVerificationService`**,
+opening one DI scope per pass and calling `ProcessDueChecksAsync` in it. One pass at startup
+— a host that sleeps when idle wakes with checks piled up — then every
+`SweepIntervalMinutes`. It catches everything per pass, so the loop never dies.
+
+**`POST /api/verifications/run-sweep`** runs the same pass now, `FacilitiesManager` only (an
+Admin is refused, as everywhere), 200 with `VerificationSweepResultDto` —
+`Processed` / `AskedReporter` / `QueuedForAgent` / `Failed`. **It is not optional**: Render's
+free tier sleeps idle services and a demo cannot wait an hour for a timer. A static
+`SemaphoreSlim` in the service stops the button and the timer running at once.
+
+- **Step 1 — ask.** `Pending` and `DueAt` passed → `AwaitingReporterResponse`, `ProcessedAt`
+  stamped as the moment the reporter was asked. The state change **is** the notification:
+  the check appears on the reporter's list. There is no reporter-facing read or answer
+  endpoint, and no Flutter screen, yet.
+- **Step 2 — hand to the agent.** Answered (`ReporterRespondedAt` set), **or** still
+  `AwaitingReporterResponse` more than `ResponseWindowDays` after `ProcessedAt` (falling back
+  to `DueAt` for seeded rows, the same fallback as the metrics) → `AgentQueuedAt` stamped.
+  An answered check is `Confirmed`/`Reopened` by then, never still `AwaitingReporterResponse`
+  — the answer and its status move in one `SaveChanges`.
+- **Queueing never touches `Status`.** It is not a verdict: an answered check keeps what the
+  answer made it, a silent one stays open for a late answer. Nothing expires silence yet.
+- **The row is the queue, not a `Channel`.** There is no VerificationAgent yet, so nothing
+  drains it: a bounded channel nobody reads fills and blocks the sweep, and an in-process one
+  is emptied by every restart, which the free tier does whenever it sleeps. The agent's
+  runner reads `AgentQueuedAt` set and `AgentOutcome` null; stamping once is what stops the
+  next pass queueing the same check again.
+- **One row at a time, each saved on its own.** A row that throws is logged, the change
+  tracker is cleared (or the failed change rides along with the next row's save), and — if
+  nobody has answered it — the row is `Expired` with the error in `ExpiredReason`. **An
+  answered check is never expired for a sweep failure**: `Expired` means "asked, never
+  answered", and writing it over a verdict would erase the answer and pull it out of the
+  confirmation rate. It is logged and left for the next pass. Pinned by
+  `VerificationSweepTests` with a `SaveChangesInterceptor` that fails one row; the
+  answered-row test was verified to fail with the tracker clear removed.
+- The service reads "now" from the injected `TimeProvider`, so the window is tested on its
+  boundary to the minute.
 
 ### The verification seed data is load-bearing too
 
@@ -931,7 +974,8 @@ flakiness to retry away.
 - A database **per factory**, not one shared database: xUnit gives each test class its own
   `ApiFactory`, and no class should be able to see another's rows. That is the isolation
   the SQLite mode gets for free, preserved deliberately for PostgreSQL.
-- `WorkflowRunner` and `TimetableSyncWorker` are removed from the container in **both**
+- `WorkflowRunner`, `TimetableSyncWorker` and `VerificationSweepService` are removed from
+  the container in **both**
   modes, so a background writer never races a test's assertions and a test behaves
   identically on a laptop and in CI.
 - `ApiFactory` sets `Jwt:*` and `ConnectionStrings:DefaultConnection` via environment

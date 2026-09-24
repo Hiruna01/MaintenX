@@ -161,7 +161,10 @@ var verificationSettings = new VerificationSettings
         ?? VerificationSettings.DefaultDelayDays,
     SweepIntervalMinutes = builder.Configuration.GetValue<int?>("Verification:SweepIntervalMinutes")
         ?? builder.Configuration.GetValue<int?>("VERIFICATION_SWEEP_INTERVAL_MINUTES")
-        ?? VerificationSettings.DefaultSweepIntervalMinutes
+        ?? VerificationSettings.DefaultSweepIntervalMinutes,
+    ResponseWindowDays = builder.Configuration.GetValue<int?>("Verification:ResponseWindowDays")
+        ?? builder.Configuration.GetValue<int?>("VERIFICATION_RESPONSE_WINDOW_DAYS")
+        ?? VerificationSettings.DefaultResponseWindowDays
 };
 
 // A zero or negative delay defeats the whole component: asked the same afternoon, every
@@ -179,6 +182,15 @@ if (verificationSettings.SweepIntervalMinutes <= 0)
     throw new InvalidOperationException(
         "The verification sweep interval (Verification:SweepIntervalMinutes / " +
         "VERIFICATION_SWEEP_INTERVAL_MINUTES) must be greater than zero.");
+}
+
+// Zero would hand every check to the agent the moment the reporter was asked, before they
+// could possibly have answered — the agent would only ever see silence.
+if (verificationSettings.ResponseWindowDays <= 0)
+{
+    throw new InvalidOperationException(
+        "The verification response window (Verification:ResponseWindowDays / " +
+        "VERIFICATION_RESPONSE_WINDOW_DAYS) must be greater than zero.");
 }
 
 builder.Services.AddSingleton(verificationSettings);
@@ -384,6 +396,11 @@ builder.Services.AddScoped<IClarificationService, ClarificationService>();
 
 // Verification — did the repair actually hold?
 builder.Services.AddScoped<IVerificationService, VerificationService>();
+
+// The sweep on a timer — once at startup, then every Verification:SweepIntervalMinutes.
+// A singleton like every hosted service, so it opens a scope per pass and resolves
+// IVerificationService there. POST /api/verifications/run-sweep runs the same pass on demand.
+builder.Services.AddHostedService<VerificationSweepService>();
 
 // Work orders — the approval gate, assignment and completion. Completion raises the
 // verification check above inside its own transaction.

@@ -87,6 +87,28 @@ public class VerificationCheck
     /// </summary>
     public DateTime? ProcessedAt { get; set; }
 
+    /// <summary>
+    /// When the sweep handed this check to the verification agent — because the reporter
+    /// answered, or because they were asked and stayed silent past
+    /// VerificationSettings.ResponseWindowDays. Null until then.
+    ///
+    /// THE ROW IS THE QUEUE, not an in-process Channel like IWorkflowQueue. Nothing drains
+    /// it yet, and a bounded channel nobody reads would fill and block the sweep; an
+    /// unbounded one would be emptied by every restart — and Render's free tier restarts
+    /// the service whenever it sleeps. A column survives both, and stamping it once is what
+    /// stops the next sweep queueing the same check again. The agent's runner reads
+    /// "queued, and no AgentOutcome yet".
+    /// </summary>
+    public DateTime? AgentQueuedAt { get; set; }
+
+    /// <summary>
+    /// Why the check was given up on, when <see cref="Status"/> is Expired. Today that is
+    /// only the sweep failing on this one row: the row is expired with the error so one bad
+    /// check can never stop the sweep reaching the rest. Null for every other status.
+    /// </summary>
+    [MaxLength(500)]
+    public string? ExpiredReason { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

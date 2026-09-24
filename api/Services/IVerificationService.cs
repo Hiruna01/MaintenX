@@ -44,19 +44,35 @@ public interface IVerificationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// THE SWEEP. Moves every Pending check whose DueAt has passed to
-    /// AwaitingReporterResponse and stamps ProcessedAt, returning how many it moved.
+    /// THE SWEEP — one pass of it. Two steps, each a deterministic rule in C#:
     ///
-    /// The body of the sweep lives here, in a scoped service, rather than inside the hosted
-    /// service that will call it on a timer — the same split as WorkflowRunner and
-    /// IWorkflowService. That keeps the rule testable without starting a background worker,
-    /// and keeps a scoped DbContext out of a singleton.
+    ///   1. Every Pending check whose DueAt has passed moves to AwaitingReporterResponse,
+    ///      with ProcessedAt stamped as the moment the reporter was asked.
+    ///   2. Every check not yet queued for the verification agent is queued (AgentQueuedAt)
+    ///      if the reporter has answered it, or if it has sat in AwaitingReporterResponse
+    ///      longer than VerificationSettings.ResponseWindowDays since they were asked.
+    ///
+    /// ONE ROW AT A TIME, each saved on its own, so a row that throws cannot take the rest
+    /// down with it. The failure is logged and, for a check nobody has answered, the row is
+    /// marked Expired with the error in ExpiredReason. An ANSWERED check is never expired
+    /// for a sweep failure: that would overwrite the reporter's verdict with "nobody
+    /// replied" and move a real answer out of the confirmation rate. It is logged and left
+    /// for the next pass.
+    ///
+    /// Never throws for a single row; cancellation and a database that cannot even be
+    /// queried still propagate, and the hosted service catches those per pass.
+    ///
+    /// The body lives here, in a scoped service, rather than inside the hosted service that
+    /// calls it on a timer — the same split as WorkflowRunner and IWorkflowService. That
+    /// keeps the rule testable without starting a background worker, and keeps a scoped
+    /// DbContext out of a singleton. POST /api/verifications/run-sweep calls it too; a
+    /// static lock stops that and the timer running at once.
     ///
     /// Deliberately does no asking of its own: what "notify the reporter" means is a
     /// delivery concern this project does not have yet, so the state change IS the
     /// notification — the check appears on the reporter's list.
     /// </summary>
-    Task<int> ProcessDueChecksAsync(CancellationToken cancellationToken = default);
+    Task<VerificationSweepResultDto> ProcessDueChecksAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Records the reporter's verdict and moves the check to Confirmed or Reopened in the

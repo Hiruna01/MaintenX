@@ -98,10 +98,12 @@ public class VerificationTests : IClassFixture<ApiFactory>
         var check = await SeedCheckAsync(
             db, "ANS", DateTime.UtcNow.AddDays(-1), VerificationStatus.AwaitingReporterResponse);
 
-        var accepted = await service.RecordReporterResponseAsync(
-            check.Id, new ReporterConfirmationDto(Confirmed: false, Comment: "Still cutting out."));
+        var reporterId = await ReporterOfAsync(db, check);
 
-        Assert.True(accepted);
+        var accepted = await service.RecordReporterResponseAsync(
+            check.Id, reporterId, new ReporterConfirmationDto(Confirmed: false, Comment: "Still cutting out."));
+
+        Assert.Equal(ConfirmVerificationOutcome.Success, accepted);
 
         db.ChangeTracker.Clear();
         var answered = await db.VerificationChecks.SingleAsync(v => v.Id == check.Id);
@@ -112,12 +114,15 @@ public class VerificationTests : IClassFixture<ApiFactory>
         Assert.Equal("Still cutting out.", answered.ReporterComment);
         Assert.NotNull(answered.ReporterRespondedAt);
 
+        // Handed to the agent with the answer, not left for the next sweep.
+        Assert.Equal(answered.ReporterRespondedAt, answered.AgentQueuedAt);
+
         // ONE ANSWER. A second is refused rather than silently overwriting the first —
         // there is no unique index to lean on here, so the service has to say no itself.
         var second = await service.RecordReporterResponseAsync(
-            check.Id, new ReporterConfirmationDto(Confirmed: true, Comment: "Changed my mind."));
+            check.Id, reporterId, new ReporterConfirmationDto(Confirmed: true, Comment: "Changed my mind."));
 
-        Assert.False(second);
+        Assert.Equal(ConfirmVerificationOutcome.AlreadyAnswered, second);
 
         db.ChangeTracker.Clear();
         var unchanged = await db.VerificationChecks.SingleAsync(v => v.Id == check.Id);
@@ -159,6 +164,12 @@ public class VerificationTests : IClassFixture<ApiFactory>
     }
 
     // ---------------------------------------------------------------------------
+
+    private static Task<int> ReporterOfAsync(AppDbContext db, VerificationCheck check) =>
+        db.WorkOrders
+            .Where(w => w.Id == check.WorkOrderId)
+            .Select(w => w.Report!.ReporterId)
+            .SingleAsync();
 
     private static async Task<VerificationCheck> SeedCheckAsync(
         AppDbContext db,

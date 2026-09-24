@@ -30,6 +30,8 @@ public class VerificationService : IVerificationService
     /// <summary>Column limit on VerificationCheck.ExpiredReason, so a long error is cut rather than refused.</summary>
     private const int MaxExpiredReasonLength = 500;
 
+    private const int MaxPageSize = 100;
+
     private readonly AppDbContext _db;
     private readonly VerificationSettings _settings;
     private readonly TimeProvider _time;
@@ -104,44 +106,118 @@ public class VerificationService : IVerificationService
             v => v.WorkOrderId == workOrderId && OpenStatuses.Contains(v.Status),
             cancellationToken);
 
-    public async Task<IReadOnlyList<VerificationCheckDto>> GetAllAsync(
-        VerificationStatusFilter filter = VerificationStatusFilter.All,
+    /// <summary>
+    /// THE VISIBILITY RULE, in one place so it cannot be applied to the list and forgotten
+    /// on the detail read. A FacilitiesManager and an Admin see every check; everybody else
+    /// sees the checks on faults they reported.
+    ///
+    /// Written as "who sees everything", so it FAILS CLOSED — the same shape as
+    /// ReportService.SeesEveryReport, and a check is a question about a report, so the two
+    /// rules have to agree. A Technician is scoped today: the check is the reporter's
+    /// verdict on the technician's work, not the technician's worklist.
+    /// </summary>
+    private static bool SeesEveryCheck(Role role) =>
+        role is Role.FacilitiesManager or Role.Admin;
+
+    public async Task<PagedResult<VerificationCheckDto>> GetAllAsync(
+        int callerId,
+        Role callerRole,
+        VerificationStatus? status = null,
+        int? assetId = null,
+        DateOnly? dateFrom = null,
+        DateOnly? dateTo = null,
+        VerificationSort sort = VerificationSort.DueAt,
+        int page = 1,
+        int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
-        var now = UtcNow;
+        // Clamp rather than reject, the same as every other list here.
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize < 1 ? 1 : Math.Min(pageSize, MaxPageSize);
 
         var query = _db.VerificationChecks.AsNoTracking();
 
-        query = filter switch
+        // THE VISIBILITY SCOPE GOES ON FIRST, before the filters and the count. The
+        // reporter is reached through the work order to its report — the check carries no
+        // reporter of its own, so there is no second copy of "who filed this" to drift.
+        if (!SeesEveryCheck(callerRole))
         {
-            VerificationStatusFilter.Open => query.Where(v => OpenStatuses.Contains(v.Status)),
-            VerificationStatusFilter.Closed => query.Where(v => !OpenStatuses.Contains(v.Status)),
-            // The query the composite index on (Status, DueAt) exists for.
-            VerificationStatusFilter.Overdue => query.Where(
-                v => v.Status == VerificationStatus.Pending && v.DueAt <= now),
+            query = query.Where(v => v.WorkOrder!.Report!.ReporterId == callerId);
+        }
+
+        if (status is not null)
+        {
+            query = query.Where(v => v.Status == status);
+        }
+
+        if (assetId is not null)
+        {
+            query = query.Where(v => v.AssetId == assetId);
+        }
+
+        // Calendar dates turned into UTC bounds here, in C#, so only DateTime values reach
+        // the query — DateOnly arithmetic does not translate to SQLite. dateTo is made
+        // inclusive by comparing against the start of the day AFTER it.
+        if (dateFrom is not null)
+        {
+            var from = dateFrom.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            query = query.Where(v => v.DueAt >= from);
+        }
+
+        if (dateTo is not null)
+        {
+            var toExclusive = dateTo.Value.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            query = query.Where(v => v.DueAt < toExclusive);
+        }
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        // Id breaks every tie. Checks share a DueAt readily — completions batched into one
+        // SaveChanges get the same delay added to the same instant — and without a total
+        // order a row could appear on two pages or on neither.
+        query = sort switch
+        {
+            VerificationSort.Status => query
+                .OrderBy(v => v.Status)
+                .ThenByDescending(v => v.DueAt)
+                .ThenByDescending(v => v.Id),
             _ => query
+                .OrderByDescending(v => v.DueAt)
+                .ThenByDescending(v => v.Id)
         };
 
         var rows = await query
-            .OrderByDescending(v => v.CreatedAt)
-            .ThenByDescending(v => v.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .Select(v => new { Check = v, AssetTag = v.Asset!.AssetTag })
             .ToListAsync(cancellationToken);
 
-        return rows.Select(r => ToDto(r.Check, r.AssetTag)).ToList();
+        return new PagedResult<VerificationCheckDto>(
+            rows.Select(r => ToDto(r.Check, r.AssetTag)).ToList(),
+            page,
+            pageSize,
+            totalCount);
     }
 
-    public async Task<VerificationDetailDto?> GetByIdAsync(
+    public async Task<VerificationDetailDto?> GetDetailAsync(
         int id,
+        int callerId,
+        Role callerRole,
         CancellationToken cancellationToken = default)
     {
         var check = await _db.VerificationChecks
             .AsNoTracking()
             .Include(v => v.Asset)
             .Include(v => v.WorkOrder)
+                .ThenInclude(w => w!.Report)
             .FirstOrDefaultAsync(v => v.Id == id, cancellationToken);
 
-        if (check?.Asset is null)
+        if (check?.Asset is null || check.WorkOrder?.Report is null)
+        {
+            return null;
+        }
+
+        if (!SeesEveryCheck(callerRole) && check.WorkOrder.Report.ReporterId != callerId)
         {
             return null;
         }
@@ -149,9 +225,10 @@ public class VerificationService : IVerificationService
         return new VerificationDetailDto(
             check.Id,
             check.WorkOrderId,
+            check.WorkOrder.ReportId,
             ToAssetDto(check.Asset),
-            check.WorkOrder?.ResolutionNote,
-            check.WorkOrder?.CompletedAt,
+            check.WorkOrder.ResolutionNote,
+            check.WorkOrder.CompletedAt,
             check.DueAt,
             check.Status,
             check.ReporterConfirmed,
@@ -165,6 +242,9 @@ public class VerificationService : IVerificationService
             check.CreatedAt,
             check.UpdatedAt);
     }
+
+    public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>
+        _db.VerificationChecks.AnyAsync(v => v.Id == id, cancellationToken);
 
     public async Task<IReadOnlyList<VerificationCheckDto>> GetForWorkOrderAsync(
         int workOrderId,
@@ -383,35 +463,49 @@ public class VerificationService : IVerificationService
         }
     }
 
-    public async Task<bool> RecordReporterResponseAsync(
+    public async Task<ConfirmVerificationOutcome> RecordReporterResponseAsync(
         int id,
+        int callerId,
         ReporterConfirmationDto dto,
         CancellationToken cancellationToken = default)
     {
         var check = await _db.VerificationChecks
+            .Include(v => v.WorkOrder)
+                .ThenInclude(w => w!.Report)
             .FirstOrDefaultAsync(v => v.Id == id, cancellationToken);
 
         if (check is null)
         {
-            return false;
+            return ConfirmVerificationOutcome.NotFound;
+        }
+
+        // IDENTITY BEFORE STATE. The question was put to whoever filed the report, and
+        // nobody else's opinion of the repair is being asked for — a manager and an Admin
+        // included, who could otherwise close the loop on the reporter's behalf.
+        if (check.WorkOrder?.Report?.ReporterId != callerId)
+        {
+            return ConfirmVerificationOutcome.NotTheReporter;
         }
 
         // ONE ANSWER PER CHECK, and this is where that is enforced. There is no unique
         // index to lean on here — the answer lives in columns on this row rather than in a
         // second table — so a service that means "reject a re-answer" has to look and say
         // so. The same lesson as ClarificationAnswer, arrived at from the other direction.
-        if (check.ReporterRespondedAt is not null || !OpenStatuses.Contains(check.Status))
+        if (check.ReporterRespondedAt is not null)
         {
-            _logger.LogWarning(
-                "Verification check {CheckId} has already been answered or closed (status {Status}).",
-                id,
-                check.Status);
-            return false;
+            return ConfirmVerificationOutcome.AlreadyAnswered;
         }
 
-        check.ReporterConfirmed = dto.Confirmed;
-        check.ReporterComment = dto.Comment;
-        check.ReporterRespondedAt = UtcNow;
+        if (check.Status != VerificationStatus.AwaitingReporterResponse)
+        {
+            return ConfirmVerificationOutcome.NotAwaitingResponse;
+        }
+
+        var now = UtcNow;
+
+        check.ReporterConfirmed = dto.Confirmed!.Value;
+        check.ReporterComment = string.IsNullOrWhiteSpace(dto.Comment) ? null : dto.Comment.Trim();
+        check.ReporterRespondedAt = now;
 
         // WHAT THE ANSWER MEANS IS A DETERMINISTIC RULE AND LIVES HERE, not in a prompt.
         // Set in the same SaveChanges as the answer itself, so the two can never disagree:
@@ -420,13 +514,19 @@ public class VerificationService : IVerificationService
         //
         // Reopening does not raise the follow-up work order — that belongs to Component C,
         // and this row is the record that the first repair did not hold.
-        check.Status = dto.Confirmed
+        check.Status = dto.Confirmed.Value
             ? VerificationStatus.Confirmed
             : VerificationStatus.Reopened;
 
+        // Queued for the agent now, with the answer, rather than on the next sweep. A
+        // check already queued as SILENT (asked, no reply past the window, then answered
+        // late) is stamped again: what the agent is handed has changed from silence to an
+        // answer, and the stamp says when.
+        check.AgentQueuedAt = now;
+
         await _db.SaveChangesAsync(cancellationToken);
 
-        return true;
+        return ConfirmVerificationOutcome.Success;
     }
 
     public async Task<MetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default)

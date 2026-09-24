@@ -736,7 +736,8 @@ and proposal for the report.
 `AwaitingReporterResponse` / `Confirmed` / `Reopened` / `Escalated` / `Expired`) persisted
 as a string. `IVerificationService` / `VerificationService`, `AddScoped`, run on a timer by
 `VerificationSweepService` and on demand by `VerificationsController` — see "The sweep"
-below.
+below — and answered by the reporter through the same controller — see "The reporter's
+side".
 
 A completed work order is the technician's account of the work, and nothing before this
 component ever checked it against the room.
@@ -797,13 +798,16 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
 
 - **Step 1 — ask.** `Pending` and `DueAt` passed → `AwaitingReporterResponse`, `ProcessedAt`
   stamped as the moment the reporter was asked. The state change **is** the notification:
-  the check appears on the reporter's list. There is no reporter-facing read or answer
-  endpoint, and no Flutter screen, yet.
+  the check appears on the reporter's list (`GET /api/verifications`, below). There is no
+  web or Flutter screen for it yet.
 - **Step 2 — hand to the agent.** Answered (`ReporterRespondedAt` set), **or** still
   `AwaitingReporterResponse` more than `ResponseWindowDays` after `ProcessedAt` (falling back
   to `DueAt` for seeded rows, the same fallback as the metrics) → `AgentQueuedAt` stamped.
   An answered check is `Confirmed`/`Reopened` by then, never still `AwaitingReporterResponse`
-  — the answer and its status move in one `SaveChanges`.
+  — the answer and its status move in one `SaveChanges`. **An answer through
+  `POST {id}/confirm` is queued there and then**, so the "answered" half of this step now
+  only catches answers recorded without a stamp — seeded rows, or anything written before
+  the endpoint existed. Keep it: it is what makes those rows reach the agent at all.
 - **Queueing never touches `Status`.** It is not a verdict: an answered check keeps what the
   answer made it, a silent one stays open for a late answer. Nothing expires silence yet.
 - **The row is the queue, not a `Channel`.** There is no VerificationAgent yet, so nothing
@@ -821,6 +825,46 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
   answered-row test was verified to fail with the tracker clear removed.
 - The service reads "now" from the injected `TimeProvider`, so the window is tested on its
   boundary to the minute.
+
+### The reporter's side — a list, a detail and one yes/no
+
+`VerificationsController`, `[Authorize]` with no policy on the class. Pinned by
+`VerificationEndpointTests`.
+
+- **`GET /api/verifications`** pages through `PagedResult<T>`. `status` (by NAME) and
+  `assetId` are exact; `dateFrom`/`dateTo` bound **`DueAt`**, UTC days, both ends inclusive.
+  `sort` is `DueAt` (latest first, default) or `Status` (alphabetical by name), both with an
+  `Id` tiebreak. **Visibility is `SeesEveryCheck` in the service**, the same fail-closed shape
+  as `SeesEveryReport`: a `FacilitiesManager` and an `Admin` see every check, anyone else only
+  checks on reports they filed — reached `WorkOrder` → `Report.ReporterId`, so there is no
+  second copy of the reporter to drift. Applied before the count and paging.
+- **`GET /api/verifications/{id}`** — the same rule; someone else's check is a **403** told
+  from a 404 by `ExistsAsync`. The work order is carried as its claim (`WorkOrderId`,
+  `ReportId`, resolution note, completion time), **not a `WorkOrderDto`**: a Reporter reads
+  this and may see no estimate, cost or technician.
+- **`POST /api/verifications/{id}/confirm`** — "Is the problem fixed?", `Confirmed` yes/no and
+  an optional `Comment` of at most **300** characters (the column is 500; the DTO is the bound
+  on what a reporter may type). `Confirmed` is a **`[Required] bool?`** — a plain `bool` binds
+  a missing answer as `false` and would reopen a repair nobody said had failed. Checks in
+  `RecordReporterResponseAsync`, identity before state: 404, **403 for anyone but the
+  reporter — a manager and an Admin included**, 409 already answered, 409 not
+  `AwaitingReporterResponse` (a `Pending` check is still in its delay, and a same-afternoon
+  answer is what the delay exists to avoid). Answered is checked first only because an
+  answered check is `Confirmed`/`Reopened` and "already answered" is the truer message.
+  Success writes the answer, the status it implies **and `AgentQueuedAt`** in one
+  `SaveChanges` — the sweep queues only rows with no stamp, so it never queues it twice. A
+  check already queued as silent and answered late is stamped again. **Open question for
+  the VerificationAgent:** its runner is meant to read "`AgentQueuedAt` set and
+  `AgentOutcome` null", so if it has already judged the silence, the re-stamp alone will
+  not make it read the late answer. Decide that when the agent lands; nothing drains the
+  queue today.
+- **`GET /api/analytics/metrics`** is `MetricsDto`, on this controller under an absolute
+  route — nothing else is analytics yet. `FacilitiesManager` only; an Admin is refused.
+  Move it to its own `AnalyticsController` when a second analytics read arrives, not
+  before.
+- **Verified to fail with the rule broken**: the list's visibility `Where` removed, the
+  confirm's reporter check removed, and `Confirmed` made a plain `bool` — each fails
+  `VerificationEndpointTests`.
 
 ### The verification seed data is load-bearing too
 
@@ -1145,6 +1189,10 @@ flakiness to retry away.
   - `TimetableSyncTests` — the Google sync, including Google down → degraded with the cache
     kept, and the slot finder still reading that cache.
   - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
+  - `VerificationTests` — the check's rules through the service (delay, one answer, the
+    confirmation rate). `VerificationSweepTests` — the sweep and its button.
+    `VerificationEndpointTests` — the reporter's list, detail and confirm, and the metrics
+    route: status codes, scoping and the bounded answer.
 - **A test for a rule should be checked against the rule broken.** Flip the operator, drop
   the check, run the test, see it fail, restore. Several notes in this file record that it
   was done ("verified to fail with …"); a test that has never failed may not test anything.

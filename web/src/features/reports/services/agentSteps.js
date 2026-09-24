@@ -3,8 +3,10 @@
  * the reasoning panel stays presentational and every interpretation lives in one place.
  *
  * Two kinds of row arrive and they are written by two different owners:
- *   - an AGENT RUN, one per run, written by WorkflowRunner. ToolCallsJson is "[]" and
- *     PayloadJson is the agent's output verbatim (the clarifier's `{ questions }`).
+ *   - an AGENT RUN, written by WorkflowRunner — one each for the clarifier, the diagnostic
+ *     and the strategist, which run inside the same /run call. ToolCallsJson is "[]" and
+ *     PayloadJson is that agent's output verbatim (`{ questions }`, `{ hypotheses, … }`,
+ *     `{ strategy, estimated_cost, … }`).
  *   - a TOOL CALL, one per call, written by InternalToolsController — including calls it
  *     refuses. ToolCallsJson names the tool; PayloadJson is `{ Tool, Found, Result }`.
  *
@@ -103,6 +105,41 @@ function describeToolResult(payload) {
   return label ? `found ${label}` : 'found the record';
 }
 
+/**
+ * The diagnostic's and strategist's steps are recorded with 0 ms: all three agents ran inside
+ * one /run call whose time is on the clarifier's step, and the agent reports no split. Shown
+ * as such rather than as "0 ms", which would read as a measurement.
+ */
+export function durationLabel(step, kind) {
+  if (kind === 'agent' && step.durationMs === 0) return 'timed with the run';
+  return `${step.durationMs.toLocaleString()} ms`;
+}
+
+/** "Rs 45,000" — display only; the figure is the agent's, and nothing here compares it. */
+function rupees(value) {
+  const amount = Number(value);
+  return Number.isNaN(amount) ? String(value) : `Rs ${amount.toLocaleString('en-LK')}`;
+}
+
+/** One sentence for a diagnostic or strategist payload, or null for anything else. */
+function describeAdvice(payload) {
+  const hypotheses = field(payload, 'hypotheses');
+  if (Array.isArray(hypotheses) && hypotheses.length > 0) {
+    const primary = hypotheses[field(payload, 'primary_hypothesis_index')] ?? hypotheses[0];
+    const count = hypotheses.length === 1 ? '1 possible cause' : `${hypotheses.length} possible causes`;
+    return `Diagnosed ${count}; most likely: ${field(primary, 'cause') ?? 'not named'}.`;
+  }
+
+  const strategy = field(payload, 'strategy');
+  if (typeof strategy === 'string') {
+    const cost = field(payload, 'estimated_cost');
+    const words = strategy.replaceAll('_', ' ');
+    return cost === undefined ? `Proposed ${words}.` : `Proposed ${words} at ${rupees(cost)} — advice; approval is decided by the API.`;
+  }
+
+  return null;
+}
+
 /** The clarifier's questions out of an agent-run payload, or null if the payload has none. */
 export function payloadQuestions(payload) {
   const questions = field(payload, 'questions');
@@ -147,6 +184,7 @@ export function describeStep(step) {
   }
 
   const questions = payloadQuestions(payload);
+  const advice = describeAdvice(payload);
   let summary;
 
   if (result === VALIDATION_RESULTS.CallFailed) {
@@ -157,6 +195,8 @@ export function describeStep(step) {
     summary = 'Asked no questions — the report already said enough to act on.';
   } else if (questions) {
     summary = `Asked the reporter ${questions.length} ${questions.length === 1 ? 'question' : 'questions'}.`;
+  } else if (advice) {
+    summary = advice;
   } else if (payload !== null) {
     summary = 'Finished and recorded its output.';
   } else {

@@ -383,7 +383,8 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
                 sp.GetRequiredService<IWorkflowQueue>(),
                 new FailingVerificationService(),
                 TimeProvider.System,
-                sp.GetRequiredService<SchedulingSettings>());
+                sp.GetRequiredService<SchedulingSettings>(),
+                sp.GetRequiredService<IAssetService>());
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteAsync(
                 order.Id, technicianId,

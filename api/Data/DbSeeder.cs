@@ -1,3 +1,5 @@
+using System.Text.Json;
+using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Identity;
@@ -26,6 +28,7 @@ public static class DbSeeder
         // reporter. The verification seeder checks for one and backs out if it is absent.
         await SeedUsersAsync(db, configuration, passwordHasher, logger, cancellationToken);
         await SeedVerificationAsync(db, verificationSettings, logger, cancellationToken);
+        await SeedLiveWorkOrdersAsync(db, logger, cancellationToken);
     }
 
     private static async Task SeedBuildingsAndRoomsAsync(
@@ -626,6 +629,256 @@ public static class DbSeeder
                 verificationSettings.DelayDays);
         }
     }
+
+    /// <summary>
+    /// Work orders still in flight: two AwaitingApproval, each with the agent run that
+    /// preceded it, and one Approved but unassigned.
+    ///
+    /// LOAD-BEARING LIKE THE REST. Every other seeded order is Completed, so without these
+    /// the approval queue — the screen a manager decides spending on — and the dispatch
+    /// board's assign-and-schedule path would both open empty in a demo.
+    ///
+    /// - PRJ-MAB101-01 is the golden projector, its thermal fault back a fifth time.
+    ///   EscalateReplacement at Rs 45,000: above the threshold AND a replacement, so both
+    ///   halves of the gate show. Its diagnosis is the one the live eval produced against
+    ///   this history — the failing cooling fan, citing the dated visits — so what the page
+    ///   shows is what the agent actually says about this machine.
+    /// - ACU-ENG101-01 is a SingleJob at Rs 28,000: above the threshold on cost alone. The
+    ///   unit is under warranty until 2026-11-18, which the failure summary on the same card
+    ///   shows — the kind of fact a manager should not have to open another page to find.
+    /// - PRJ-MAB102-01 is a cheap KnownFix, auto-approved (so no ApprovedBy: nobody had to
+    ///   decide) and assigned to nobody — the order to assign, find a slot for and book.
+    ///
+    /// THE AGENT STEPS ON THE FIRST TWO ARE SEEDED, not produced by a run, and are written
+    /// in exactly the shape WorkflowRunner writes — clarifier, diagnostic, strategist, each
+    /// with "[]" tool calls and the output verbatim — so the approval queue and the report's
+    /// reasoning panel read them through the same code as a real run's.
+    ///
+    /// No ServiceRecord rows, for the same reason as the completed orders above: the
+    /// planted history is what the diagnostic is developed against.
+    /// </summary>
+    private static async Task SeedLiveWorkOrdersAsync(
+        AppDbContext db,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var reporterId = await db.Users
+            .Where(u => u.Email == "reporter@campus.test")
+            .Select(u => (int?)u.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (reporterId is null)
+        {
+            // Already warned about by SeedVerificationAsync; nothing more to say.
+            return;
+        }
+
+        var assets = await db.Assets
+            .Select(a => new { a.Id, a.AssetTag, a.RoomId })
+            .ToDictionaryAsync(a => a.AssetTag, a => a, cancellationToken);
+
+        var seeds = new[]
+        {
+            new LiveWorkOrderSeed(
+                AssetTag: "PRJ-MAB101-01",
+                ReportDescription: "Lecture Hall A projector shut itself off again in the 10am lecture. Fan was very loud for a few minutes before it went.",
+                Strategy: WorkOrderStrategy.EscalateReplacement,
+                EstimatedCost: 45_000m,
+                PartsRequired: "Replacement projector, Epson EB-990U or equivalent (WUXGA). Existing ceiling mount reused.",
+                Status: WorkOrderStatus.AwaitingApproval,
+                Diagnosis: new
+                {
+                    hypotheses = new object[]
+                    {
+                        new
+                        {
+                            cause = "Overheating and thermal shutdown due to a failing cooling fan",
+                            confidence = "high",
+                            evidence = new[]
+                            {
+                                "2026-05-12: cutting out mid lecture, no fault found after reseating cables — consistent with an intermittent thermal cut-out rather than a signal fault.",
+                                "2026-07-03: same complaint, air filter choked with dust; cleaned — recorded as a temporary fix.",
+                                "2026-09-02: filter cleaned again, unit still running hot, fan bearing sounds weak; temporary fix, technician recommended replacement.",
+                                "This report: fan very loud for a few minutes before the shutdown."
+                            }
+                        },
+                        new
+                        {
+                            cause = "Lamp near end of life contributing to heat and shutdowns",
+                            confidence = "low",
+                            evidence = new[]
+                            {
+                                "2026-07-03: lamp hours noted as high.",
+                                "No lamp replacement recorded on this unit since installation."
+                            }
+                        }
+                    },
+                    primary_hypothesis_index = 0,
+                    recommended_next_action = "replace",
+                    reasoning_summary = "Three visits in four months for the same cut-out. Two filter cleanings were recorded as temporary fixes and the last technician heard a weak fan bearing. Cleaning is not holding; the cooling fault keeps returning. Warranty expired 2025-08-14."
+                },
+                Proposal: new
+                {
+                    strategy = "escalate_replacement",
+                    estimated_cost = 45_000.00m,
+                    urgency = "high",
+                    justification = "The same thermal fault has now returned after two filter cleanings recorded as temporary fixes, and the fan bearing is failing. The unit is out of warranty, so a fan and lamp repair would be paid for in full on a machine with this history. Replacing it ends the repeat visits. Lecture Hall A is used every day, so each further cut-out interrupts a lecture.",
+                    consolidate_with_work_order_ids = Array.Empty<int>()
+                }),
+
+            new LiveWorkOrderSeed(
+                AssetTag: "ACU-ENG101-01",
+                ReportDescription: "Computer Lab 1 AC cutting in and out again since yesterday, clicking from the outdoor unit. Room too hot for the afternoon labs.",
+                Strategy: WorkOrderStrategy.SingleJob,
+                EstimatedCost: 28_000m,
+                PartsRequired: "Outdoor unit control PCB, Mitsubishi Electric MSY-GN18VF.",
+                Status: WorkOrderStatus.AwaitingApproval,
+                Diagnosis: new
+                {
+                    hypotheses = new object[]
+                    {
+                        new
+                        {
+                            cause = "Faulty outdoor unit control board switching the compressor on and off",
+                            confidence = "medium",
+                            evidence = new[]
+                            {
+                                "2026-09-08: compressor not starting; start capacitor replaced, but still cutting in and out intermittently.",
+                                "This report: clicking from the outdoor unit and repeated cut-outs."
+                            }
+                        },
+                        new
+                        {
+                            cause = "Compressor tripping on its internal thermal overload",
+                            confidence = "low",
+                            evidence = new[]
+                            {
+                                "2026-09-08: unit left off pending parts after intermittent operation."
+                            }
+                        }
+                    },
+                    primary_hypothesis_index = 0,
+                    recommended_next_action = "repair",
+                    reasoning_summary = "The intermittent cut-out recorded on 2026-09-08 has come back although the start capacitor was replaced, which points at the switching side of the outdoor unit rather than the capacitor. The unit is still under warranty."
+                },
+                Proposal: new
+                {
+                    strategy = "single_job",
+                    estimated_cost = 28_000.00m,
+                    urgency = "high",
+                    justification = "Replace the outdoor unit control board in one visit; the capacitor change did not stop the cut-outs. The unit is under warranty until 2026-11-18, so the manufacturer's agent should be asked to cover it first — this estimate is the cost if that claim is refused. Computer Lab 1 cannot be used in the afternoon without cooling.",
+                    consolidate_with_work_order_ids = Array.Empty<int>()
+                }),
+
+            new LiveWorkOrderSeed(
+                AssetTag: "PRJ-MAB102-01",
+                ReportDescription: "Lecture Hall B projector picture has gone dim and yellowish, slides hard to read from the back rows.",
+                Strategy: WorkOrderStrategy.KnownFix,
+                EstimatedCost: 6_500m,
+                PartsRequired: "Projector lamp, Epson ELPLP97.",
+                Status: WorkOrderStatus.Approved,
+                Diagnosis: null,
+                Proposal: null)
+        };
+
+        var seeded = 0;
+
+        foreach (var seed in seeds)
+        {
+            if (!assets.TryGetValue(seed.AssetTag, out var asset))
+            {
+                logger.LogWarning(
+                    "Skipping seeded work order: asset {AssetTag} does not exist.", seed.AssetTag);
+                continue;
+            }
+
+            // Guarded on the report's description, like the completed orders above.
+            var description = seed.ReportDescription;
+            if (await db.Reports.AnyAsync(r => r.Description == description, cancellationToken))
+            {
+                continue;
+            }
+
+            var report = new Report
+            {
+                ReporterId = reporterId.Value,
+                RoomId = asset.RoomId,
+                AssetId = asset.Id,
+                Description = seed.ReportDescription,
+                Status = ReportStatus.WorkOrderRaised
+            };
+
+            db.Reports.Add(report);
+
+            db.WorkOrders.Add(new WorkOrder
+            {
+                Report = report,
+                AssetId = asset.Id,
+                Status = seed.Status,
+                Strategy = seed.Strategy,
+                EstimatedCost = seed.EstimatedCost,
+                PartsRequired = seed.PartsRequired
+            });
+
+            // Saved per order: AgentWorkflow carries ReportId with no navigation to follow,
+            // so the report needs its id before the workflow can point at it.
+            await db.SaveChangesAsync(cancellationToken);
+
+            if (seed.Diagnosis is not null && seed.Proposal is not null)
+            {
+                var workflow = new AgentWorkflow
+                {
+                    ReportId = report.Id,
+                    // Verbatim, as ReportService raises it.
+                    Objective = seed.ReportDescription,
+                    CurrentState = WorkflowState.AwaitingManagerApproval,
+                    StartedAt = DateTime.UtcNow
+                };
+
+                // Clarifier, diagnostic, strategist — the order and shape WorkflowRunner
+                // writes. The report was clear enough that nothing needed asking.
+                workflow.Steps.Add(SeededAgentStep("clarifier", new { questions = Array.Empty<object>() }, 7_800));
+                workflow.Steps.Add(SeededAgentStep(AgentRunResponse.DiagnosticAgentName, seed.Diagnosis, 0));
+                workflow.Steps.Add(SeededAgentStep(AgentRunResponse.StrategistAgentName, seed.Proposal, 0));
+
+                db.AgentWorkflows.Add(workflow);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            seeded++;
+        }
+
+        if (seeded == 0)
+        {
+            return;
+        }
+
+        logger.LogInformation("Seeded {Count} live work order(s) for the approval queue and dispatch board.", seeded);
+    }
+
+    private static AgentStep SeededAgentStep(string agentName, object output, int durationMs) => new()
+    {
+        AgentName = agentName,
+        ToolCallsJson = "[]",
+        PayloadJson = JsonSerializer.Serialize(output),
+        DurationMs = durationMs,
+        ValidationResult = "Ok"
+    };
+
+    /// <summary>
+    /// One seeded live work order. <see cref="Diagnosis"/> and <see cref="Proposal"/> are the
+    /// agent's output in its own snake_case shape, serialised verbatim into the steps; both
+    /// null for an order raised without an agent run.
+    /// </summary>
+    private sealed record LiveWorkOrderSeed(
+        string AssetTag,
+        string ReportDescription,
+        WorkOrderStrategy Strategy,
+        decimal EstimatedCost,
+        string PartsRequired,
+        WorkOrderStatus Status,
+        object? Diagnosis,
+        object? Proposal);
 
     /// <summary>
     /// One seeded completed work order and the verification check raised against it.

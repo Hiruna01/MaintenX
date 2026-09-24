@@ -16,4 +16,10 @@ public record AgentRunRequest(
     [property: JsonPropertyName("workflow_id")] int WorkflowId,
     [property: JsonPropertyName("description")] string Description,
     [property: JsonPropertyName("room_id")] int? RoomId,
-    [property: JsonPropertyName("building_id")] int? BuildingId);
+    [property: JsonPropertyName("building_id")] int? BuildingId,
+
+    // The equipment at fault, when triage or a QR scan has named it — null otherwise, which
+    // is the normal case for a fresh report (see Report.AssetId). It is what lets the
+    // diagnostic and the strategist read the asset's service history through their tools;
+    // without it they reason from the report text alone.
+    [property: JsonPropertyName("asset_id")] int? AssetId = null);

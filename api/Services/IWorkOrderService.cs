@@ -24,10 +24,14 @@ public interface IWorkOrderService
     ///
     /// <paramref name="dateFrom"/> and <paramref name="dateTo"/> are calendar dates against
     /// CreatedAt and BOTH ENDS ARE INCLUSIVE, exactly as on the report list.
+    ///
+    /// <paramref name="search"/> matches the asset tag OR the report's description, case
+    /// insensitively — the sticker on the machine, or what was said about it.
     /// </summary>
     Task<PagedResult<WorkOrderDto>> GetAllAsync(
         int callerId,
         Role callerRole,
+        string? search = null,
         WorkOrderStatus? status = null,
         int? technicianId = null,
         int? assetId = null,
@@ -48,6 +52,21 @@ public interface IWorkOrderService
         int id,
         int callerId,
         Role callerRole,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every order AwaitingApproval, oldest first, each with everything a manager needs to
+    /// decide it on one screen: the order and its approval basis, the asset with its full
+    /// service history and failure summary, and the agent's most recent diagnosis and
+    /// proposal for the report. No visibility scope — the controller lets only a
+    /// FacilitiesManager ask, and a manager sees the estate.
+    ///
+    /// Nothing here decides anything. The approval basis is the gate's own reading of the
+    /// order; the diagnosis and proposal are the agent's advice, read back verbatim.
+    /// </summary>
+    Task<PagedResult<ApprovalCaseDto>> GetApprovalQueueAsync(
+        int page = 1,
+        int pageSize = 10,
         CancellationToken cancellationToken = default);
 
     /// <summary>Whether a work order exists AT ALL, ignoring who is asking.</summary>

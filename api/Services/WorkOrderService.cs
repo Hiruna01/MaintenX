@@ -14,6 +14,12 @@ public class WorkOrderService : IWorkOrderService
     private const int MaxPageSize = 100;
 
     /// <summary>
+    /// Largest page of the approval queue. Smaller than a list page because each case carries
+    /// a whole service history and a failure summary, and a manager decides them one at a time.
+    /// </summary>
+    private const int MaxApprovalPageSize = 25;
+
+    /// <summary>
     /// The statuses of an order that has cleared approval and is not yet finished — the only
     /// ones that can be assigned or completed. Draft and AwaitingApproval have not been
     /// cleared to spend money; Rejected, Completed and Cancelled are over.
@@ -45,6 +51,7 @@ public class WorkOrderService : IWorkOrderService
     private readonly IVerificationService _verificationService;
     private readonly TimeProvider _time;
     private readonly SchedulingSettings _scheduling;
+    private readonly IAssetService _assets;
 
     public WorkOrderService(
         AppDbContext db,
@@ -52,7 +59,8 @@ public class WorkOrderService : IWorkOrderService
         IWorkflowQueue workflowQueue,
         IVerificationService verificationService,
         TimeProvider time,
-        SchedulingSettings scheduling)
+        SchedulingSettings scheduling,
+        IAssetService assets)
     {
         _db = db;
         _approval = approval;
@@ -60,6 +68,7 @@ public class WorkOrderService : IWorkOrderService
         _verificationService = verificationService;
         _time = time;
         _scheduling = scheduling;
+        _assets = assets;
     }
 
     /// <summary>
@@ -87,14 +96,24 @@ public class WorkOrderService : IWorkOrderService
     /// manager. EscalateReplacement always does, whatever it costs — replacing equipment
     /// is a decision about the estate, not just about the money, and a cheap replacement
     /// is still a replacement.
+    ///
+    /// Returned as its parts rather than a bare bool so that CreateAsync ROUTES with it and
+    /// the detail DTO EXPLAINS with it — one function, so the reason a page gives for an
+    /// order needing approval is the reason it actually does.
     /// </summary>
-    private bool RequiresApproval(decimal estimatedCost, WorkOrderStrategy strategy) =>
-        estimatedCost > _approval.CostThreshold
-        || strategy == WorkOrderStrategy.EscalateReplacement;
+    private ApprovalBasisDto ApprovalBasisFor(decimal estimatedCost, WorkOrderStrategy strategy)
+    {
+        var exceedsThreshold = estimatedCost > _approval.CostThreshold;
+        var isReplacement = strategy == WorkOrderStrategy.EscalateReplacement;
+
+        return new ApprovalBasisDto(
+            _approval.CostThreshold, exceedsThreshold, isReplacement, exceedsThreshold || isReplacement);
+    }
 
     public async Task<PagedResult<WorkOrderDto>> GetAllAsync(
         int callerId,
         Role callerRole,
+        string? search = null,
         WorkOrderStatus? status = null,
         int? technicianId = null,
         int? assetId = null,
@@ -117,6 +136,16 @@ public class WorkOrderService : IWorkOrderService
         if (!SeesEveryWorkOrder(callerRole))
         {
             query = query.Where(w => w.AssignedTechnicianId == callerId);
+        }
+
+        // ToLower().Contains(), never EF.Functions.ILike — ILike is Npgsql-only and the tests
+        // run on SQLite, and lowering both sides is what makes the two providers agree. Same
+        // as the asset and report searches.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim().ToLower();
+            query = query.Where(w => w.Asset!.AssetTag.ToLower().Contains(term)
+                                  || w.Report!.Description.ToLower().Contains(term));
         }
 
         if (status is not null)
@@ -192,13 +221,7 @@ public class WorkOrderService : IWorkOrderService
         Role callerRole,
         CancellationToken cancellationToken = default)
     {
-        var order = await _db.WorkOrders
-            .AsNoTracking()
-            .Include(w => w.Report)
-            .Include(w => w.Asset)
-            .Include(w => w.AssignedTechnician)
-            .Include(w => w.ApprovedBy)
-            .Include(w => w.ScheduledSlots)
+        var order = await WithDetail(_db.WorkOrders.AsNoTracking())
             .FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
 
         if (order is null)
@@ -212,6 +235,97 @@ public class WorkOrderService : IWorkOrderService
             return null;
         }
 
+        return ToDetailDto(order);
+    }
+
+    public async Task<PagedResult<ApprovalCaseDto>> GetApprovalQueueAsync(
+        int page = 1,
+        int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        page = page < 1 ? 1 : page;
+        pageSize = pageSize < 1 ? 1 : Math.Min(pageSize, MaxApprovalPageSize);
+
+        var query = _db.WorkOrders
+            .AsNoTracking()
+            .Where(w => w.Status == WorkOrderStatus.AwaitingApproval);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        // OLDEST FIRST, the opposite of the dispatch board: this is a queue of decisions,
+        // and the order that has waited longest is decided first. Id breaks the tie, since
+        // orders raised in one SaveChanges share a CreatedAt.
+        var orders = await WithDetail(query)
+            .OrderBy(w => w.CreatedAt)
+            .ThenBy(w => w.Id)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        var cases = new List<ApprovalCaseDto>(orders.Count);
+
+        foreach (var order in orders)
+        {
+            // The asset, its history and its summary come from the service that owns them —
+            // the same history GET /api/assets/{id} serves, and the same C# summary rules.
+            // Never null: WorkOrder.AssetId is a Restrict foreign key and assets are retired,
+            // not deleted.
+            var asset = await _assets.GetByIdAsync(order.AssetId, cancellationToken)
+                        ?? throw new InvalidOperationException($"Work order {order.Id} names asset {order.AssetId}, which does not exist.");
+
+            var summary = await _assets.GetFailureSummaryAsync(order.AssetId, cancellationToken)
+                          ?? throw new InvalidOperationException($"No failure summary for asset {order.AssetId}.");
+
+            var (diagnosis, proposal) = await LatestAgentAnalysisAsync(order.ReportId, cancellationToken);
+
+            cases.Add(new ApprovalCaseDto(ToDetailDto(order), asset, summary, diagnosis, proposal));
+        }
+
+        return new PagedResult<ApprovalCaseDto>(cases, page, pageSize, totalCount);
+    }
+
+    /// <summary>
+    /// The most recent diagnostic and strategist AGENT-RUN steps across every workflow raised
+    /// for the report — each null when none was ever recorded. Each carries its WorkflowId,
+    /// so a diagnosis and a proposal from different runs are visible as such.
+    ///
+    /// Filtered to agent runs in memory, after the query, because the diagnostic's tool calls
+    /// are recorded under the same name and the difference is inside a jsonb column; see
+    /// AgentAnalysis.IsAgentRunStep. A report has a handful of steps, not thousands.
+    /// </summary>
+    private async Task<(AgentDiagnosisDto? Diagnosis, AgentProposalDto? Proposal)> LatestAgentAnalysisAsync(
+        int reportId,
+        CancellationToken cancellationToken)
+    {
+        var steps = await _db.AgentSteps
+            .AsNoTracking()
+            .Where(s => s.Workflow!.ReportId == reportId
+                        && (s.AgentName == AgentRunResponse.DiagnosticAgentName
+                            || s.AgentName == AgentRunResponse.StrategistAgentName))
+            .OrderByDescending(s => s.Id)
+            .ToListAsync(cancellationToken);
+
+        var runs = steps.Where(AgentAnalysis.IsAgentRunStep).ToList();
+
+        var diagnosis = runs.FirstOrDefault(s => s.AgentName == AgentRunResponse.DiagnosticAgentName);
+        var proposal = runs.FirstOrDefault(s => s.AgentName == AgentRunResponse.StrategistAgentName);
+
+        return (
+            diagnosis is null ? null : AgentAnalysis.ToDiagnosis(diagnosis),
+            proposal is null ? null : AgentAnalysis.ToProposal(proposal));
+    }
+
+    /// <summary>Everything the detail DTO reads, loaded in the one query.</summary>
+    private static IQueryable<WorkOrder> WithDetail(IQueryable<WorkOrder> query) =>
+        query
+            .Include(w => w.Report)
+            .Include(w => w.Asset)
+            .Include(w => w.AssignedTechnician)
+            .Include(w => w.ApprovedBy)
+            .Include(w => w.ScheduledSlots);
+
+    private WorkOrderDetailDto ToDetailDto(WorkOrder order)
+    {
         return new WorkOrderDetailDto(
             order.Id,
             order.ReportId,
@@ -222,6 +336,7 @@ public class WorkOrderService : IWorkOrderService
             order.Strategy,
             order.EstimatedCost,
             order.ActualCost,
+            ApprovalBasisFor(order.EstimatedCost, order.Strategy),
             order.PartsRequired,
             order.ResolutionNote,
             order.CompletionPhotoUrl,
@@ -305,7 +420,7 @@ public class WorkOrderService : IWorkOrderService
         var estimatedCost = dto.EstimatedCost!.Value;
         var strategy = dto.Strategy!.Value;
 
-        var needsApproval = RequiresApproval(estimatedCost, strategy);
+        var needsApproval = ApprovalBasisFor(estimatedCost, strategy).RequiresApproval;
 
         // Raised as Draft in principle (see CreateWorkOrderDto), and routed out of it in
         // the same breath: the gate is decided before the row is ever written, so no

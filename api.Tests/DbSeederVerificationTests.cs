@@ -86,13 +86,65 @@ public class DbSeederVerificationTests : IClassFixture<ApiFactory>
         var completions = checks.Select(c => c.WorkOrder!.CompletedAt!.Value).ToList();
         Assert.True((completions.Max() - completions.Min()).TotalDays > 10);
 
-        // IDEMPOTENT. A second run adds nothing.
+        // IDEMPOTENT. A second run adds nothing: 6 completed + 3 live orders, a report each.
         await DbSeeder.SeedAsync(db, configuration, hasher, settings, NullLogger.Instance);
         db.ChangeTracker.Clear();
 
         Assert.Equal(6, await db.VerificationChecks.CountAsync());
-        Assert.Equal(6, await db.WorkOrders.CountAsync());
-        Assert.Equal(6, await db.Reports.CountAsync());
+        Assert.Equal(9, await db.WorkOrders.CountAsync());
+        Assert.Equal(9, await db.Reports.CountAsync());
+        Assert.Equal(2, await db.AgentWorkflows.CountAsync());
+        Assert.Equal(6, await db.AgentSteps.CountAsync());
+    }
+
+    [Fact]
+    public async Task Seeder_FillsTheApprovalQueue_WithADiagnosisAndProposalTheQueueCanRead()
+    {
+        using var factory = new ApiFactory();
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher<User>>();
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Seed:Passwords:Reporter"] = "seed-test-password"
+            })
+            .Build();
+
+        await DbSeeder.SeedAsync(db, configuration, hasher, new VerificationSettings(), NullLogger.Instance);
+        db.ChangeTracker.Clear();
+
+        // Read through the real service, so the seeded steps are proven to be in the shape
+        // the queue reads — the same code path as a real run's.
+        var queue = await scope.ServiceProvider.GetRequiredService<IWorkOrderService>().GetApprovalQueueAsync();
+
+        Assert.Equal(2, queue.TotalCount);
+
+        // The golden projector: above the threshold AND a replacement, so both halves of the
+        // gate show, with the thermal diagnosis the live eval produced — and no compressor.
+        var projector = Assert.Single(queue.Items, c => c.Asset.AssetTag == "PRJ-MAB101-01");
+        Assert.Equal(WorkOrderStrategy.EscalateReplacement, projector.WorkOrder.Strategy);
+        Assert.True(projector.WorkOrder.ApprovalBasis.ExceedsThreshold);
+        Assert.True(projector.WorkOrder.ApprovalBasis.IsReplacement);
+        Assert.True(projector.Diagnosis!.OutputReadable);
+        Assert.Contains("cooling fan", projector.Diagnosis.Hypotheses[0].Cause);
+        Assert.DoesNotContain(projector.Diagnosis.Hypotheses,
+            h => h.Cause.Contains("compressor", StringComparison.OrdinalIgnoreCase));
+        Assert.True(projector.Proposal!.OutputReadable);
+        Assert.Equal(45_000m, projector.Proposal.EstimatedCost);
+        Assert.Equal(3, projector.Asset.ServiceHistory.Count);
+
+        // The air conditioner: above the threshold on cost alone.
+        var aircon = Assert.Single(queue.Items, c => c.Asset.AssetTag == "ACU-ENG101-01");
+        Assert.True(aircon.WorkOrder.ApprovalBasis.ExceedsThreshold);
+        Assert.False(aircon.WorkOrder.ApprovalBasis.IsReplacement);
+        Assert.True(aircon.Proposal!.OutputReadable);
+
+        // And one approved order nobody is assigned to yet, for the dispatch board.
+        var unassigned = await db.WorkOrders.SingleAsync(
+            w => w.Status == WorkOrderStatus.Approved && w.AssignedTechnicianId == null);
+        Assert.Null(unassigned.ApprovedByUserId);
     }
 
     [Fact]

@@ -33,6 +33,10 @@ public record WorkOrderDetailDto(
     decimal EstimatedCost,
     decimal? ActualCost,
 
+    // Which side of the approval gate the estimate sits on, and why — computed in C# by the
+    // same function that routed the order, so a page never compares money itself.
+    ApprovalBasisDto ApprovalBasis,
+
     string? PartsRequired,
     string? ResolutionNote,
     string? CompletionPhotoUrl,

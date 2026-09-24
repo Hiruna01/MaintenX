@@ -113,6 +113,39 @@ public interface IWorkOrderService
         int id,
         string note,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Free blocks of <paramref name="durationMinutes"/> for work on an asset, between two
+    /// campus-local calendar dates (both inclusive), earliest first, at most twenty.
+    ///
+    /// Free means: inside the working day (SchedulingSettings), not already started, no
+    /// class in the asset's room within the buffer either side, and — when
+    /// <paramref name="technicianId"/> is given — no other visit booked for that technician.
+    /// All of it is decided in C# by SlotRules; an agent may propose a time, never decide
+    /// that one is free.
+    ///
+    /// An OFFER, not a reservation: two managers can be shown the same block, which is why
+    /// <see cref="ScheduleAsync"/> runs the same check again.
+    /// </summary>
+    Task<AvailableSlotsResult> GetAvailableSlotsAsync(
+        int assetId,
+        int? technicianId,
+        int durationMinutes,
+        DateOnly fromDate,
+        DateOnly toDate,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Books one visit for the order: a new ScheduledSlot row, and the order to Scheduled if
+    /// it was Approved. The availability check is RE-RUN here against the order's own asset
+    /// and assigned technician, inside a serializable transaction together with the insert,
+    /// so neither a slot taken since it was offered nor two managers booking the same
+    /// technician at the same moment can produce a double booking.
+    /// </summary>
+    Task<ScheduleWorkOrderResult> ScheduleAsync(
+        int id,
+        ScheduleWorkOrderDto dto,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -176,3 +209,66 @@ public enum WorkOrderActionOutcome
     /// </summary>
     NoWorkflow
 }
+
+/// <summary>
+/// Why a <see cref="IWorkOrderService.GetAvailableSlotsAsync"/> call ended as it did. Every
+/// failure is a 400: they are all about the query the caller sent.
+/// </summary>
+public enum AvailableSlotsOutcome
+{
+    Success,
+
+    /// <summary>No asset has that id — there is no room to check.</summary>
+    AssetNotFound,
+
+    /// <summary>The technician named does not exist or is not a Technician.</summary>
+    NotATechnician,
+
+    /// <summary>toDate is before fromDate, or the range is longer than the search allows.</summary>
+    InvalidDateRange,
+
+    /// <summary>The job is longer than the working day, so no slot could ever hold it.</summary>
+    DurationTooLong
+}
+
+/// <summary><see cref="Slots"/> is set only on <see cref="AvailableSlotsOutcome.Success"/>.</summary>
+public record AvailableSlotsResult(
+    AvailableSlotsOutcome Outcome,
+    IReadOnlyList<AvailableSlotDto>? Slots = null);
+
+/// <summary>Why a <see cref="IWorkOrderService.ScheduleAsync"/> call ended as it did.</summary>
+public enum ScheduleOutcome
+{
+    /// <summary>Booked. A 201 carrying the new slot.</summary>
+    Success,
+
+    /// <summary>No work order has that id. A 404.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The order has not cleared approval, or is already finished. A 409 — the same rule as
+    /// assign and complete.
+    /// </summary>
+    InvalidState,
+
+    /// <summary>
+    /// Nobody is assigned yet. A 409: a booking is time in somebody's diary, and Scheduled
+    /// means assigned AND booked, so assign first.
+    /// </summary>
+    NoTechnicianAssigned,
+
+    /// <summary>
+    /// The slot could never have been offered: outside the working day, already started, an
+    /// end not after its start, or a time with no UTC offset. A 400.
+    /// </summary>
+    NotBookable,
+
+    /// <summary>
+    /// The slot overlaps a buffered class or another of the technician's visits — taken
+    /// since it was offered, or lost to a concurrent booking. A 409.
+    /// </summary>
+    SlotTaken
+}
+
+/// <summary><see cref="Slot"/> is set only on <see cref="ScheduleOutcome.Success"/>.</summary>
+public record ScheduleWorkOrderResult(ScheduleOutcome Outcome, ScheduledSlotDto? Slot = null);

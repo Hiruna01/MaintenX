@@ -382,7 +382,8 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
                 sp.GetRequiredService<ApprovalSettings>(),
                 sp.GetRequiredService<IWorkflowQueue>(),
                 new FailingVerificationService(),
-                TimeProvider.System);
+                TimeProvider.System,
+                sp.GetRequiredService<SchedulingSettings>());
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteAsync(
                 order.Id, technicianId,
@@ -471,6 +472,166 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
 
         Assert.Equal(waiting.Id, Assert.Single(page!.Items).Id);
         Assert.Equal(HttpStatusCode.BadRequest, unknown.StatusCode);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Slots — offering and booking
+    //
+    // The boundary arithmetic is unit tested in SlotRulesTests. These pin the wiring: that
+    // the room comes from the asset, the technician's other visits are loaded, the dates
+    // are read as campus-local days, and a booking re-checks rather than trusting an offer.
+    // ---------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task AvailableSlots_AvoidTheBufferedClass_AndTheTechniciansOtherVisit()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (_, technicianId) = await ClientAsync(Role.Technician);
+        var day = FutureMonday();
+
+        var fault = await NewFaultAsync();
+        await AddClassAsync(await RoomOfAsync(fault.AssetId), Local(day, 10), Local(day, 11));
+
+        // The technician's other job, in a different room, booked through the endpoint.
+        var other = await ApprovedAndAssignedAsync(manager, technicianId);
+        var booked = await manager.PostAsJsonAsync($"/api/workorders/{other.Id}/schedule",
+            new ScheduleWorkOrderDto(Local(day, 13), Local(day, 14)), JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, booked.StatusCode);
+
+        var slots = await AvailableAsync(manager, fault.AssetId, day, day, 60, technicianId);
+
+        // The class blocks 09:45-11:15; the visit blocks 13:00-14:00 with no buffer, so
+        // 12:00-13:00 and 14:00-15:00 both survive.
+        Assert.Equal(
+            new[] { Local(day, 8), Local(day, 8, 30), Local(day, 11, 30), Local(day, 12),
+                    Local(day, 14), Local(day, 14, 30), Local(day, 15), Local(day, 15, 30), Local(day, 16) },
+            slots.Select(s => s.StartsAt));
+
+        // Without a technician only the room is checked, so the afternoon opens up again.
+        var roomOnly = await AvailableAsync(manager, fault.AssetId, day, day, 60, technicianId: null);
+        Assert.Contains(Local(day, 13), roomOnly.Select(s => s.StartsAt));
+    }
+
+    [Fact]
+    public async Task AvailableSlots_RefusesABadQuery_AndANonManager()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, _) = await ClientAsync(Role.Technician);
+        var fault = await NewFaultAsync();
+        var day = FutureMonday();
+
+        string Url(string query) => $"/api/workorders/slots/available?{query}";
+        var ok = $"assetId={fault.AssetId}&durationMinutes=60&fromDate={day:yyyy-MM-dd}&toDate={day:yyyy-MM-dd}";
+
+        Assert.Equal(HttpStatusCode.OK, (await manager.GetAsync(Url(ok))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await technician.GetAsync(Url(ok))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await _factory.CreateClient().GetAsync(Url(ok))).StatusCode);
+
+        var bad = new[]
+        {
+            $"assetId={fault.AssetId}&fromDate={day:yyyy-MM-dd}&toDate={day:yyyy-MM-dd}",                        // no duration
+            $"assetId=999999&durationMinutes=60&fromDate={day:yyyy-MM-dd}&toDate={day:yyyy-MM-dd}",              // unknown asset
+            $"assetId={fault.AssetId}&durationMinutes=60&fromDate={day:yyyy-MM-dd}&toDate={day.AddDays(-1):yyyy-MM-dd}", // backwards
+            $"assetId={fault.AssetId}&durationMinutes=60&fromDate={day:yyyy-MM-dd}&toDate={day.AddDays(31):yyyy-MM-dd}", // 32 days
+            $"assetId={fault.AssetId}&durationMinutes=600&fromDate={day:yyyy-MM-dd}&toDate={day:yyyy-MM-dd}",    // longer than the day
+        };
+
+        foreach (var query in bad)
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, (await manager.GetAsync(Url(query))).StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Schedule_BooksAnOfferedSlot_AndTheOrderBecomesScheduled()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (_, technicianId) = await ClientAsync(Role.Technician);
+        var order = await ApprovedAndAssignedAsync(manager, technicianId);
+        var day = FutureMonday();
+
+        var offered = (await AvailableAsync(manager, order.AssetId, day, day, 90, technicianId))[0];
+
+        var response = await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/schedule",
+            new ScheduleWorkOrderDto(offered.StartsAt, offered.EndsAt), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var detail = await manager.GetFromJsonAsync<WorkOrderDetailDto>(response.Headers.Location, JsonOptions);
+        Assert.Equal(WorkOrderStatus.Scheduled, detail!.Status);
+        var slot = Assert.Single(detail.ScheduledSlots);
+        Assert.Equal(offered.StartsAt, slot.StartsAt);
+        Assert.Equal(offered.EndsAt, slot.EndsAt);
+    }
+
+    [Fact]
+    public async Task Schedule_ASlotTakenSinceItWasOffered_Is409()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (_, technicianId) = await ClientAsync(Role.Technician);
+        var first = await ApprovedAndAssignedAsync(manager, technicianId);
+        var second = await ApprovedAndAssignedAsync(manager, technicianId);
+        var day = FutureMonday();
+
+        // Offered to the second order...
+        var offered = (await AvailableAsync(manager, second.AssetId, day, day, 60, technicianId))[0];
+
+        // ...then the same technician is booked into that time for the first order...
+        var taken = await manager.PostAsJsonAsync($"/api/workorders/{first.Id}/schedule",
+            new ScheduleWorkOrderDto(offered.StartsAt, offered.EndsAt), JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, taken.StatusCode);
+
+        // ...so booking the stale offer is refused rather than double-booking them.
+        var stale = await manager.PostAsJsonAsync($"/api/workorders/{second.Id}/schedule",
+            new ScheduleWorkOrderDto(offered.StartsAt, offered.EndsAt), JsonOptions);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+
+        // The same for the room: a class synced in after the offer was made.
+        var nextOffer = (await AvailableAsync(manager, second.AssetId, day, day, 60, technicianId))[0];
+        await AddClassAsync(await RoomOfAsync(second.AssetId), nextOffer.StartsAt, nextOffer.EndsAt);
+
+        var clashesWithClass = await manager.PostAsJsonAsync($"/api/workorders/{second.Id}/schedule",
+            new ScheduleWorkOrderDto(nextOffer.StartsAt, nextOffer.EndsAt), JsonOptions);
+        Assert.Equal(HttpStatusCode.Conflict, clashesWithClass.StatusCode);
+
+        var detail = await manager.GetFromJsonAsync<WorkOrderDetailDto>($"/api/workorders/{second.Id}", JsonOptions);
+        Assert.Equal(WorkOrderStatus.Approved, detail!.Status);
+        Assert.Empty(detail.ScheduledSlots);
+    }
+
+    [Fact]
+    public async Task Schedule_RefusesWhatCouldNeverHaveBeenOffered()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, technicianId) = await ClientAsync(Role.Technician);
+        var order = await ApprovedAndAssignedAsync(manager, technicianId);
+        var day = FutureMonday();
+
+        async Task<HttpStatusCode> Book(DateTime start, DateTime end, HttpClient? caller = null) =>
+            (await (caller ?? manager).PostAsJsonAsync($"/api/workorders/{order.Id}/schedule",
+                new ScheduleWorkOrderDto(start, end), JsonOptions)).StatusCode;
+
+        Assert.Equal(HttpStatusCode.BadRequest, await Book(Local(day, 7), Local(day, 8)));              // before opening
+        Assert.Equal(HttpStatusCode.BadRequest, await Book(Local(day, 16, 30), Local(day, 17, 30)));   // past closing
+        Assert.Equal(HttpStatusCode.BadRequest, await Book(Local(day.AddDays(5), 10), Local(day.AddDays(5), 11))); // Saturday
+        Assert.Equal(HttpStatusCode.BadRequest, await Book(Local(day, 11), Local(day, 10)));           // backwards
+        Assert.Equal(HttpStatusCode.Forbidden, await Book(Local(day, 10), Local(day, 11), technician));
+
+        // No offset: which clock was that read off? Refused rather than guessed.
+        var noOffset = await manager.PostAsync($"/api/workorders/{order.Id}/schedule", new StringContent(
+            $$"""{"startsAt":"{{day:yyyy-MM-dd}}T10:00:00","endsAt":"{{day:yyyy-MM-dd}}T11:00:00"}""",
+            Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, noOffset.StatusCode);
+
+        // Nobody assigned, or not yet approved: 409, whatever the slot.
+        var unassigned = await RaiseAsync(manager, await NewFaultAsync(), 10m);
+        var waiting = await RaiseAsync(manager, await NewFaultAsync(), 42_000m);
+        foreach (var id in new[] { unassigned.Id, waiting.Id })
+        {
+            var response = await manager.PostAsJsonAsync($"/api/workorders/{id}/schedule",
+                new ScheduleWorkOrderDto(Local(day, 10), Local(day, 11)), JsonOptions);
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -588,6 +749,75 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         using var scope = _factory.Services.CreateScope();
         return await scope.ServiceProvider.GetRequiredService<AppDbContext>()
             .ServiceRecords.CountAsync(s => s.WorkOrderId == orderId);
+    }
+
+    /// <summary>
+    /// A Monday at least a week out, so no slot on it is ever "in the past" whenever the
+    /// suite runs.
+    /// </summary>
+    private static DateOnly FutureMonday()
+    {
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(7);
+
+        while (day.DayOfWeek != DayOfWeek.Monday)
+        {
+            day = day.AddDays(1);
+        }
+
+        return day;
+    }
+
+    /// <summary>A campus-local wall-clock time, as the UTC instant the API stores.</summary>
+    private DateTime Local(DateOnly day, int hour, int minute = 0)
+    {
+        var zone = _factory.Services.GetRequiredService<SchedulingSettings>().TimeZone;
+        return TimeZoneInfo.ConvertTimeToUtc(day.ToDateTime(new TimeOnly(hour, minute)), zone);
+    }
+
+    private async Task<WorkOrderDto> ApprovedAndAssignedAsync(HttpClient manager, int technicianId)
+    {
+        var order = await RaiseAsync(manager, await NewFaultAsync(), 10m);
+        await AssignAsync(manager, order.Id, technicianId);
+        return order;
+    }
+
+    private static async Task<List<AvailableSlotDto>> AvailableAsync(
+        HttpClient manager, int assetId, DateOnly from, DateOnly to, int durationMinutes, int? technicianId)
+    {
+        var url = $"/api/workorders/slots/available?assetId={assetId}&durationMinutes={durationMinutes}"
+                + $"&fromDate={from:yyyy-MM-dd}&toDate={to:yyyy-MM-dd}"
+                + (technicianId is null ? "" : $"&technicianId={technicianId}");
+
+        return (await manager.GetFromJsonAsync<List<AvailableSlotDto>>(url, JsonOptions))!;
+    }
+
+    private async Task<int> RoomOfAsync(int assetId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .Assets.Where(a => a.Id == assetId).Select(a => a.RoomId).SingleAsync();
+    }
+
+    /// <summary>
+    /// A class in the room, written straight to the table — the timetable is mirrored from
+    /// the campus system, and there is no endpoint that authors one.
+    /// </summary>
+    private async Task AddClassAsync(int roomId, DateTime startsAt, DateTime endsAt)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        db.ClassScheduleSlots.Add(new ClassScheduleSlot
+        {
+            RoomId = roomId,
+            StartsAt = startsAt,
+            EndsAt = endsAt,
+            Title = "SE3090 Lecture",
+            ExternalEventId = $"evt-{Guid.NewGuid():N}",
+            SyncedAt = DateTime.UtcNow
+        });
+
+        await db.SaveChangesAsync();
     }
 
     /// <summary>Empties the queue. DequeueAsync blocks, so a short timeout is the signal.</summary>

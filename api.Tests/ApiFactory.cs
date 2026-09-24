@@ -123,10 +123,14 @@ public class ApiFactory : WebApplicationFactory<Program>
             //
             // The timetable sync worker goes for the same reason: a timer writing
             // ClassScheduleSlot rows underneath a test's assertions. Tests call the sync
-            // through POST /api/timetable/sync instead.
+            // through POST /api/timetable/sync instead. The verification sweep likewise —
+            // it runs a pass at startup, which would move a test's Pending checks before
+            // the test looked at them. Tests call ProcessDueChecksAsync or
+            // POST /api/verifications/run-sweep.
             foreach (var worker in services
                 .Where(d => d.ImplementationType == typeof(WorkflowRunner)
-                         || d.ImplementationType == typeof(TimetableSyncWorker))
+                         || d.ImplementationType == typeof(TimetableSyncWorker)
+                         || d.ImplementationType == typeof(VerificationSweepService))
                 .ToList())
             {
                 services.Remove(worker);

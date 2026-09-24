@@ -19,19 +19,39 @@ public class VerificationService : IVerificationService
         VerificationStatus.AwaitingReporterResponse
     };
 
+    /// <summary>
+    /// One sweep at a time. The timer and POST /api/verifications/run-sweep can both start
+    /// one, and two passes over the same rows would each count the same check as asked.
+    /// Static because the service is scoped: every instance must share the one lock — same
+    /// as GoogleCalendarSyncService.
+    /// </summary>
+    private static readonly SemaphoreSlim SweepLock = new(1, 1);
+
+    /// <summary>Column limit on VerificationCheck.ExpiredReason, so a long error is cut rather than refused.</summary>
+    private const int MaxExpiredReasonLength = 500;
+
     private readonly AppDbContext _db;
     private readonly VerificationSettings _settings;
+    private readonly TimeProvider _time;
     private readonly ILogger<VerificationService> _logger;
 
     public VerificationService(
         AppDbContext db,
         VerificationSettings settings,
+        TimeProvider time,
         ILogger<VerificationService> logger)
     {
         _db = db;
         _settings = settings;
+        _time = time;
         _logger = logger;
     }
+
+    /// <summary>
+    /// "Now" from the injected clock, never DateTime.UtcNow — the response window is a
+    /// date rule, and a test has to be able to stand on either side of it.
+    /// </summary>
+    private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
 
     public async Task<VerificationCheckDto?> CreateForCompletedWorkOrderAsync(
         int workOrderId,
@@ -88,7 +108,7 @@ public class VerificationService : IVerificationService
         VerificationStatusFilter filter = VerificationStatusFilter.All,
         CancellationToken cancellationToken = default)
     {
-        var now = DateTime.UtcNow;
+        var now = UtcNow;
 
         var query = _db.VerificationChecks.AsNoTracking();
 
@@ -140,6 +160,8 @@ public class VerificationService : IVerificationService
             check.AgentOutcome,
             check.AgentReason,
             check.ProcessedAt,
+            check.AgentQueuedAt,
+            check.ExpiredReason,
             check.CreatedAt,
             check.UpdatedAt);
     }
@@ -161,33 +183,204 @@ public class VerificationService : IVerificationService
         return rows.Select(r => ToDto(r.Check, r.AssetTag)).ToList();
     }
 
-    public async Task<int> ProcessDueChecksAsync(CancellationToken cancellationToken = default)
+    public async Task<VerificationSweepResultDto> ProcessDueChecksAsync(
+        CancellationToken cancellationToken = default)
     {
-        var now = DateTime.UtcNow;
+        await SweepLock.WaitAsync(cancellationToken);
 
-        // Exactly the shape the composite index on (Status, DueAt) serves: equality on the
-        // leading column, range on the second.
-        var due = await _db.VerificationChecks
+        try
+        {
+            return await SweepLockedAsync(cancellationToken);
+        }
+        finally
+        {
+            SweepLock.Release();
+        }
+    }
+
+    private async Task<VerificationSweepResultDto> SweepLockedAsync(CancellationToken cancellationToken)
+    {
+        var now = UtcNow;
+        var asked = 0;
+        var queued = 0;
+        var failed = 0;
+
+        // STEP 1 — ask the reporter. Exactly the shape the composite index on
+        // (Status, DueAt) serves: equality on the leading column, range on the second.
+        // Ids only: each row is loaded, changed and saved on its own below.
+        var dueIds = await _db.VerificationChecks
+            .AsNoTracking()
             .Where(v => v.Status == VerificationStatus.Pending && v.DueAt <= now)
+            .OrderBy(v => v.Id)
+            .Select(v => v.Id)
             .ToListAsync(cancellationToken);
 
-        if (due.Count == 0)
+        foreach (var id in dueIds)
         {
-            return 0;
+            var outcome = await RunStepAsync(id, "asking the reporter", check =>
+            {
+                // Re-read, not assumed: the row may have moved since the ids were listed.
+                if (check.Status != VerificationStatus.Pending)
+                {
+                    return false;
+                }
+
+                check.Status = VerificationStatus.AwaitingReporterResponse;
+                check.ProcessedAt = now;
+                return true;
+            }, now, cancellationToken);
+
+            if (outcome == StepOutcome.Done) asked++;
+            if (outcome == StepOutcome.Failed) failed++;
         }
 
-        foreach (var check in due)
+        // STEP 2 — hand to the verification agent. Answered, or asked and silent past the
+        // response window. Measured from ProcessedAt, when the reporter was actually asked;
+        // DueAt covers seeded rows the sweep never stamped, the same fallback the metrics
+        // use. A check asked in step 1 has ProcessedAt = now, so it cannot qualify here.
+        var silentSince = now.AddDays(-_settings.ResponseWindowDays);
+
+        var readyIds = await _db.VerificationChecks
+            .AsNoTracking()
+            .Where(v => v.AgentQueuedAt == null
+                && (v.ReporterRespondedAt != null
+                    || (v.Status == VerificationStatus.AwaitingReporterResponse
+                        && (v.ProcessedAt ?? v.DueAt) <= silentSince)))
+            .OrderBy(v => v.Id)
+            .Select(v => v.Id)
+            .ToListAsync(cancellationToken);
+
+        foreach (var id in readyIds)
         {
-            check.Status = VerificationStatus.AwaitingReporterResponse;
+            var outcome = await RunStepAsync(id, "queueing it for the verification agent", check =>
+            {
+                if (check.AgentQueuedAt is not null)
+                {
+                    return false;
+                }
+
+                // Status is NOT touched. Queueing is not a verdict: an answered check keeps
+                // the status its answer gave it, and a silent one stays open for the
+                // reporter to answer late. The agent writes AgentOutcome; C# sets Status.
+                check.AgentQueuedAt = now;
+                return true;
+            }, now, cancellationToken);
+
+            if (outcome == StepOutcome.Done) queued++;
+            if (outcome == StepOutcome.Failed) failed++;
+        }
+
+        var processed = asked + queued + failed;
+
+        if (processed > 0)
+        {
+            _logger.LogInformation(
+                "Verification sweep: {Asked} asked the reporter, {Queued} queued for the agent, {Failed} failed.",
+                asked, queued, failed);
+        }
+
+        return new VerificationSweepResultDto(processed, asked, queued, failed);
+    }
+
+    private enum StepOutcome
+    {
+        Done,
+
+        /// <summary>Gone, or already moved on by the time it was loaded. Not counted.</summary>
+        Skipped,
+
+        Failed
+    }
+
+    /// <summary>
+    /// Loads one check, applies one change and saves it on its own. THE PER-ROW CATCH:
+    /// whatever this row throws is logged and handed to <see cref="ExpireAfterFailureAsync"/>,
+    /// and the sweep moves on to the next row. Only cancellation escapes.
+    /// </summary>
+    private async Task<StepOutcome> RunStepAsync(
+        int id,
+        string step,
+        Func<VerificationCheck, bool> apply,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var check = await _db.VerificationChecks.FirstOrDefaultAsync(v => v.Id == id, cancellationToken);
+
+            if (check is null || !apply(check))
+            {
+                return StepOutcome.Skipped;
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+            return StepOutcome.Done;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Verification sweep failed on check {CheckId} while {Step}.", id, step);
+
+            // The failed change is still tracked, and the next SaveChanges would try it
+            // again — failing every row after this one for this row's fault.
+            _db.ChangeTracker.Clear();
+
+            await ExpireAfterFailureAsync(id, step, ex, now, cancellationToken);
+            return StepOutcome.Failed;
+        }
+    }
+
+    /// <summary>
+    /// Gives up on a check the sweep could not process: Expired, with the error in
+    /// ExpiredReason so the row says why rather than just stopping. Expired rather than
+    /// left in place because a row that fails every pass would fail every pass forever,
+    /// logging the same error hourly while the reporter is never asked.
+    ///
+    /// NOT for an answered check. Expired means "asked, never answered"; writing it over a
+    /// reporter's verdict would destroy the answer and pull it out of the confirmation
+    /// rate. Those are logged and left for the next pass.
+    ///
+    /// Never throws: if even this write fails, it is logged and the sweep carries on.
+    /// </summary>
+    private async Task ExpireAfterFailureAsync(
+        int id,
+        string step,
+        Exception failure,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var check = await _db.VerificationChecks.FirstOrDefaultAsync(v => v.Id == id, cancellationToken);
+
+            if (check is null)
+            {
+                return;
+            }
+
+            if (check.ReporterRespondedAt is not null)
+            {
+                _logger.LogWarning(
+                    "Verification check {CheckId} has been answered, so it is left as {Status} "
+                    + "for the next sweep rather than expired.",
+                    id, check.Status);
+                return;
+            }
+
+            var reason = $"The verification sweep failed while {step}: {failure.GetBaseException().Message}";
+
+            check.Status = VerificationStatus.Expired;
+            check.ExpiredReason = reason.Length <= MaxExpiredReasonLength
+                ? reason
+                : reason[..MaxExpiredReasonLength];
             check.ProcessedAt = now;
+
+            await _db.SaveChangesAsync(cancellationToken);
         }
-
-        await _db.SaveChangesAsync(cancellationToken);
-
-        _logger.LogInformation(
-            "Verification sweep moved {Count} check(s) to AwaitingReporterResponse.", due.Count);
-
-        return due.Count;
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Could not mark verification check {CheckId} Expired after the sweep failed on it.", id);
+            _db.ChangeTracker.Clear();
+        }
     }
 
     public async Task<bool> RecordReporterResponseAsync(
@@ -218,7 +411,7 @@ public class VerificationService : IVerificationService
 
         check.ReporterConfirmed = dto.Confirmed;
         check.ReporterComment = dto.Comment;
-        check.ReporterRespondedAt = DateTime.UtcNow;
+        check.ReporterRespondedAt = UtcNow;
 
         // WHAT THE ANSWER MEANS IS A DETERMINISTIC RULE AND LIVES HERE, not in a prompt.
         // Set in the same SaveChanges as the answer itself, so the two can never disagree:
@@ -238,7 +431,7 @@ public class VerificationService : IVerificationService
 
     public async Task<MetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default)
     {
-        var now = DateTime.UtcNow;
+        var now = UtcNow;
 
         // One grouped query rather than six counts, so the whole picture comes from a
         // single trip and cannot be assembled from rows that changed in between.

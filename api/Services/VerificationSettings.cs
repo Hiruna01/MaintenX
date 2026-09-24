@@ -26,6 +26,9 @@ public class VerificationSettings
     /// <summary>Default minutes between sweeps.</summary>
     public const int DefaultSweepIntervalMinutes = 60;
 
+    /// <summary>Default days a reporter has to answer before the check goes to the agent anyway.</summary>
+    public const int DefaultResponseWindowDays = 3;
+
     /// <summary>
     /// Days after completion that a verification check falls due.
     ///
@@ -45,4 +48,15 @@ public class VerificationSettings
     /// benefit anyone could observe.
     /// </summary>
     public int SweepIntervalMinutes { get; init; } = DefaultSweepIntervalMinutes;
+
+    /// <summary>
+    /// Days after the reporter was ASKED (the sweep's ProcessedAt, not DueAt) that an
+    /// unanswered check is queued for the verification agent without an answer.
+    ///
+    /// Silence is evidence too — a reporter who never replies may simply have stopped
+    /// noticing a fault that is gone, or stopped bothering to report one that is not — but
+    /// it is weaker evidence, so it waits. The check's Status is left alone: queueing is
+    /// not expiry, and the reporter can still answer.
+    /// </summary>
+    public int ResponseWindowDays { get; init; } = DefaultResponseWindowDays;
 }

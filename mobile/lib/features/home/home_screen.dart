@@ -7,11 +7,14 @@ import '../auth/auth_controller.dart';
 import '../auth/auth_state.dart';
 import '../reports/my_reports_screen.dart';
 import '../reports/submit_report_screen.dart';
+import '../verification/pending_confirmations_screen.dart';
 import '../workorders/my_jobs_screen.dart';
 
 /// The landing screen: a card per thing the app can do. Navigation is role-based — "My
 /// jobs" is offered to a Technician only, since the API gives nobody else a queue of their
-/// own there.
+/// own there, and "Confirm repairs" to a Reporter only: the API takes a repair's
+/// confirmation from the reporter who filed the fault and nobody else, and a manager's list
+/// there would be every reporter's checks, none of them theirs to answer.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -76,6 +79,19 @@ class HomeScreen extends ConsumerWidget {
               ),
             ),
             const SizedBox(height: 8),
+            if (user?.role == Roles.reporter) ...[
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: const Text('Confirm repairs'),
+                  subtitle: const Text('Tell facilities whether a repair on something you '
+                      'reported has held.'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.go(PendingConfirmationsScreen.path),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             Card(
               child: ListTile(
                 leading: const Icon(Icons.qr_code_scanner),

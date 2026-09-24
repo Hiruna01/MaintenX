@@ -1,4 +1,5 @@
 import '../assets/asset.dart' show splitPascalCase;
+import '../verification/verification.dart' show ReportVerification;
 
 /// Mirrors the API's `ReportStatus` enum. Matched by NAME, never by ordinal — these are the
 /// exact strings the API sends and the `status` filter accepts.
@@ -55,6 +56,7 @@ class ReportListItem {
     required this.description,
     required this.status,
     required this.unansweredQuestionCount,
+    required this.verification,
     required this.createdAt,
   });
 
@@ -63,6 +65,12 @@ class ReportListItem {
   final String description;
   final String status;
   final int unansweredQuestionCount;
+
+  /// The latest check on this report's repair. The report's own status stops at
+  /// WorkOrderRaised or Closed and cannot say whether the repair held; this can. Null when
+  /// no repair has been completed yet.
+  final ReportVerification? verification;
+
   final String createdAt;
 
   /// Whether the clarification form is open for this report. Both halves, because the
@@ -78,6 +86,9 @@ class ReportListItem {
       description: json['description'] as String,
       status: json['status'] as String,
       unansweredQuestionCount: json['unansweredQuestionCount'] as int,
+      verification: json['verification'] == null
+          ? null
+          : ReportVerification.fromJson(json['verification'] as Map<String, dynamic>),
       createdAt: json['createdAt'] as String,
     );
   }

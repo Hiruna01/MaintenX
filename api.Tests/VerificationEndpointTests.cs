@@ -194,6 +194,16 @@ public class VerificationEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal("PRJ-DTL-01", detail.Asset.AssetTag);
         Assert.Null(detail.AgentOutcome);
 
+        // What was reported, verbatim — the claim the reporter is being asked about.
+        Assert.Equal("Projector fault reported for DTL.", detail.ReportDescription);
+        Assert.Equal(await ReportOfAsync(check), detail.ReportId);
+
+        // The list row carries the same, because a reporter does not know an asset tag.
+        var row = Assert.Single((await GetPageAsync(reporter, "/api/verifications?search=PRJ-DTL-01")).Items);
+        Assert.Equal(detail.ReportId, row.ReportId);
+        Assert.Equal("Projector fault reported for DTL.", row.ReportDescription);
+        Assert.Equal(detail.WorkOrderCompletedAt, row.WorkOrderCompletedAt);
+
         Assert.Equal(HttpStatusCode.Forbidden, (await stranger.GetAsync($"/api/verifications/{check}")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await manager.GetAsync($"/api/verifications/{check}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await reporter.GetAsync($"/api/verifications/{check + 10_000}")).StatusCode);
@@ -355,7 +365,96 @@ public class VerificationEndpointTests : IClassFixture<ApiFactory>
         Assert.NotNull(await response.Content.ReadFromJsonAsync<VerificationMetricsDto>(JsonOptions));
     }
 
+    [Fact]
+    public async Task ReportList_CarriesTheLatestCheck_SoAReopenedRepairShowsOnTheReport()
+    {
+        var (reporter, reporterId) = await ClientForAsync(Role.Reporter);
+
+        var older = await SeedCheckAsync("RLV", reporterId, VerificationStatus.Confirmed);
+        var reportId = await ReportOfAsync(older);
+
+        // A second repair on the same report — the fault came back — with its own check.
+        // The row must describe the NEWER one, not whichever the database returns first.
+        int newer;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var first = await db.WorkOrders.SingleAsync(w => w.ReportId == reportId);
+            var order = new WorkOrder
+            {
+                ReportId = reportId,
+                AssetId = first.AssetId,
+                Status = WorkOrderStatus.Completed,
+                Strategy = WorkOrderStrategy.SingleJob,
+                EstimatedCost = 9_000m,
+                ResolutionNote = "fan replaced, ran 2h no cutout.",
+                CompletedAt = DateTime.UtcNow.AddDays(-6)
+            };
+            db.WorkOrders.Add(order);
+            await db.SaveChangesAsync();
+
+            var check = new VerificationCheck
+            {
+                WorkOrderId = order.Id,
+                AssetId = order.AssetId,
+                DueAt = DateTime.UtcNow.AddDays(-1),
+                Status = VerificationStatus.AwaitingReporterResponse,
+                ProcessedAt = DateTime.UtcNow.AddDays(-1)
+            };
+            db.VerificationChecks.Add(check);
+            await db.SaveChangesAsync();
+            newer = check.Id;
+        }
+
+        async Task<ReportListItemDto> RowAsync()
+        {
+            var response = await reporter.GetAsync("/api/reports?pageSize=100");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var page = await response.Content.ReadFromJsonAsync<PagedResult<ReportListItemDto>>(JsonOptions);
+            return page!.Items.Single(r => r.Id == reportId);
+        }
+
+        var before = (await RowAsync()).Verification;
+        Assert.NotNull(before);
+        Assert.Equal(newer, before!.Id);
+        Assert.Equal(VerificationStatus.AwaitingReporterResponse, before.Status);
+
+        // "No, still broken" — and the report row says so.
+        var answer = await reporter.PostAsJsonAsync(
+            ConfirmUrl(newer), new ReporterConfirmationDto(Confirmed: false, Comment: null), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, answer.StatusCode);
+
+        var after = (await RowAsync()).Verification;
+        Assert.Equal(VerificationStatus.Reopened, after!.Status);
+        Assert.Null(after.AgentOutcome);
+
+        // A report no repair has reached carries null — nothing to verify is not a check.
+        var fresh = await reporter.PostAsJsonAsync("/api/reports",
+            new { description = "Socket by the door sparks when used.", roomId = await RoomOfAsync(reportId) },
+            JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, fresh.StatusCode);
+        var freshId = (await fresh.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+
+        var listed = await reporter.GetAsync("/api/reports?pageSize=100");
+        var rows = await listed.Content.ReadFromJsonAsync<PagedResult<ReportListItemDto>>(JsonOptions);
+        Assert.Null(rows!.Items.Single(r => r.Id == freshId).Verification);
+    }
+
     // ---------------------------------------------------------------------------
+
+    private async Task<int> ReportOfAsync(int checkId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.VerificationChecks.Where(v => v.Id == checkId).Select(v => v.WorkOrder!.ReportId).SingleAsync();
+    }
+
+    private async Task<int> RoomOfAsync(int reportId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.Reports.Where(r => r.Id == reportId).Select(r => r.RoomId).SingleAsync();
+    }
 
     private static string ConfirmUrl(int checkId) => $"/api/verifications/{checkId}/confirm";
 

@@ -24,6 +24,10 @@ public record VerificationDetailDto(
     // since a Reporter cannot read the work order itself.
     int ReportId,
 
+    // What the reporter said was wrong, verbatim. The question is "is THAT fixed?", and the
+    // reporter answering it may have filed the report weeks ago.
+    string ReportDescription,
+
     AssetDto Asset,
 
     // What the technician recorded on completion, and when. Null resolution note is

@@ -11,6 +11,8 @@ import '../features/home/home_screen.dart';
 import '../features/reports/clarification_screen.dart';
 import '../features/reports/my_reports_screen.dart';
 import '../features/reports/submit_report_screen.dart';
+import '../features/verification/confirm_fix_screen.dart';
+import '../features/verification/pending_confirmations_screen.dart';
 import '../features/workorders/complete_job_screen.dart';
 import '../features/workorders/job_detail_screen.dart';
 import '../features/workorders/my_jobs_screen.dart';
@@ -71,6 +73,19 @@ final routerProvider = Provider<GoRouter>((ref) {
                 // A non-numeric id becomes null and the screen renders an error, not a crash.
                 builder: (context, state) => ClarificationScreen(
                   reportId: int.tryParse(state.pathParameters['id'] ?? ''),
+                ),
+              ),
+            ],
+          ),
+          GoRoute(
+            path: PendingConfirmationsScreen.subPath,
+            builder: (context, state) => const PendingConfirmationsScreen(),
+            routes: [
+              GoRoute(
+                path: ConfirmFixScreen.subPath,
+                // A non-numeric id becomes null and the screen renders an error, not a crash.
+                builder: (context, state) => ConfirmFixScreen(
+                  checkId: int.tryParse(state.pathParameters['id'] ?? ''),
                 ),
               ),
             ],

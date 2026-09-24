@@ -805,8 +805,8 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
 - **Step 1 — ask.** `Pending` and `DueAt` passed → `AwaitingReporterResponse`, `ProcessedAt`
   stamped as the moment the reporter was asked. The state change **is** the notification:
   the check appears on the reporter's list (`GET /api/verifications`, below). The web client
-  lists and shows checks (`features/verification/`); nothing on either client answers one
-  yet — there is no Flutter screen for the confirm.
+  lists and shows checks (`features/verification/`); the reporter answers on the phone
+  (`mobile/lib/features/verification/`, see MOBILE below).
 - **Step 2 — hand to the agent.** Answered (`ReporterRespondedAt` set), **or** still
   `AwaitingReporterResponse` more than `ResponseWindowDays` after `ProcessedAt` (falling back
   to `DueAt` for seeded rows, the same fallback as the metrics) → `AgentQueuedAt` stamped.
@@ -850,6 +850,20 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
   from a 404 by `ExistsAsync`. The work order is carried as its claim (`WorkOrderId`,
   `ReportId`, resolution note, completion time), **not a `WorkOrderDto`**: a Reporter reads
   this and may see no estimate, cost or technician.
+- **Both DTOs carry the report's description verbatim** (`ReportDescription`), and the list
+  row its `ReportId` and `WorkOrderCompletedAt` too. A reporter is not expected to know an
+  asset tag (see `Report.AssetId`), so a row reading only "PRJ-MAB101-01" would not tell them
+  which fault they are being asked about — and the question is "is THAT fixed?".
+- **`ReportListItemDto.Verification`** (`ReportVerificationDto`: `Id`, `Status`,
+  `AgentOutcome`) is the newest check on any work order raised for the report, **null when no
+  repair has completed**. A report's own status stops at `WorkOrderRaised` or `Closed` and
+  cannot say whether the repair held, so without it a reporter who answered "still broken"
+  would see nothing on their report change. **Filled by one extra query per page, the newest
+  picked in C#** (`MaxBy(Id)`) — a first-per-group inside the projection needs a lateral
+  join, which SQLite cannot run. It does NOT move `ReportStatus`: a fault that comes back is
+  still not this report reopened. Pinned by
+  `ReportList_CarriesTheLatestCheck_SoAReopenedRepairShowsOnTheReport`, verified to fail
+  with `MinBy`.
 - **`IsOverdue` is on both DTOs, decided by `VerificationService.IsOverdue`** on the sweep's
   own clocks: `Pending` with `DueAt` passed (what `OverdueUnprocessed` counts), or
   `AwaitingReporterResponse` longer than `ResponseWindowDays` since `ProcessedAt ?? DueAt`
@@ -1311,8 +1325,9 @@ flakiness to retry away.
   - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
   - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
     of the three figures on its boundaries.
-  - `VerificationEndpointTests` also pins the list search, `IsOverdue` and the detail's
-    manager-only "since the repair" lists and evidence.
+  - `VerificationEndpointTests` also pins the list search, `IsOverdue`, the detail's
+    manager-only "since the repair" lists and evidence, and the latest check on a report's
+    list row.
   - `VerificationTests` — the check's rules through the service (delay, one answer, the
     confirmation rate). `VerificationSweepTests` — the sweep and its button.
     `VerificationEndpointTests` — the reporter's list, detail and confirm, and the metrics
@@ -1621,9 +1636,11 @@ mobile/lib/features/<name>/   screens, that feature's API class and its provider
   `ErrorView`, `EmptyView`, success. A blank screen while loading is a bug, and an empty
   list is not a failure and must not look like one.
 - **Enums are matched by NAME, never by ordinal** — `Roles` in `features/auth/auth_state.dart`,
-  `AssetStatuses` / `ServiceOutcomes` in `features/assets/asset.dart` and
-  `WorkOrderStatuses` in `features/workorders/work_order.dart` hold the same strings the API
-  sends and accepts.
+  `AssetStatuses` / `ServiceOutcomes` in `features/assets/asset.dart`,
+  `WorkOrderStatuses` in `features/workorders/work_order.dart` and `VerificationStatuses` in
+  `features/verification/verification.dart` hold the same strings the API sends and accepts.
+  `AgentOutcomes` beside it mirrors the stored `AgentOutcome` strings — no C# enum, as on the
+  web.
 
 ### The token lives in flutter_secure_storage — this is the point, not a detail
 
@@ -1734,8 +1751,11 @@ done rather than replaying what was said.
 - `MyReportsScreen` searches and filters **server-side** (`search` debounced 350 ms,
   `status` by NAME), pages with the API's `PagedResult`, and leaves the scoping to the API:
   nothing on the client decides whose reports appear. "Nothing yet" and "nothing matches"
-  are two different empty states, neither an error. Only a report waiting on the reporter
-  is tappable — it opens its form.
+  are two different empty states, neither an error. Only a report with something behind it
+  is tappable: open questions open their form, and a repair check (`verification` on the
+  row) opens `ConfirmFixScreen` — pushed, so back returns to the list. The check's status
+  sits under the report's own, with the agent's flag beside it when it said `reopen` /
+  `escalate` — see Verification below.
 
 **A photo is attached to a report that already exists**, so submitting with one is two
 requests: file the report, then `POST /api/reports/{id}/photo` (`ApiClient.postFile`,
@@ -1781,6 +1801,33 @@ A Technician's side of the job. `/jobs` (`MyJobsScreen`), `/jobs/:id` (`JobDetai
   the phone adds, rounds or compares money; `formatMoney` only formats.
 - **One photo picker for the app**: `choosePhoto` in `reports/report_photo.dart`, called by
   both the report form and the completion form, with the same `PickedPhoto` limits.
+
+### Verification — `features/verification/`
+
+The reporter's answer to "did the repair hold?". `/verifications` (`PendingConfirmationsScreen`)
+and `/verifications/:id` (`ConfirmFixScreen`). The home card is shown to a **Reporter only**:
+the API takes a confirmation from the reporter who filed the fault and nobody else, and a
+manager's list would be every reporter's checks, none of them theirs to answer.
+
+- **The pending list is `status=AwaitingReporterResponse`, by NAME** — the one state the API
+  accepts an answer in. Whose checks is the API's rule. **Empty is the normal case** and is an
+  `EmptyView` saying what will appear and when, pull-to-refresh included; never an error. An
+  overdue row is the API's `isOverdue`, coloured, never a date compared on the phone.
+- **`ConfirmFixScreen` is a FORM, not a chat.** What was reported and the technician's note,
+  both verbatim and selectable, and when it was completed; then ONE `SegmentedButton<bool>`
+  with **no default** and ONE text field, the optional comment, capped at 300 with a counter.
+  One POST, and nothing replies. `validateConfirmation` returns per-field errors — `fixed`
+  unanswered, `comment` over 300 **trimmed** (trimmed is what is sent; a blank one goes as
+  null). Pinned by a test that finds exactly one `TextField`, and by the no-default tests,
+  verified to fail with `_fixed = false`.
+- **After answering, the screen shows the check, not the form**: the status C# set, "your
+  answer: no, still broken", "sent for review" from `agentQueuedAt`, and once the agent has
+  judged, its `AgentOutcomeChip` and reason — labelled as a review, beside the status, never
+  in place of it. **The comment is not replayed**: the status is the record, not a transcript.
+  A 409 (answered elsewhere, or not waiting) is a snackbar and a re-read, so the stale form
+  goes away. A 403 is "Not your report", apart from a 404.
+- **Answering invalidates the detail, the pending list and `reportsPageProvider`**, because
+  the report row carries this check's status.
 
 ### `POST /api/reports` — landed
 

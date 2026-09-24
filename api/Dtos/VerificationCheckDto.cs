@@ -22,6 +22,12 @@ public record VerificationCheckDto(
     // and why this is a bool? here as well as on the entity.
     bool? ReporterConfirmed,
 
+    // Past a deadline nothing has met: Pending with DueAt passed (the sweep has not asked
+    // yet), or AwaitingReporterResponse longer than the response window (the reporter has
+    // not answered). Decided in VerificationService.IsOverdue, in C#; a client only colours
+    // it and never compares dates itself.
+    bool IsOverdue,
+
     DateTime? ReporterRespondedAt,
     DateTime CreatedAt,
     DateTime UpdatedAt);

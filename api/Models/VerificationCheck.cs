@@ -80,6 +80,17 @@ public class VerificationCheck
     public string? AgentReason { get; set; }
 
     /// <summary>
+    /// The evidence the agent cited for <see cref="AgentOutcome"/> — VerificationOutput's
+    /// one to five short strings — as a JSON array, verbatim. jsonb on PostgreSQL, like
+    /// every other column that holds what an agent produced. Null until the agent has
+    /// judged the check; never an empty array standing in for "not judged yet".
+    ///
+    /// Stored beside the reason rather than folded into it because the detail page shows
+    /// each item on its own line, which is where a reader checks it against the history.
+    /// </summary>
+    public string? AgentEvidenceJson { get; set; }
+
+    /// <summary>
     /// When the sweep last acted on this row. Distinct from <see cref="UpdatedAt"/>, which
     /// AppDbContext stamps on every write: this one says the SWEEP touched it, so a check
     /// that is sitting still can be told apart from one the sweep keeps picking up and

@@ -422,7 +422,8 @@ public static class DbSeeder
                 DaysAgoResponded: 14,
                 ReporterComment: "Working fine all week, thanks.",
                 AgentOutcome: null,
-                AgentReason: null),
+                AgentReason: null,
+                AgentEvidence: null),
 
             new VerificationSeed(
                 AssetTag: "ACU-MAB101-01",
@@ -437,7 +438,8 @@ public static class DbSeeder
                 DaysAgoResponded: 12,
                 ReporterComment: "Much quieter now.",
                 AgentOutcome: null,
-                AgentReason: null),
+                AgentReason: null,
+                AgentEvidence: null),
 
             // --- Reopened: the repair did NOT hold -----------------------------
             // On the projector with the planted repeat-failure history. This is that same
@@ -456,7 +458,13 @@ public static class DbSeeder
                 DaysAgoResponded: 9,
                 ReporterComment: "Cut out twice again this week. Same as before.",
                 AgentOutcome: "escalate",
-                AgentReason: "Third thermal-related intervention on this unit in five months; two prior visits recorded as temporary fixes and one as no fault found. Cleaning is not holding. Recommend replacement assessment rather than a fourth clean."),
+                AgentReason: "Third thermal-related intervention on this unit in five months; two prior visits recorded as temporary fixes and one as no fault found. Cleaning is not holding. Recommend replacement assessment rather than a fourth clean.",
+                AgentEvidence:
+                [
+                    "Resolution note: \"filter cleaned again\" — the same clean as earlier visits.",
+                    "Reporter: \"Cut out twice again this week. Same as before.\"",
+                    "Service history: two earlier visits ended as temporary fixes for the same thermal cutout."
+                ]),
 
             // --- Pending, and already overdue: the sweep's first work ----------
             new VerificationSeed(
@@ -474,7 +482,8 @@ public static class DbSeeder
                 DaysAgoResponded: null,
                 ReporterComment: null,
                 AgentOutcome: null,
-                AgentReason: null),
+                AgentReason: null,
+                AgentEvidence: null),
 
             new VerificationSeed(
                 AssetTag: "PMP-ENG301-01",
@@ -489,7 +498,8 @@ public static class DbSeeder
                 DaysAgoResponded: null,
                 ReporterComment: null,
                 AgentOutcome: null,
-                AgentReason: null),
+                AgentReason: null,
+                AgentEvidence: null),
 
             new VerificationSeed(
                 AssetTag: "WKS-ENG101-01",
@@ -506,7 +516,8 @@ public static class DbSeeder
                 DaysAgoResponded: null,
                 ReporterComment: null,
                 AgentOutcome: null,
-                AgentReason: null)
+                AgentReason: null,
+                AgentEvidence: null)
         };
 
         var seeded = 0;
@@ -587,6 +598,9 @@ public static class DbSeeder
                     : now.AddDays(-seed.DaysAgoResponded.Value),
                 AgentOutcome = seed.AgentOutcome,
                 AgentReason = seed.AgentReason,
+                AgentEvidenceJson = seed.AgentEvidence is null
+                    ? null
+                    : JsonSerializer.Serialize(seed.AgentEvidence),
                 // Answered checks were asked by a sweep at some point; the still-Pending
                 // ones have never been touched by one, which is what makes them its first
                 // job. Leaving this null on them is the point, not an omission.
@@ -901,7 +915,9 @@ public static class DbSeeder
         int? DaysAgoResponded,
         string? ReporterComment,
         string? AgentOutcome,
-        string? AgentReason);
+        string? AgentReason,
+        // Null wherever AgentOutcome is: evidence without a verdict has nothing to support.
+        string[]? AgentEvidence);
 
     private static async Task SeedUsersAsync(
         AppDbContext db,

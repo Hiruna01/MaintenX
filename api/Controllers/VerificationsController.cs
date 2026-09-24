@@ -32,7 +32,8 @@ public class VerificationsController : ControllerBase
     }
 
     /// <summary>
-    /// One page of checks. <paramref name="status"/> and <paramref name="assetId"/> are
+    /// One page of checks. <paramref name="search"/> matches the asset tag, case-insensitively.
+    /// <paramref name="status"/> and <paramref name="assetId"/> are
     /// exact filters; <paramref name="dateFrom"/> and <paramref name="dateTo"/> bound DueAt
     /// as UTC calendar dates, BOTH ENDS INCLUSIVE. <paramref name="status"/> and
     /// <paramref name="sort"/> bind by enum NAME, so an unknown value is a 400 from model
@@ -46,6 +47,7 @@ public class VerificationsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<PagedResult<VerificationCheckDto>>> GetAll(
+        [FromQuery] string? search,
         [FromQuery] VerificationStatus? status,
         [FromQuery] int? assetId,
         [FromQuery] DateOnly? dateFrom,
@@ -61,7 +63,7 @@ public class VerificationsController : ControllerBase
         }
 
         return Ok(await _verificationService.GetAllAsync(
-            callerId, callerRole, status, assetId, dateFrom, dateTo,
+            callerId, callerRole, search, status, assetId, dateFrom, dateTo,
             sort, page, pageSize, cancellationToken));
     }
 

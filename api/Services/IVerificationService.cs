@@ -38,11 +38,13 @@ public interface IVerificationService
     /// <paramref name="status"/>, <paramref name="assetId"/> are exact filters.
     /// <paramref name="dateFrom"/> and <paramref name="dateTo"/> bound DueAt — when the
     /// question falls due, the one date every check has — as UTC calendar dates, BOTH ENDS
-    /// INCLUSIVE, the same arithmetic as the report list.
+    /// INCLUSIVE, the same arithmetic as the report list. <paramref name="search"/> matches
+    /// the asset tag, case-insensitively, inside the same scope.
     /// </summary>
     Task<PagedResult<VerificationCheckDto>> GetAllAsync(
         int callerId,
         Role callerRole,
+        string? search = null,
         VerificationStatus? status = null,
         int? assetId = null,
         DateOnly? dateFrom = null,

@@ -804,8 +804,9 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
 
 - **Step 1 — ask.** `Pending` and `DueAt` passed → `AwaitingReporterResponse`, `ProcessedAt`
   stamped as the moment the reporter was asked. The state change **is** the notification:
-  the check appears on the reporter's list (`GET /api/verifications`, below). There is no
-  web or Flutter screen for it yet.
+  the check appears on the reporter's list (`GET /api/verifications`, below). The web client
+  lists and shows checks (`features/verification/`); nothing on either client answers one
+  yet — there is no Flutter screen for the confirm.
 - **Step 2 — hand to the agent.** Answered (`ReporterRespondedAt` set), **or** still
   `AwaitingReporterResponse` more than `ResponseWindowDays` after `ProcessedAt` (falling back
   to `DueAt` for seeded rows, the same fallback as the metrics) → `AgentQueuedAt` stamped.
@@ -837,7 +838,8 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
 `VerificationsController`, `[Authorize]` with no policy on the class. Pinned by
 `VerificationEndpointTests`.
 
-- **`GET /api/verifications`** pages through `PagedResult<T>`. `status` (by NAME) and
+- **`GET /api/verifications`** pages through `PagedResult<T>`. `search` matches the asset
+  tag (`ToLower().Contains()`, inside the caller's scope); `status` (by NAME) and
   `assetId` are exact; `dateFrom`/`dateTo` bound **`DueAt`**, UTC days, both ends inclusive.
   `sort` is `DueAt` (latest first, default) or `Status` (alphabetical by name), both with an
   `Id` tiebreak. **Visibility is `SeesEveryCheck` in the service**, the same fail-closed shape
@@ -848,6 +850,22 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
   from a 404 by `ExistsAsync`. The work order is carried as its claim (`WorkOrderId`,
   `ReportId`, resolution note, completion time), **not a `WorkOrderDto`**: a Reporter reads
   this and may see no estimate, cost or technician.
+- **`IsOverdue` is on both DTOs, decided by `VerificationService.IsOverdue`** on the sweep's
+  own clocks: `Pending` with `DueAt` passed (what `OverdueUnprocessed` counts), or
+  `AwaitingReporterResponse` longer than `ResponseWindowDays` since `ProcessedAt ?? DueAt`
+  (the sweep's "silent" test). A closed check is never overdue. The client only colours it.
+- **The detail carries what happened since, for a manager only.** `NewReportsSinceCompletion`
+  (reports on the same asset filed after `CompletedAt`, the original excluded, closed ones
+  included) and `FollowUpWorkOrders` (orders on the same asset raised after `CompletedAt` —
+  what a reopened fault looped back to). Both are **null for anyone else**: other people's
+  reports and any work order are things a Reporter reads nowhere, and null is not empty —
+  an empty list means nothing has happened since.
+- **`AgentEvidence`** is `VerificationCheck.AgentEvidenceJson` (`jsonb`,
+  `AddVerificationAgentEvidence`), the agent's one-to-five evidence strings verbatim, read
+  defensively into a list — null when not judged or unreadable, never thrown on. The seeded
+  Reopened check carries some; **the C# runner that writes it does not exist yet**, like
+  `AgentOutcome` / `AgentReason`. Pinned in `VerificationEndpointTests`, each rule verified to
+  fail with it broken.
 - **`POST /api/verifications/{id}/confirm`** — "Is the problem fixed?", `Confirmed` yes/no and
   an optional `Comment` of at most **300** characters (the column is 500; the DTO is the bound
   on what a reporter may type). `Confirmed` is a **`[Required] bool?`** — a plain `bool` binds
@@ -1293,6 +1311,8 @@ flakiness to retry away.
   - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
   - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
     of the three figures on its boundaries.
+  - `VerificationEndpointTests` also pins the list search, `IsOverdue` and the detail's
+    manager-only "since the repair" lists and evidence.
   - `VerificationTests` — the check's rules through the service (delay, one answer, the
     confirmation rate). `VerificationSweepTests` — the sweep and its button.
     `VerificationEndpointTests` — the reporter's list, detail and confirm, and the metrics
@@ -1353,7 +1373,8 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
 - **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js`,
   `WORKFLOW_STATES` in the workflows service, `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
   `assetsApi.js`, `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js` and
-  `WORK_ORDER_STATUSES` / `STRATEGIES` / `WORK_ORDER_SORTS` in `workOrdersApi.js` hold the same strings the API sends and accepts, so a member inserted into a C# enum cannot
+  `WORK_ORDER_STATUSES` / `STRATEGIES` / `WORK_ORDER_SORTS` in `workOrdersApi.js` and
+  `VERIFICATION_STATUSES` / `VERIFICATION_SORTS` in `verificationApi.js` hold the same strings the API sends and accepts, so a member inserted into a C# enum cannot
   silently shift the client's meaning.
 - **Navigation is role-based**: a Reporter must not see manager links. The route guard would
   refuse them anyway, but offering a link that leads to "not authorised" is a bad interface.
@@ -1516,10 +1537,37 @@ them both. Which orders a caller sees is the API's rule; the client keeps no cop
 - The outcome picker reuses `SERVICE_OUTCOMES` from `assetsApi.js`; the completion form has
   **no default outcome**, for the reason `CompleteWorkOrderDto.Outcome` is `[Required]`.
 
+### Verification — `features/verification/`
+
+`/verifications` and `/verifications/:id` are open to every signed-in role, like the API,
+which scopes a Reporter to the checks on their own reports; the nav link is for
+`VERIFICATION_ROLES` (Reporter, FacilitiesManager, Admin — a Technician's list would always
+be empty). `/metrics` sits behind `METRICS_ROLES` — **FacilitiesManager and Admin, exactly the
+two roles `GET /api/analytics/metrics` names** — and a Reporter never sees the link.
+
+- `VERIFICATION_STATUSES` mirrors the C# enum by NAME. **`AGENT_OUTCOMES` (`confirm` /
+  `reopen` / `escalate`) mirrors the stored `AgentOutcome` strings — there is no C# enum for
+  it, deliberately** (it is the model's opinion). An unknown value renders raw and grey.
+- **The list searches server-side** (asset tag, debounced 400 ms), filters status by NAME and
+  `DueAt` by a UTC-day range, sorts `DueAt` / `Status` only. **An overdue row is the API's
+  `isOverdue`** — a flag and a red edge, never a date compared in the browser.
+- **The detail** shows the technician's note verbatim, the reporter's answer (null is "not
+  answered", never "no"), the agent's outcome, reason and evidence **as advice**, and — when
+  the repair did not hold (`Reopened` / `Escalated`, or the agent said `reopen` /
+  `escalate`) — **what it looped back to**: the original report and the follow-up work
+  orders, with "none raised yet" and "not shown to a reporter" said differently.
+- **The metrics page computes nothing.** One request feeds three `MetricsPanel`s — loading,
+  error, **"Not enough data yet"** and data — so no chart area is ever blank. **A trend month
+  with no answered checks plots as a gap, not 0%** (`trendChartRows`): the API's 0 means
+  "nothing to divide by", and a point at 0 would read as a month every repair held. Every
+  rate sits beside its counts; a null median reads "—", never "0 h".
+
 ### Styling and configuration
 
 - **Plain CSS or CSS modules. No Tailwind, no component library.** Presentation is not what
-  this project is marked on, and it costs time the team does not have.
+  this project is marked on, and it costs time the team does not have. **recharts** (2.x,
+  React 18 compatible) is the one chart dependency, used by the metrics page only; it is
+  styled with the same `var(--…)` tokens and is not a licence for a UI kit.
 - **Colours, radii and shadows are tokens on `:root` in `index.css`** — `--success`,
   `--warn`, `--neutral`, `--info` and their `-bg` / `-border` pairs back every status,
   outcome and warranty pill. A new pill picks from them rather than introducing a literal, and

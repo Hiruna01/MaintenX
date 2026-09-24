@@ -909,7 +909,7 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
             throw new InvalidOperationException("Simulated failure raising the verification check.");
 
         public Task<bool> HasOpenCheckAsync(int workOrderId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<PagedResult<VerificationCheckDto>> GetAllAsync(int callerId, Role callerRole, VerificationStatus? status = null, int? assetId = null, DateOnly? dateFrom = null, DateOnly? dateTo = null, VerificationSort sort = VerificationSort.DueAt, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<PagedResult<VerificationCheckDto>> GetAllAsync(int callerId, Role callerRole, string? search = null, VerificationStatus? status = null, int? assetId = null, DateOnly? dateFrom = null, DateOnly? dateTo = null, VerificationSort sort = VerificationSort.DueAt, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<VerificationDetailDto?> GetDetailAsync(int id, int callerId, Role callerRole, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<VerificationCheckDto>> GetForWorkOrderAsync(int workOrderId, CancellationToken cancellationToken = default) => throw new NotSupportedException();

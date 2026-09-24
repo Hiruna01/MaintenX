@@ -34,6 +34,9 @@ public record VerificationDetailDto(
     DateTime DueAt,
     VerificationStatus Status,
 
+    // The same rule, from the same method, as VerificationCheckDto.IsOverdue.
+    bool IsOverdue,
+
     bool? ReporterConfirmed,
     string? ReporterComment,
     DateTime? ReporterRespondedAt,
@@ -44,6 +47,25 @@ public record VerificationDetailDto(
     string? AgentOutcome,
     string? AgentReason,
 
+    // The evidence the agent cited, verbatim, one item per string. Null when the agent has
+    // not judged the check — never an empty list standing in for "not judged".
+    IReadOnlyList<string>? AgentEvidence,
+
+    // Reports filed against the same asset AFTER this repair was completed, the original
+    // report excluded, oldest first. Closed ones included: a report closed as a duplicate
+    // is still somebody seeing the fault again.
+    //
+    // NULL for a caller who does not see every check. These are other people's reports,
+    // and a Reporter reads the reports they filed and nobody else's — the same rule as
+    // ReportService. Null is not empty: an empty list means nobody has reported it since.
+    IReadOnlyList<VerificationRelatedReportDto>? NewReportsSinceCompletion,
+
+    // Work orders raised on the same asset AFTER this repair was completed, oldest first —
+    // what a reopened or escalated fault looped back to. Null for a non-manager for the
+    // same reason as above (a Reporter reads no work orders), and an empty list means no
+    // follow-up has been raised yet.
+    IReadOnlyList<VerificationFollowUpDto>? FollowUpWorkOrders,
+
     DateTime? ProcessedAt,
 
     // When the sweep handed it to the agent, and — only when Expired — why it gave up.
@@ -52,3 +74,17 @@ public record VerificationDetailDto(
 
     DateTime CreatedAt,
     DateTime UpdatedAt);
+
+/// <summary>A report filed on the check's asset since the repair. See VerificationDetailDto.</summary>
+public record VerificationRelatedReportDto(
+    int Id,
+    string Description,
+    ReportStatus Status,
+    DateTime CreatedAt);
+
+/// <summary>A work order raised on the check's asset since the repair. See VerificationDetailDto.</summary>
+public record VerificationFollowUpDto(
+    int Id,
+    WorkOrderStatus Status,
+    WorkOrderStrategy Strategy,
+    DateTime CreatedAt);

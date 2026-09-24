@@ -401,6 +401,10 @@ public class AppDbContext : DbContext
             // Status is needed.
             entity.HasIndex(v => new { v.Status, v.DueAt });
 
+            // The agent's cited evidence, verbatim, in the same jsonb type as every other
+            // column holding what an agent produced.
+            entity.Property(v => v.AgentEvidenceJson).HasColumnType(JsonColumnType);
+
             // Same reasoning as Role and WorkOrderStatus: the database reads
             // "AwaitingReporterResponse", not "1", and inserting a new enum member in the
             // middle cannot silently re-label the rows already stored.

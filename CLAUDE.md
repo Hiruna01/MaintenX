@@ -531,8 +531,12 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
 - **The approval gate is in `CreateAsync`, in C#, before the row is written**: estimate
   strictly **above** `Approval:CostThreshold`, **or** strategy `EscalateReplacement` →
   `AwaitingApproval` and the workflow to `AwaitingManagerApproval`; otherwise `Approved` and
-  `WorkOrderRaised`. Exactly on the threshold is not above it. An auto-approved order has no
-  `ApprovedBy` — nobody decided.
+  `WorkOrderRaised`. **Exactly on the threshold is not above it** — the threshold is the most
+  that may be spent without a manager — so cost == threshold is `Approved` for every
+  strategy except `EscalateReplacement`, which waits because it is a replacement, not
+  because of the money. `ApprovalTests.AtExactlyTheThreshold_OnlyAReplacementNeedsAManager`
+  says so for all six strategies; verified to fail with `>=` in `ApprovalBasisFor`. An
+  auto-approved order has no `ApprovedBy` — nobody decided.
 - **`CreateWorkOrderDto.EstimatedCost` and `Strategy` are `[Required]` nullables**, as are
   `CompleteWorkOrderDto.ActualCost` and `Outcome`. A plain `decimal` binds a missing field
   as `0` — under any threshold — so leaving the estimate out would auto-approve an order
@@ -596,7 +600,12 @@ on a 30-minute grid.
   is `internal` with `InternalsVisibleTo("api.Tests")` rather than private, so
   `SlotRulesTests` can pin every boundary to the minute without reflection. Each of these
   was verified to be caught by a failing test: `<=` in `Overlaps`, a dropped buffer, and a
-  booking that skips the re-check.
+  booking that skips the re-check. `SlotFinderTests` pins the same boundaries again
+  **through the endpoints** — touching a class's buffer is offered and bookable, a minute
+  into it is not offered and is a 409 to book, and a weekend is skipped — and catches `<=`,
+  a dropped buffer and a dropped weekend check too. Its lectures sit at 10:15-10:45 so the
+  buffer (10:00-11:00) lands exactly on the 30-minute grid; move them and the boundary
+  cases stop testing a boundary.
 - **Offering and booking run the same `SlotRules.Check`.** `FindFreeSlots` keeps a
   candidate only if `Check` says `Free`, and `ScheduleAsync` calls `Check` again on the
   submitted times. There is no booking-side copy of the rule to drift. `Check` reports the
@@ -1120,6 +1129,25 @@ flakiness to retry away.
   variables (Program.cs reads them while the builder is still being constructed) and uses
   `UseEnvironment("Testing")` so the Development-only demo seeder never runs in tests —
   each test creates exactly the users it needs.
+- **Where a rule is tested.** Before adding a test, look for the one that already pins it:
+  a rule tested twice is two places to update and one to forget.
+  - `WorkOrderEndpointTests` — the work order lifecycle end to end: the approval gate either
+    side of the threshold, a Technician's 403, reject / request-revision, assign, the
+    completion transaction, visibility, the cost sort, and the slot endpoints' wiring
+    (including a slot taken between offer and booking).
+  - `ApprovalTests` — the gate's edge cases: cost == threshold for every strategy,
+    `EscalateReplacement` at any cost, no token → 401 on every decision, a decision not
+    reversed by the opposite one.
+  - `SlotRulesTests` — the slot arithmetic as pure functions, to the minute.
+    `SlotFinderTests` — the same boundaries through the real endpoints and database.
+  - `WorkOrderTests` — the tables themselves: exact decimal round trips, enums stored as
+    names, the unique `ExternalEventId`. Not endpoint tests.
+  - `TimetableSyncTests` — the Google sync, including Google down → degraded with the cache
+    kept, and the slot finder still reading that cache.
+  - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
+- **A test for a rule should be checked against the rule broken.** Flip the operator, drop
+  the check, run the test, see it fail, restore. Several notes in this file record that it
+  was done ("verified to fail with …"); a test that has never failed may not test anything.
 
 ---
 

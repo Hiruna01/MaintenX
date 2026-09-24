@@ -13,7 +13,7 @@ using Xunit;
 namespace api.Tests;
 
 /// <summary>
-/// The three asset tools on the agent's allow-list. What is pinned here is not that they
+/// The asset tools on the agent's allow-list. What is pinned here is not that they
 /// return rows — it is the properties that make them safe to hand to a model:
 ///
 ///   * THE CAPS ARE NOT NEGOTIABLE. ToolCallRequest has no limit field, so a caller
@@ -214,6 +214,93 @@ public class AgentToolTests : IClassFixture<ApiFactory>
         Assert.All(detail.Steps, s => Assert.Equal("RejectedUnknownTool", s.ValidationResult));
     }
 
+    [Fact]
+    public async Task GetOpenWorkOrders_ReturnsOpenOrdersInTheAssetsRoom_NewestFirst_Capped()
+    {
+        var (admin, reporterId) = await CreateAuthenticatedClientAsync(Role.Admin);
+        var asset = await CreateAssetAsync(admin);
+        var neighbour = await AddAssetInSameRoomAsync(asset);
+        var elsewhere = await CreateAssetAsync(admin);
+        var workflow = await StartWorkflowAsync(admin);
+        var reportId = (await SeedReportsAsync(asset, reporterId, 1, ReportStatus.WorkOrderRaised)).Single();
+
+        // Six open on the asset and six on its neighbour: twelve open in the room, two over the cap.
+        var open = new List<int>();
+        foreach (var status in new[]
+        {
+            WorkOrderStatus.Draft, WorkOrderStatus.AwaitingApproval, WorkOrderStatus.Approved,
+            WorkOrderStatus.Scheduled, WorkOrderStatus.InProgress, WorkOrderStatus.Approved
+        })
+        {
+            open.AddRange(await SeedWorkOrdersAsync(asset.Id, reportId, status));
+            open.AddRange(await SeedWorkOrdersAsync(neighbour, reportId, status));
+        }
+
+        // Finished work on the same asset, and live work in another room: neither is an answer.
+        var finished = new List<int>();
+        foreach (var status in new[] { WorkOrderStatus.Completed, WorkOrderStatus.Rejected, WorkOrderStatus.Cancelled })
+        {
+            finished.AddRange(await SeedWorkOrdersAsync(asset.Id, reportId, status));
+        }
+        var otherRoom = await SeedWorkOrdersAsync(elsewhere.Id, reportId, WorkOrderStatus.Approved);
+
+        var body = await CallToolAsync("get_open_work_orders", workflow.Id, asset.Id);
+
+        Assert.True(body.GetProperty("found").GetBoolean());
+        var rows = body.GetProperty("result").EnumerateArray().ToList();
+        Assert.Equal(IWorkOrderService.MaxToolOpenWorkOrders, rows.Count);
+
+        var returnedIds = rows.Select(r => r.GetProperty("id").GetInt32()).ToList();
+        Assert.All(returnedIds, id => Assert.Contains(id, open));
+        Assert.DoesNotContain(returnedIds, id => finished.Contains(id) || otherRoom.Contains(id));
+
+        // The neighbour's orders are there: sharing a visit is what the room scope is for.
+        Assert.Contains(rows, r => r.GetProperty("assetId").GetInt32() == neighbour);
+
+        // Newest first, so the cap drops the two oldest rather than this morning's order.
+        Assert.Equal(returnedIds.OrderByDescending(i => i), returnedIds);
+        Assert.DoesNotContain(open.Min(), returnedIds);
+
+        // Strategy and status by NAME, like every enum on the wire.
+        Assert.All(rows, r => Assert.Equal(JsonValueKind.String, r.GetProperty("status").ValueKind));
+    }
+
+    [Fact]
+    public async Task GetOpenWorkOrders_TellsAnUnknownAssetApartFromARoomWithNothingOpen()
+    {
+        var (admin, _) = await CreateAuthenticatedClientAsync(Role.Admin);
+        var asset = await CreateAssetAsync(admin);
+        var workflow = await StartWorkflowAsync(admin);
+
+        var quiet = await CallToolAsync("get_open_work_orders", workflow.Id, asset.Id);
+        Assert.True(quiet.GetProperty("found").GetBoolean());
+        Assert.Empty(quiet.GetProperty("result").EnumerateArray());
+
+        var unknown = await CallToolAsync("get_open_work_orders", workflow.Id, 999999);
+        Assert.False(unknown.GetProperty("found").GetBoolean());
+    }
+
+    /// <summary>
+    /// The strategist proposes; C# decides. There is no tool through which an agent could
+    /// approve, raise or re-cost a work order — a request for one is an unknown tool.
+    /// </summary>
+    [Fact]
+    public async Task TheAllowListHasNoToolThatActsOnAWorkOrder()
+    {
+        var (admin, _) = await CreateAuthenticatedClientAsync(Role.Admin);
+        var workflow = await StartWorkflowAsync(admin);
+        var agentClient = CreateAgentClient();
+
+        foreach (var name in new[] { "approve_work_order", "create_work_order", "set_strategy" })
+        {
+            var response = await agentClient.PostAsJsonAsync(
+                $"/api/internal/tools/{name}",
+                new ToolCallRequest(workflow.Id, 1, "strategist"), JsonOptions);
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -325,6 +412,49 @@ public class AgentToolTests : IClassFixture<ApiFactory>
         }
 
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>A second asset in the same room as <paramref name="sibling"/>, written directly.</summary>
+    private async Task<int> AddAssetInSameRoomAsync(AssetDto sibling)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var asset = new Asset
+        {
+            AssetTag = $"AST-{UniqueCode()}",
+            Name = "Split AC",
+            AssetCategoryId = sibling.AssetCategoryId,
+            RoomId = sibling.RoomId,
+            InstalledOn = new DateOnly(2023, 1, 10)
+        };
+        db.Assets.Add(asset);
+        await db.SaveChangesAsync();
+
+        return asset.Id;
+    }
+
+    /// <summary>
+    /// One work order in a given status, written directly: the endpoints only ever raise a
+    /// Draft and walk it forward, and these tests need every status at once.
+    /// </summary>
+    private async Task<List<int>> SeedWorkOrdersAsync(int assetId, int reportId, WorkOrderStatus status)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var order = new WorkOrder
+        {
+            ReportId = reportId,
+            AssetId = assetId,
+            Status = status,
+            Strategy = WorkOrderStrategy.SingleJob,
+            EstimatedCost = 4500.00m
+        };
+        db.WorkOrders.Add(order);
+        await db.SaveChangesAsync();
+
+        return new List<int> { order.Id };
     }
 
     /// <summary>

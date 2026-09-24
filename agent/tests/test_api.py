@@ -106,6 +106,56 @@ def test_run_returns_a_diagnosis_beside_the_clarifier_output(client):
     ]
 
 
+def test_run_returns_the_strategists_proposal_beside_the_diagnosis(client):
+    """
+    Third agent, still an addition: the clarifier's fields and the diagnosis are where they
+    were. The proposal carries no approval anywhere — the API decides that.
+    """
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Lecture Hall A projector keeps cutting out mid lecture.",
+            "room_id": 1,
+            "asset_id": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    raw = response.json()
+
+    body = RunResponse.model_validate(raw)
+    assert body.agent == "clarifier"
+    assert body.diagnosis is not None and body.diagnosis.status is AgentStatus.ok
+
+    assert body.strategy is not None
+    assert body.strategy.agent == "strategist"
+    assert body.strategy.status is AgentStatus.ok
+    assert [c.tool for c in body.strategy.tool_calls] == [
+        "get_asset",
+        "get_asset_service_history",
+        "get_open_work_orders",
+    ]
+
+    # Money as a JSON number on the wire, for the API's decimal to read.
+    assert isinstance(raw["strategy"]["output"]["estimated_cost"], float)
+    assert "approved" not in raw["strategy"]["output"]
+
+
+def test_run_accepts_a_managers_revision_note(client):
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Projector cutting out.",
+            "asset_id": 1,
+            "revision_note": "Too expensive this term - look at a repair first.",
+        },
+    )
+
+    assert response.status_code == 200
+
+
 def test_run_accepts_earlier_clarification_answers(client):
     response = client.post(
         "/run",

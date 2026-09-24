@@ -25,6 +25,20 @@ public class WorkOrderService : IWorkOrderService
         WorkOrderStatus.InProgress
     };
 
+    /// <summary>
+    /// Every status an order can still be worked in, from a Draft nobody has costed to a job
+    /// under way. The finished three — Completed, Rejected, Cancelled — are history, and a
+    /// completed job is in the asset's ServiceRecords, which is where history is read.
+    /// </summary>
+    private static readonly WorkOrderStatus[] OpenStatuses =
+    {
+        WorkOrderStatus.Draft,
+        WorkOrderStatus.AwaitingApproval,
+        WorkOrderStatus.Approved,
+        WorkOrderStatus.Scheduled,
+        WorkOrderStatus.InProgress
+    };
+
     private readonly AppDbContext _db;
     private readonly ApprovalSettings _approval;
     private readonly IWorkflowQueue _workflowQueue;
@@ -229,6 +243,33 @@ public class WorkOrderService : IWorkOrderService
 
     public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>
         _db.WorkOrders.AnyAsync(w => w.Id == id, cancellationToken);
+
+    public async Task<IReadOnlyList<WorkOrderDto>?> GetOpenWorkOrdersInAssetRoomAsync(
+        int assetId,
+        CancellationToken cancellationToken = default)
+    {
+        // Asked first so "no such asset" (null, found=false) and "nothing open in its room"
+        // (empty, found=true) stay two different answers.
+        var roomId = await _db.Assets
+            .Where(a => a.Id == assetId)
+            .Select(a => (int?)a.RoomId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (roomId is null)
+        {
+            return null;
+        }
+
+        return await _db.WorkOrders
+            .AsNoTracking()
+            .Where(w => w.Asset!.RoomId == roomId && OpenStatuses.Contains(w.Status))
+            // Newest first, and capped: taking ten of an oldest-first list would hide the
+            // order raised this morning, which is the one most worth consolidating with.
+            .OrderByDescending(w => w.Id)
+            .Take(IWorkOrderService.MaxToolOpenWorkOrders)
+            .Select(ToDtoExpression)
+            .ToListAsync(cancellationToken);
+    }
 
     public async Task<CreateWorkOrderResult> CreateAsync(
         CreateWorkOrderDto dto,

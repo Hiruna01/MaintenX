@@ -11,10 +11,18 @@ message field is a design constraint, not an oversight.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    StringConstraints,
+    model_validator,
+)
 
 # A clarifier round asks at most two questions. Enforced by the schema, so an
 # over-eager model reply fails validation instead of reaching a user.
@@ -46,6 +54,18 @@ MAX_EVIDENCE_ITEMS = 5
 MAX_EVIDENCE_LENGTH = 200
 MAX_CAUSE_LENGTH = 200
 MAX_REASONING_SUMMARY = 400
+
+# A strategy's justification, and a manager's revision note (the same 1000 characters as
+# the API's WorkOrder.RevisionNote column).
+MAX_JUSTIFICATION = 500
+MAX_REVISION_NOTE = 1000
+
+# The same bounds as the API's CreateWorkOrderDto.EstimatedCost, in LKR, to the cent.
+MAX_ESTIMATED_COST = Decimal("10000000")
+
+# How many open work orders a consolidated job may fold in — the API's
+# IWorkOrderService.MaxToolOpenWorkOrders, since those are all the strategist is shown.
+MAX_CONSOLIDATED_ORDERS = 10
 
 
 class AnswerType(str, Enum):
@@ -328,6 +348,155 @@ class DiagnosticResult(BaseModel):
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
 
 
+class Strategy(str, Enum):
+    """
+    How the strategist proposes the fault is handled. The same six members as the API's
+    WorkOrderStrategy enum, in snake_case as every agent value is on the wire.
+    """
+
+    known_fix = "known_fix"
+    single_job = "single_job"
+    consolidated_job = "consolidated_job"
+    inspect_first = "inspect_first"
+    defer = "defer"
+    escalate_replacement = "escalate_replacement"
+
+
+class Urgency(str, Enum):
+    """How soon the strategist thinks the work should happen. Advice, like everything here."""
+
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+# Money: a Decimal to the cent, never a float — the same rule as the API's decimal
+# columns. Pydantic reads a JSON number into a Decimal from its text, so 4999.99 arrives
+# exactly and 4999.999 is REJECTED for its third place rather than rounded. It is written
+# back out as a JSON number (not the string Pydantic would default to), which the API's
+# System.Text.Json reads straight into a C# decimal without passing through a double.
+Money = Annotated[
+    Decimal,
+    Field(ge=0, le=MAX_ESTIMATED_COST, decimal_places=2),
+    PlainSerializer(float, return_type=float, when_used="json"),
+]
+
+
+class StrategistInput(BaseModel):
+    """
+    Everything the strategist is allowed to see, and nothing else — a projection, for the
+    same reason as DiagnosticInput. The asset's record, history and the open work orders
+    around it are fetched through the strategist's own tools, not passed in.
+
+    `diagnosis` is None when the diagnostic produced nothing; the strategist is then told
+    so plainly rather than handed a placeholder. `revision_note` is set only on a re-run
+    after a manager sent a proposal back — see WorkOrder.RevisionNote on the API side.
+
+    No conversation history, and `extra="forbid"` makes one a validation error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1, max_length=4000)
+    asset_id: int | None = None
+    diagnosis: DiagnosticOutput | None = None
+    revision_note: str | None = Field(default=None, min_length=1, max_length=MAX_REVISION_NOTE)
+
+    @classmethod
+    def from_run(
+        cls,
+        request: "RunRequest",
+        diagnosis: "DiagnosticResult | None",
+    ) -> "StrategistInput":
+        return cls(
+            description=request.description,
+            asset_id=request.asset_id,
+            diagnosis=diagnosis.output if diagnosis is not None else None,
+            revision_note=request.revision_note,
+        )
+
+
+class StrategistOutput(BaseModel):
+    """
+    The strategist's entire output: a PROPOSAL.
+
+    HARD DESIGN CONSTRAINT — there is no approval field, and there must never be one. No
+    `approved`, no `status`, no `requires_approval`. Whether a work order needs a manager's
+    decision is the API comparing `estimated_cost` against Approval:CostThreshold in C#,
+    plus the rule that escalate_replacement always goes to a manager. An agent that could
+    say "approved" would be the approval control removed by the thing it is supposed to
+    control. Pinned by a test that asserts `model_fields` is exactly these five, and
+    `extra="forbid"` makes a reply that adds one a validation failure.
+
+    The same no-chat rule as the other agents: no message, no history, no follow-up.
+    `justification` is the model's account of why, for the manager who decides, and there
+    is no reply to it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Strategy
+    estimated_cost: Money
+    urgency: Urgency
+    justification: str = Field(min_length=1, max_length=MAX_JUSTIFICATION)
+    consolidate_with_work_order_ids: list[Annotated[int, Field(gt=0)]] = Field(
+        default_factory=list,
+        max_length=MAX_CONSOLIDATED_ORDERS,
+    )
+
+    @model_validator(mode="after")
+    def _check_consolidation(self) -> "StrategistOutput":
+        # Both directions. Ids on any other strategy would be a consolidation nobody
+        # proposed; a consolidated job with none is a single job wearing the wrong name.
+        ids = self.consolidate_with_work_order_ids
+        if self.strategy is Strategy.consolidated_job:
+            if not ids:
+                raise ValueError("consolidated_job needs at least one work order id to consolidate with")
+            if len(set(ids)) != len(ids):
+                raise ValueError("consolidate_with_work_order_ids must not repeat an id")
+        elif ids:
+            raise ValueError(
+                f"consolidate_with_work_order_ids must be empty unless strategy is "
+                f"consolidated_job, got {self.strategy.value}"
+            )
+        return self
+
+    @classmethod
+    def stub_example(cls) -> dict[str, Any]:
+        """
+        Fixed valid JSON returned by the LLM client in STUB_MODE. Kept next to the schema
+        so it cannot drift away from it.
+
+        Deliberately NOT evidence of anything: a fixed reply cannot show the model chooses
+        well. The golden case's behavioural half is agent/evals/test_strategist_live.py.
+        """
+        return {
+            "strategy": "escalate_replacement",
+            "estimated_cost": 185000.00,
+            "urgency": "high",
+            "justification": (
+                "Same thermal fault three times since May: two temporary fixes and a weak "
+                "fan bearing reported on 2026-09-02 with a replacement recommended. Another "
+                "repair is likely to fail mid-term in the busiest lecture hall."
+            ),
+            "consolidate_with_work_order_ids": [],
+        }
+
+
+class StrategistResult(BaseModel):
+    """
+    The strategist's envelope. `output` is None on a safe failure, like the diagnostic's:
+    no proposal is not the same as a proposal to defer, and a placeholder strategy would be
+    a decision nobody made. No proposal means a manager decides from the report.
+    """
+
+    agent: str
+    status: AgentStatus
+    output: StrategistOutput | None = None
+    error: str | None = None
+    tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
+
+
 class ToolCallOutcome(BaseModel):
     """
     The result of one call to the API's tool router.
@@ -336,9 +505,9 @@ class ToolCallOutcome(BaseModel):
     (found=False) is not the same as the tool being refused (error set).
 
     `result` is a dict for the single-row tools (get_room, get_asset) and a LIST for
-    get_asset_service_history and get_related_open_reports. An empty list with found=True
-    is an answer — "never serviced", "nothing open" — and is not the same as found=False,
-    which means the asset itself was not there.
+    get_asset_service_history, get_related_open_reports and get_open_work_orders. An empty
+    list with found=True is an answer — "never serviced", "nothing open" — and is not the
+    same as found=False, which means the asset itself was not there.
     """
 
     tool: str
@@ -371,6 +540,10 @@ class RunRequest(BaseModel):
         max_length=MAX_CLARIFICATION_ANSWERS,
     )
 
+    # The manager's note when a proposal was sent back for revision; null on every first
+    # run. Typed by a manager, and still treated as data by the strategist's prompt.
+    revision_note: str | None = Field(default=None, min_length=1, max_length=MAX_REVISION_NOTE)
+
 
 class RunResponse(BaseModel):
     """
@@ -393,3 +566,7 @@ class RunResponse(BaseModel):
     # AgentRunResponse reads them by name, so a second agent is an addition to this
     # contract, never a reinterpretation of it.
     diagnosis: DiagnosticResult | None = None
+
+    # The strategist's proposal, when the graph ran it. An addition beside the diagnosis
+    # for the same reason. A proposal and nothing more: the API decides what is raised.
+    strategy: StrategistResult | None = None

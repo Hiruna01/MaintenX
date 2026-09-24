@@ -20,9 +20,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # The service can be started from agent/ or from the repo root, so look for both.
+    #
+    # env_ignore_empty: a blank value means "use the default", which is how .env.example
+    # documents every optional key (`LLM_TIMEOUT_SECONDS=` — "Default 30"). Without it, a
+    # .env copied from the template fails to start: "" is not a number or a boolean.
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         case_sensitive=False,
         extra="ignore",
     )

@@ -105,6 +105,9 @@ SEEDED_PROJECTOR_RESULTS: dict[str, Any] = {
         },
     ],
     "get_related_open_reports": [],
+    # Every work order DbSeeder writes is Completed — the verification seed — so nothing is
+    # open in Lecture Hall A, and the strategist has nothing to consolidate with.
+    "get_open_work_orders": [],
 }
 
 # Fixed context used in STUB_MODE so tests never need a running API.

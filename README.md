@@ -70,9 +70,11 @@ All variables are listed in [`.env.example`](.env.example) with empty values.
 | `SUPABASE_URL`         | api     | Supabase project URL                                  |
 | `SUPABASE_SERVICE_KEY` | api     | Supabase service role key — server-side only          |
 | `SUPABASE_STORAGE_BUCKET` | api  | Public Storage bucket for photos (default `photos`)   |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` | api | Base64 of the timetable service account key — server-side only |
+| `GOOGLE_CALENDAR_ID`   | api     | The "Campus Timetable" Google Calendar's ID            |
 
-Never place `SUPABASE_SERVICE_KEY`, `LLM_API_KEY`, or `JWT_SECRET` in the web or mobile
-client.
+Never place `SUPABASE_SERVICE_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, `LLM_API_KEY`, or
+`JWT_SECRET` in the web or mobile client.
 
 ## First-time API setup
 
@@ -118,6 +120,39 @@ Supabase dashboard first (Storage → New bucket), then:
 dotnet user-secrets set "Supabase:Url" "https://YOUR_PROJECT_REF.supabase.co" --project api
 dotnet user-secrets set "Supabase:ServiceKey" "YOUR_SERVICE_ROLE_KEY" --project api
 ```
+
+The maintenance slot finder works around classes mirrored from a Google Calendar. Without
+these the API still starts, but the timetable never syncs and every room looks free. Setup
+is done once, in Google, by whoever owns the demo calendar — there is no OAuth consent
+screen and no user login, only a service account:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and
+   enable the **Google Calendar API** (APIs & Services → Library).
+2. IAM & Admin → Service Accounts → **Create service account** (no roles needed). Open it →
+   Keys → Add key → JSON, and download the file. **Never commit it** — keep it outside the
+   repository, and delete it once it is in user-secrets.
+3. In an ordinary Google account, create a calendar named **Campus Timetable**.
+4. Import [`docs/timetable/campus-timetable.ics`](docs/timetable/campus-timetable.ics) into
+   it (Settings → Import & export → Import, and choose that calendar): 15 weekly lectures
+   across the seeded rooms, each event's **location** set to a room code such as `MAB-101`.
+   That code is how an event is mapped to a room — a location matching no room is skipped.
+5. The calendar's Settings → Share with specific people → add the service account's email
+   (`…@….iam.gserviceaccount.com`) with **See all event details**. Copy the **Calendar ID**
+   from Integrate calendar on the same page.
+
+```bash
+dotnet user-secrets set "Google:ServiceAccountJsonBase64" "$(base64 -i path/to/key.json)" --project api
+dotnet user-secrets set "Google:CalendarId" "YOUR_CALENDAR_ID@group.calendar.google.com" --project api
+```
+
+`base64 -i` is the macOS form; on Linux use `base64 -w0 key.json`, and in PowerShell
+`[Convert]::ToBase64String([IO.File]::ReadAllBytes("key.json"))`.
+
+On startup the API logs which calendar it reads and as which service account email; on
+Render set the same two values as `Google__ServiceAccountJsonBase64` and `Google__CalendarId`.
+It syncs at startup and hourly, and a FacilitiesManager can sync now with
+`POST /api/timetable/sync`. If that answers `"degraded": true` with `"failureReason":
+"Rejected"`, the calendar is usually not shared with the service account.
 
 Check what you have set at any time — this reads the local store, not the repo:
 

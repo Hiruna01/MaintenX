@@ -120,10 +120,16 @@ public class ApiFactory : WebApplicationFactory<Program>
             // so a test behaves identically on a laptop and in CI; what the POST test
             // actually asserts is the hand-off, by reading the id straight off
             // IWorkflowQueue.
-            var runner = services.SingleOrDefault(d => d.ImplementationType == typeof(WorkflowRunner));
-            if (runner is not null)
+            //
+            // The timetable sync worker goes for the same reason: a timer writing
+            // ClassScheduleSlot rows underneath a test's assertions. Tests call the sync
+            // through POST /api/timetable/sync instead.
+            foreach (var worker in services
+                .Where(d => d.ImplementationType == typeof(WorkflowRunner)
+                         || d.ImplementationType == typeof(TimetableSyncWorker))
+                .ToList())
             {
-                services.Remove(runner);
+                services.Remove(worker);
             }
 
             services.RemoveAll<DbContextOptions<AppDbContext>>();

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import { formatDateTime } from '../services/reportsApi';
-import { describeStep, prettyJson } from '../services/agentSteps';
+import { describeStep, durationLabel, prettyJson } from '../services/agentSteps';
 
 /**
  * One recorded agent action, as a readable row: who acted, what kind of action it was, how
@@ -29,7 +29,7 @@ export function AgentStepRow({ step, number }) {
           <span className="agent-step__kind">{kind === 'tool' ? 'Tool call' : 'Agent run'}</span>
           {tool ? <code className="agent-step__tool">{tool.tool}</code> : null}
           <span className={`step-outcome step-outcome--${outcome.tone}`}>{outcome.label}</span>
-          <span className="agent-step__duration">{step.durationMs.toLocaleString()} ms</span>
+          <span className="agent-step__duration">{durationLabel(step, kind)}</span>
         </header>
 
         <p className="agent-step__summary">{summary}</p>

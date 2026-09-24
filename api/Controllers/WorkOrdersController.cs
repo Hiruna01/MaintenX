@@ -36,7 +36,8 @@ public class WorkOrdersController : ControllerBase
     }
 
     /// <summary>
-    /// One page of work orders. Every filter is exact and they all combine;
+    /// One page of work orders. <paramref name="search"/> matches the asset tag or the
+    /// report's description; every other filter is exact, and they all combine;
     /// <paramref name="dateFrom"/> and <paramref name="dateTo"/> are calendar dates against
     /// CreatedAt and BOTH ENDS ARE INCLUSIVE. <paramref name="status"/> and
     /// <paramref name="sort"/> bind by enum NAME, so an unknown value is a 400.
@@ -50,6 +51,7 @@ public class WorkOrdersController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<ActionResult<PagedResult<WorkOrderDto>>> GetAll(
+        [FromQuery] string? search,
         [FromQuery] WorkOrderStatus? status,
         [FromQuery] int? technicianId,
         [FromQuery] int? assetId,
@@ -66,9 +68,32 @@ public class WorkOrdersController : ControllerBase
         }
 
         var result = await _workOrderService.GetAllAsync(
-            callerId, callerRole, status, technicianId, assetId, dateFrom, dateTo,
+            callerId, callerRole, search, status, technicianId, assetId, dateFrom, dateTo,
             sort, page, pageSize, cancellationToken);
 
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// The approval queue: every order AwaitingApproval, oldest first, each carrying what a
+    /// manager needs to decide it without opening anything else — the approval basis, the
+    /// asset's service history and failure summary, and the agent's diagnosis and proposal.
+    /// FacilitiesManager only, the same as approve / reject / request-revision: an Admin is
+    /// refused here too, and a Technician never sees it.
+    ///
+    /// Paged through the existing PagedResult&lt;T&gt;. An empty queue is a 200 with no items.
+    /// </summary>
+    [HttpGet("approvals")]
+    [Authorize(Policy = nameof(Role.FacilitiesManager))]
+    [ProducesResponseType(typeof(PagedResult<ApprovalCaseDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<PagedResult<ApprovalCaseDto>>> GetApprovalQueue(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _workOrderService.GetApprovalQueueAsync(page, pageSize, cancellationToken);
         return Ok(result);
     }
 

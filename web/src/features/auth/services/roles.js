@@ -20,6 +20,22 @@ export const MANAGER_ROLES = [ROLES.FacilitiesManager, ROLES.Admin];
  */
 export const ADMIN_ROLES = [ROLES.Admin];
 
+/**
+ * Who works the dispatch board. A Technician reads their own queue there and a manager reads
+ * the estate — WHICH orders each sees is decided by the API from the token, not by this list.
+ * A Reporter's view of a fault is the report, so they have no work orders to read.
+ */
+export const WORK_ORDER_ROLES = [ROLES.Technician, ROLES.FacilitiesManager, ROLES.Admin];
+
+/**
+ * Who raises, assigns, schedules and DECIDES work orders — the approval queue included.
+ * Matches the API's `FacilitiesManager` policy on those actions exactly: an Admin is refused
+ * there too, because the policies are one-per-role and carry no seniority, so an Admin is not
+ * offered a link or a button that would only come back 403. A Technician never sees the
+ * approvals link at all.
+ */
+export const DISPATCH_ROLES = [ROLES.FacilitiesManager];
+
 const ROLE_LABELS = {
   [ROLES.Reporter]: 'Reporter',
   [ROLES.Technician]: 'Technician',

@@ -1885,3 +1885,672 @@ a {
     margin-left: 0;
   }
 }
+
+/* =====================================================================================
+   WORK ORDERS — dispatch board, work order detail and the approval queue
+   The board and its filters reuse the asset catalogue's .asset-table / .asset-filters.
+   Every colour is a token; pill modifiers are the enum NAME, never an ordinal.
+   ===================================================================================== */
+
+/* ---------- shared bits ---------- */
+
+.button--danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.button--danger:hover:not(:disabled) {
+  background: #912018;
+}
+
+.notice {
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--success-border);
+  border-radius: 10px;
+  background: var(--success-bg);
+  color: var(--success);
+  font-weight: 500;
+}
+
+.verbatim-note {
+  margin: 0.4rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border-left: 3px solid var(--border);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- pills ---------- */
+
+.work-order-status,
+.strategy,
+.urgency,
+.confidence,
+.next-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.18rem 0.6rem;
+  border: 1px solid var(--neutral-border);
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  color: var(--neutral);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.work-order-status--AwaitingApproval,
+.strategy--EscalateReplacement,
+.urgency--high,
+.next-action--replace {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.work-order-status--Approved,
+.work-order-status--Scheduled,
+.work-order-status--InProgress,
+.confidence--high {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.work-order-status--Completed {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.work-order-status--Rejected {
+  border-color: #fecdca;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* Draft, Cancelled, the other strategies, medium/low urgency and confidence stay grey. */
+
+.confidence {
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+/* ---------- dispatch board ---------- */
+
+.work-order-table__num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+th.work-order-table__num .sort-button {
+  margin-left: auto;
+}
+
+.work-order-table__unassigned {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---------- the approval basis: cost against the threshold ---------- */
+
+.approval-basis {
+  margin: 0 0 1.25rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--warn-border);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: var(--warn-bg);
+}
+
+.approval-basis--clear {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+}
+
+.approval-basis__headline {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.approval-basis__detail {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.approval-basis--compact {
+  margin-bottom: 0.75rem;
+}
+
+.approval-basis--compact .approval-basis__headline {
+  font-size: 1.05rem;
+}
+
+/* ---------- the approval queue ---------- */
+
+.approval-queue {
+  display: grid;
+  gap: 2rem;
+  margin-bottom: 1.5rem;
+}
+
+.approval-queue__count {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.approval-card {
+  padding: 1.5rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.approval-card__head {
+  margin-bottom: 1.25rem;
+}
+
+.approval-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.approval-card__tags a.asset-tag {
+  text-decoration: none;
+}
+
+.approval-card h2 {
+  margin: 0.75rem 0 0;
+  font-size: 1.45rem;
+  letter-spacing: -0.02em;
+}
+
+.approval-card__room {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.approval-card__meta {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.approval-card__revision {
+  margin: 0 0 1.25rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  background: var(--info-bg);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.approval-card__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.approval-card__column {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.approval-card__column .summary-panel {
+  margin-bottom: 0;
+}
+
+.approval-card__column .summary-panel h2 {
+  font-size: 1rem;
+}
+
+.approval-panel {
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.approval-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.approval-panel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.approval-panel__source {
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.approval-panel__label {
+  margin: 1rem 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.approval-panel__quote {
+  margin: 0.5rem 0 0;
+  padding: 0.65rem 0.9rem;
+  border-left: 3px solid var(--info-border);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-2);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-panel__note,
+.approval-panel__footnote {
+  margin: 0.75rem 0 0;
+  font-size: 0.85rem;
+}
+
+.approval-panel__footnote {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.approval-panel__empty {
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  background: var(--neutral-bg);
+  color: var(--neutral);
+  font-size: 0.88rem;
+}
+
+.approval-panel__empty--failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.approval-panel .timeline {
+  margin: 0;
+}
+
+/* ---------- proposal beside the order as raised ---------- */
+
+.proposal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.proposal-table th,
+.proposal-table td {
+  padding: 0.5rem 0.4rem;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.proposal-table thead th {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.proposal-table tbody th {
+  width: 7.5rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.proposal-table__row--differs td {
+  background: var(--warn-bg);
+}
+
+.proposal-table__differs {
+  display: block;
+  color: var(--warn);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.proposal-table__none {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* ---------- diagnosis ---------- */
+
+.hypothesis__cause {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.hypothesis__evidence {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.hypothesis__evidence li + li {
+  margin-top: 0.25rem;
+}
+
+.diagnosis__primary {
+  padding: 0.1rem 0 0.25rem;
+}
+
+.diagnosis__primary .approval-panel__label {
+  margin-top: 0;
+}
+
+.diagnosis__action {
+  margin: 0.85rem 0 0;
+  font-size: 0.88rem;
+}
+
+.diagnosis__others {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagnosis__others .hypothesis__cause {
+  font-weight: 500;
+}
+
+/* ---------- decision controls ---------- */
+
+.decision {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+}
+
+.decision--reject {
+  border-color: #fecdca;
+}
+
+.decision__prompt {
+  margin: 0;
+  font-weight: 600;
+}
+
+.decision__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.decision__confirm {
+  margin: 0;
+}
+
+.decision__field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.decision__field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.decision textarea,
+.completion-form textarea,
+.inline-form select,
+.slot-finder input {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.decision textarea:focus,
+.completion-form textarea:focus,
+.inline-form select:focus,
+.slot-finder input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.decision textarea[aria-invalid='true'],
+.completion-form textarea[aria-invalid='true'],
+.inline-form select[aria-invalid='true'],
+.slot-finder input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.decision__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* ---------- work order detail ---------- */
+
+.work-order-panel {
+  padding: 1.1rem 1.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.work-order-panel__value {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+}
+
+.work-order-panel__value a {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  font-size: 0.9rem;
+}
+
+.work-order-panel__note {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.work-order-panel__quote {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.work-order-panel > .approval-panel__label:first-child {
+  margin-top: 0;
+}
+
+.inline-form {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+}
+
+.inline-form label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.inline-form__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.inline-form__row select {
+  min-width: 16rem;
+}
+
+.slot-finder__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.slot-finder__field {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.slot-finder__field input[type='number'] {
+  width: 8rem;
+}
+
+.slot-finder__field .form__error {
+  font-weight: 400;
+}
+
+.slot-finder__hint {
+  margin: 0.6rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.slot-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slot-list__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.slot-list__time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.slot-list__meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.slot-list__error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.completion-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2.5rem;
+  margin: 0 0 1rem;
+}
+
+.completion-facts dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.completion-facts dd {
+  margin: 0.15rem 0 0;
+  font-weight: 600;
+}
+
+.completion-form {
+  display: grid;
+  gap: 1rem;
+  padding-top: 1.25rem;
+}
+
+.completion-form > .asset-form__grid,
+.completion-form > .asset-form__field,
+.completion-form > .form__error {
+  margin: 0 1.5rem;
+}
+
+@media (max-width: 900px) {
+  .approval-card__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .approval-card {
+    padding: 1.1rem;
+  }
+
+  .approval-basis__headline {
+    font-size: 1.05rem;
+  }
+
+  .inline-form__row select {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+/* The asset name heads the work order page as a link, but should read as a heading. */
+.work-order-detail .asset-hero h1 a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.work-order-detail .asset-hero h1 a:hover {
+  text-decoration: underline;
+}

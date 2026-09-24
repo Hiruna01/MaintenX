@@ -19,15 +19,18 @@ function Stat({ label, value, detail, tone }) {
  * materialised history, and the diagnostic agent reads this same summary rather than
  * producing it. The panel's footnote says so, because a reader deciding whether to replace
  * a machine should know these figures are arithmetic, not an opinion.
+ *
+ * `headingId` only needs setting where more than one panel is on a page (the approval
+ * queue), so each heading keeps a unique id.
  */
-export function FailureSummaryPanel({ summary }) {
+export function FailureSummaryPanel({ summary, headingId = 'failure-summary-heading' }) {
   // Null is not zero: a machine nobody has ever touched is not a machine serviced today.
   const neverServiced = summary.lastServicedOn === null;
 
   return (
-    <section className="summary-panel" aria-labelledby="failure-summary-heading">
+    <section className="summary-panel" aria-labelledby={headingId}>
       <header className="summary-panel__head">
-        <h2 id="failure-summary-heading">Failure summary</h2>
+        <h2 id={headingId}>Failure summary</h2>
         {summary.isRepeatFailure ? (
           <span className="repeat-flag">Repeat failure</span>
         ) : null}

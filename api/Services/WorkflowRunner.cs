@@ -54,13 +54,18 @@ public class WorkflowRunner : BackgroundService
     }
 
     /// <summary>
-    /// Writes the one AGENT-LEVEL step for this run.
+    /// Writes the clarifier's AGENT-LEVEL step for this run — the first of up to three (see
+    /// <see cref="RecordDownstreamStepsAsync"/>), and the only one written when the call
+    /// never completed, because then there is no reply to read anything else out of.
     ///
-    /// Exactly one, and only agent-level: the tool calls the agent made on its way here
-    /// already wrote their own AgentStep rows from InternalToolsController, which sees
-    /// every call including the ones it rejects. Recording the agent's returned tool_calls
-    /// here as well would double every tool call in the audit trail, so ToolCallsJson is
-    /// the empty array and the controller stays the single owner of those rows.
+    /// Only agent-level: the tool calls the agent made on its way here already wrote their
+    /// own AgentStep rows from InternalToolsController, which sees every call including the
+    /// ones it rejects. Recording the agent's returned tool_calls here as well would double
+    /// every tool call in the audit trail, so ToolCallsJson is the empty array and the
+    /// controller stays the single owner of those rows.
+    ///
+    /// DurationMs is the WHOLE /run call — the clarifier, the diagnostic and the strategist
+    /// ran inside it one after another, and the agent service reports no split between them.
     /// </summary>
     private static async Task RecordAgentStepAsync(
         IWorkflowService workflows,
@@ -85,6 +90,42 @@ public class WorkflowRunner : BackgroundService
             validationResult: succeeded ? "Ok" : call.Ok ? "SafeFailure" : "CallFailed",
             errorMessage: call.Error ?? call.Response?.Error,
             cancellationToken);
+    }
+
+    /// <summary>
+    /// One agent-level step each for the diagnostic and the strategist, beside the
+    /// clarifier's, so a diagnosis and a proposal are kept rather than computed and thrown
+    /// away. The output goes in verbatim — the audit copy, never edited — and the approval
+    /// queue reads it back from here (see AgentAnalysis). Same "[]" ToolCallsJson as the
+    /// clarifier's step, for the same reason: their tool calls are already rows of their own.
+    ///
+    /// DurationMs is 0 on these on purpose. They ran inside the one /run call whose time is
+    /// on the clarifier's step, and the agent reports no per-agent split; dividing it up here
+    /// would invent one.
+    ///
+    /// Recorded even when the clarifier failed: they are what the agent actually returned,
+    /// and an audit trail that dropped them would say they never ran. Nothing reads them to
+    /// move the workflow — what a diagnosis MEANS for the fault is still decided in C# by
+    /// whoever raises the work order.
+    /// </summary>
+    private static async Task RecordDownstreamStepsAsync(
+        IWorkflowService workflows,
+        int workflowId,
+        AgentRunResponse response,
+        CancellationToken cancellationToken)
+    {
+        foreach (var result in response.DownstreamResults())
+        {
+            await workflows.RecordStepAsync(
+                workflowId,
+                agentName: result.AgentName,
+                toolCallsJson: "[]",
+                payloadJson: result.OutputJson,
+                durationMs: 0,
+                validationResult: result.Succeeded ? "Ok" : "SafeFailure",
+                errorMessage: result.Error,
+                cancellationToken);
+        }
     }
 
     /// <summary>
@@ -181,10 +222,18 @@ public class WorkflowRunner : BackgroundService
                     // one: a report names a room, and resolving room -> building would be
                     // a query this runner has no reason to make. The agent can call
                     // get_room and read buildingId off the result if it needs it.
-                    BuildingId: null),
+                    BuildingId: null,
+                    // Set when triage or a QR scan named the equipment. It is what lets the
+                    // diagnostic and the strategist read the machine's service history.
+                    AssetId: report?.AssetId),
                 cancellationToken);
 
             await RecordAgentStepAsync(workflows, workflowId, call, cancellationToken);
+
+            if (call.Response is not null)
+            {
+                await RecordDownstreamStepsAsync(workflows, workflowId, call.Response, cancellationToken);
+            }
 
             // Two different failures, one outcome. A call that never completed (timeout,
             // refused connection, bad body) and a call that completed with the agent

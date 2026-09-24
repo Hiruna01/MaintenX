@@ -271,14 +271,24 @@ and 14 service records.
   connection, a non-200 or an unreadable body all come back as a result the runner turns
   into `Failed` with the reason on the row. A background exception has no request to
   surface on, so a workflow must never be left parked because the agent was down.
-- **The runner records ONE agent-level step per run**, with `ToolCallsJson` empty. Tool
-  calls are recorded by `InternalToolsController` alone — recording the agent's returned
-  `tool_calls` here as well would double every tool call in the audit trail. It also writes
-  the clarifier's questions as `ClarificationQuestion` rows; that is not a second step and
-  not a second audit record — see CLARIFICATION below.
+- **The runner records one agent-level step per AGENT that ran** — the clarifier's, then
+  the diagnostic's and the strategist's, which run inside the same `/run` call — each with
+  `ToolCallsJson` `"[]"` and that agent's output verbatim. Tool calls are recorded by
+  `InternalToolsController` alone — recording the agent's returned `tool_calls` here as well
+  would double every tool call in the audit trail. It also writes the clarifier's questions
+  as `ClarificationQuestion` rows; that is not another step and not a second audit record —
+  see CLARIFICATION below.
+- **The step's name comes from the FIELD the result arrived in, never from the envelope's
+  own `agent` value**: `AgentRunResponse.DiagnosticAgentName` (`"diagnostic"`) and
+  `StrategistAgentName` (`"strategist"`), and `DownstreamResults()` is the only place those
+  two envelopes are read. The clarifier's step carries the whole call's `DurationMs`; the
+  other two carry **0**, because the agent reports no per-agent split and dividing it would
+  invent one — the reasoning panel shows them as "timed with the run". They are recorded
+  even when the clarifier failed: they are what the agent returned. Nothing reads them to
+  move the workflow.
 - **`AgentWorkflow.PlanJson` is still never populated.** The clarifier produces questions,
-  and questions are not a plan, so they go in `AgentStep.PayloadJson` where step output
-  belongs — and, because they are working data as well as audit, into
+  and questions are not a plan; the strategist's proposal is advice about ONE order, not a
+  plan for the workflow. Both go in `AgentStep.PayloadJson` where step output belongs — and, because they are working data as well as audit, into
   `ClarificationQuestion` rows beside it. Do not render `PlanJson` in a client until an
   agent actually produces one — an always-null field on a page is worse than no field.
 - **`POST /api/internal/tools/{toolName}`** is how the agent calls back into the API. It is
@@ -334,11 +344,13 @@ expects four 404s.
   `ToolClient.call` raise — breaking its promise never to — and nothing noticed, because
   nothing called them yet. A new tool that returns a new shape needs that type checked.
 
-**`DiagnosticAgent` declares the three asset tools; the C# side has not caught up.**
-`AgentRunRequest` does not send `asset_id` yet, so the diagnostic has no asset to look up
-and runs on the report text alone — and `AgentRunResponse` ignores the new `diagnosis`
-field, so the runner does not persist it. Until both land, a diagnosis is computed and
-discarded. See `DiagnosticAgent` under AGENT SERVICE below.
+**The diagnosis and the proposal are kept now, and read back by the approval queue.**
+`AgentRunRequest` sends `asset_id` from `Report.AssetId` — null for a fresh report, set once
+triage or a QR scan names the equipment — so the diagnostic and strategist can read the
+machine's history. Their results are stored as agent-level steps (above) and read back into
+typed DTOs by `AgentAnalysis`, the counterpart of `ParseQuestions` and the only place the
+API reads those two shapes. **`revision_note` is still not sent**: the runner only starts
+`Submitted` workflows, so a revised one is never re-run (see request-revision below).
 
 **The resume path needs a routing decision before it can be wired.** Submitting answers
 moves the workflow to `Diagnosing` and re-queues it (see `POST /api/reports/{id}/clarifications`
@@ -494,8 +506,17 @@ like every other enum. `IWorkOrderService` / `WorkOrderService`, `AddScoped`, be
 ### The endpoints — reads scoped by the service, decisions for FacilitiesManager
 
 `[Authorize]` on the controller; `FacilitiesManager` policy on create, assign, approve,
-reject and request-revision; `Technician` policy on complete. An `Admin` is refused the
-manager actions too — same reasoning as `PATCH /api/reports/{id}/status`.
+reject, request-revision, the slot finder, schedule and the approval queue; `Technician`
+policy on complete. An `Admin` is refused the manager actions too — same reasoning as
+`PATCH /api/reports/{id}/status`.
+
+- `search` matches the asset tag **or** the report's description, `ToLower().Contains()`
+  like every other search, and combines with the exact filters.
+- **`WorkOrderDetailDto.ApprovalBasis`** — `Threshold`, `ExceedsThreshold`, `IsReplacement`,
+  `RequiresApproval` — is computed by `ApprovalBasisFor`, **the same function
+  `CreateAsync` routes with**, so a page saying "above the threshold" is repeating the gate,
+  never doing its own sum. The threshold is the one configured now; it is not stored per
+  order.
 
 - **Visibility is `SeesEveryWorkOrder` in the service, written to fail closed**: a
   `FacilitiesManager` and an `Admin` see every order; anyone else sees only orders assigned
@@ -655,6 +676,32 @@ which iCalendar requires.
 
 ---
 
+### The approval queue — everything a decision needs, in one request
+
+`GET /api/workorders/approvals`, FacilitiesManager only, `PagedResult<ApprovalCaseDto>`,
+**oldest first** (a queue of decisions — the longest-waiting is decided first), at most 25
+a page. Each case is the order's detail DTO (with its approval basis), the asset's
+`AssetDetailDto` (service history oldest-first) and failure summary — **both from
+`IAssetService`**, never a second query of the registry — and the agent's latest diagnosis
+and proposal for the report.
+
+- **Null is not empty.** No `diagnostic` / `strategist` step for the report → `null`. A step
+  that failed → a DTO carrying `ValidationResult` `SafeFailure` and the reason. A step that
+  says `Ok` but will not parse → `OutputReadable: false`, and the raw payload is still on the
+  step. The client renders all three differently.
+- **A diagnostic TOOL CALL is not its answer.** Tool rows are recorded under the same
+  `AgentName`; `AgentAnalysis.IsAgentRunStep` tells them apart by `ToolCallsJson` being
+  `"[]"` — the same test the web client's `agentSteps.js` uses. Filtered in memory, because
+  the difference is inside a `jsonb` column. Pinned by a test that records a tool call after
+  the answer.
+- **Strategy is mapped to `WorkOrderStrategy` in C#, once; an unknown value is null, never a
+  guess.** Confidence, urgency and next action stay **strings** — advice, like
+  `VerificationCheck.AgentOutcome`. The proposed cost is read with `GetDecimal()` from the
+  JSON number's text.
+- `GET /api/users?role=Technician` (`UsersController`, `IUserService`, FacilitiesManager
+  only) is the technician picker behind assign and the board's filter. `role` is
+  **required** — there is no way to list the whole user table.
+
 ## VERIFICATION — did the repair actually hold?
 
 `VerificationCheck` in `Models/`, with `VerificationStatus` (`Pending` /
@@ -771,6 +818,26 @@ overdue** so the sweep has work the first time it runs.
 
 ---
 
+### The live work orders are seeded too
+
+`SeedLiveWorkOrdersAsync`, after the verification seed: **two `AwaitingApproval` orders and
+one `Approved`, unassigned one.** Every other seeded order is `Completed`, so without these
+the approval queue and the board's assign-and-schedule path would open empty in a demo.
+
+- **`PRJ-MAB101-01`, `EscalateReplacement` at Rs 45,000** — above the threshold AND a
+  replacement, so both halves of the gate show. Its diagnosis is the one the live eval
+  produced against this history (the failing cooling fan, citing the dated visits, no
+  compressor) — pinned by a seeder test.
+- **`ACU-ENG101-01`, `SingleJob` at Rs 28,000** — above the threshold on cost alone. Under
+  warranty until 2026-11-18, which the card's failure summary shows.
+- **`PRJ-MAB102-01`, a Rs 6,500 `KnownFix`**, auto-approved (no `ApprovedBy`) and assigned
+  to nobody — the one to assign, find a slot for and book.
+- **Their agent steps are SEEDED, not produced by a run**, and written in exactly the shape
+  `WorkflowRunner` writes (clarifier, diagnostic, strategist; `"[]"` tool calls; output
+  verbatim), so the queue and the reasoning panel read them through the real code path.
+  **If the agent's output schema changes, change these payloads too.** Still no
+  `ServiceRecord` rows, for the usual reason.
+
 ## AGENT SERVICE — Python, `agent/`
 
 FastAPI + LangGraph. Modules are flat inside `agent/`; run it from that directory
@@ -851,8 +918,9 @@ is on `RunRequest` but is not looked up.
 - The report goes in as **one JSON object between markers**, like the diagnostic's, not
   spliced raw. The two-question ceiling is the schema's, not the model's: a reply of ten
   questions is a safe failure, never a long form.
-- Until `AgentRunRequest` sends `asset_id` (see the note under AGENT WORKFLOWS), the
-  clarifier only ever has the room.
+- The clarifier gets `asset_id` when the report has one, which is what its "no location
+  question when the asset is named" eval is about. A fresh report has none, so in the
+  normal case it still only has the room.
 - Behaviour is in `evals/test_clarifier_live.py` — zero questions for a detailed report, one
   or two for a vague one, no location question when the asset is named, an injection asking
   for ten questions ignored.
@@ -921,10 +989,10 @@ API's `WorkOrderStrategy` in snake_case), an `estimated_cost`, an `urgency` and 
   open-orders lookup is a note, not an empty list — null is not empty here either.
 - The revision note is a manager's, and **still data**: inside the JSON block, with the
   same injection test as the report and the diagnosis.
-- **The C# side has not caught up**, as with the diagnostic: `AgentRunRequest` sends
-  neither `asset_id` nor `revision_note`, and `AgentRunResponse` ignores `strategy`, so a
-  proposal is computed and discarded until the runner reads it — and raising the order
-  from it stays `WorkOrderService.CreateAsync`, approval gate and all.
+- **The C# side reads the proposal but never acts on it.** The runner stores it as a
+  `strategist` step and the approval queue shows it beside the order as raised; raising
+  an order stays `WorkOrderService.CreateAsync`, approval gate and all, from what a manager
+  posts. `revision_note` is not sent yet (see AGENT WORKFLOWS).
 - **The golden case is the seeded projector's real history**: a weak **fan bearing**,
   not a compressor — that is `ACU-ENG101-01`. `evals/test_strategist_live.py` asserts
   `escalate_replacement`, not `known_fix`, a dated visit cited, and no "compressor"; the
@@ -1085,8 +1153,8 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
   store, nothing to rotate.
 - **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js`,
   `WORKFLOW_STATES` in the workflows service, `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
-  `assetsApi.js` and `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js`
-  hold the same strings the API sends and accepts, so a member inserted into a C# enum cannot
+  `assetsApi.js`, `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js` and
+  `WORK_ORDER_STATUSES` / `STRATEGIES` / `WORK_ORDER_SORTS` in `workOrdersApi.js` hold the same strings the API sends and accepts, so a member inserted into a C# enum cannot
   silently shift the client's meaning.
 - **Navigation is role-based**: a Reporter must not see manager links. The route guard would
   refuse them anyway, but offering a link that leads to "not authorised" is a bad interface.
@@ -1206,12 +1274,48 @@ and never hidden either.
 - The clarifier's questions appear twice on the page on purpose — as rows in Clarification
   (the working copy) and verbatim inside the agent-run step (the audit copy), with
   `answer_type` shown as the agent wrote it. Same split as CLARIFICATION above.
-- **The diagnosis is not rendered**, because the runner does not persist it yet (see AGENT
-  WORKFLOWS). A diagnostic step would still appear, with a generic summary and its raw
-  payload. Add a proper rendering when `AgentRunResponse` reads `diagnosis` — not before;
-  same rule as `PlanJson`.
+- **Diagnostic and strategist steps get one sentence each** from `describeStep` — "Diagnosed
+  2 possible causes; most likely: …" and "Proposed escalate replacement at Rs 45,000 —
+  advice; approval is decided by the API." The full rendering of both is the approval
+  queue's (`features/workorders/`); here they are audit rows like any other.
 - There is **no status control** on the detail page yet: `PATCH /api/reports/{id}/status`
   exists and nothing on the client calls it.
+
+### Work orders — `features/workorders/`
+
+`/workorders` (the dispatch board) and `/workorders/:id` behind `WORK_ORDER_ROLES`
+(Technician, FacilitiesManager, Admin — a Reporter has no work orders); `/approvals` behind
+`DISPATCH_ROLES`, which is `[FacilitiesManager]` and nothing else, mirroring the API policy.
+**A Technician never sees the Approvals link, and nor does an Admin** — the API would refuse
+them both. Which orders a caller sees is the API's rule; the client keeps no copy of it.
+
+- **The board searches server-side** (`search` debounced 400 ms — asset tag or fault),
+  filters by status by NAME and, **for a manager only**, by technician from
+  `GET /api/users?role=Technician`. Only Estimate and Raised sort — the two `WorkOrderSort`
+  members, no direction, never a browser-side sort of the page.
+- **`ApprovalsPage` is the screen an evaluator reads hardest.** One card per order, and a
+  manager decides without opening anything else: the report verbatim, **the cost against
+  the threshold in one sentence** ("Rs 45,000 — above the Rs 15,000 approval threshold"),
+  the agent's proposal **beside the order as raised** (a differing row is marked, and the
+  mark decides nothing), the diagnosis with its evidence verbatim, and the asset registry's
+  own `FailureSummaryPanel`, `WarrantyBadge` and `ServiceTimeline` — reused, not copied, so
+  the history reads exactly as on the asset page.
+- **The sentence is chosen by the API's booleans** (`describeApprovalBasis`); nothing in
+  JavaScript compares an estimate with the threshold. `formatMoney` formats and nothing
+  else — the client never adds, rounds or compares money to decide anything.
+- **Approve, Reject, Request revision are each two steps** — choose, then confirm. Reject
+  needs a reason and revision a note, `validate()`d here and again by the API. A 409 (decided
+  elsewhere) is shown on the card; success refetches the queue by remounting it.
+- **The detail page offers controls, the API decides them.** Assign and the slot finder
+  for a manager on an `Approved` / `Scheduled` / `InProgress` order; the completion form
+  only for the Technician it is assigned to. Unassigned, the slot finder checks the room
+  alone and offers **no Book button** — a booking is time in somebody's diary. A slot is
+  booked by sending it back exactly as offered; a 409 is shown against that slot.
+- Slots are **instants** (UTC with a `Z`), so `new Date()` is correct for them — unlike a
+  `DateOnly`. The search's dates are campus-local `YYYY-MM-DD` strings and never go through
+  `Date`.
+- The outcome picker reuses `SERVICE_OUTCOMES` from `assetsApi.js`; the completion form has
+  **no default outcome**, for the reason `CompleteWorkOrderDto.Outcome` is `[Required]`.
 
 ### Styling and configuration
 

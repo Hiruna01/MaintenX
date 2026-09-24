@@ -5,12 +5,20 @@ import AssetDetailPage from '../features/assets/pages/AssetDetailPage';
 import AssetEditPage from '../features/assets/pages/AssetEditPage';
 import AssetsPage from '../features/assets/pages/AssetsPage';
 import LoginPage from '../features/auth/pages/LoginPage';
-import { ADMIN_ROLES, MANAGER_ROLES } from '../features/auth/services/roles';
+import {
+  ADMIN_ROLES,
+  DISPATCH_ROLES,
+  MANAGER_ROLES,
+  WORK_ORDER_ROLES,
+} from '../features/auth/services/roles';
 import DashboardPage from '../features/dashboard/pages/DashboardPage';
 import ReportDetailPage from '../features/reports/pages/ReportDetailPage';
 import ReportsPage from '../features/reports/pages/ReportsPage';
 import WorkflowDetailPage from '../features/workflows/pages/WorkflowDetailPage';
 import WorkflowsPage from '../features/workflows/pages/WorkflowsPage';
+import ApprovalsPage from '../features/workorders/pages/ApprovalsPage';
+import WorkOrderDetailPage from '../features/workorders/pages/WorkOrderDetailPage';
+import WorkOrdersPage from '../features/workorders/pages/WorkOrdersPage';
 import NotFoundPage from './NotFoundPage';
 import ProtectedRoute from './ProtectedRoute';
 
@@ -44,6 +52,19 @@ export function AppRoutes() {
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/workflows" element={<WorkflowsPage />} />
         <Route path="/workflows/:id" element={<WorkflowDetailPage />} />
+      </Route>
+
+      {/* The dispatch board: a Technician's own queue, or the estate for a manager — the API
+          decides which from the token. A Reporter has no work orders and gets "not authorised". */}
+      <Route element={<ProtectedRoute allowedRoles={WORK_ORDER_ROLES} />}>
+        <Route path="/workorders" element={<WorkOrdersPage />} />
+        <Route path="/workorders/:id" element={<WorkOrderDetailPage />} />
+      </Route>
+
+      {/* Deciding spend is a FacilitiesManager's alone, exactly as the API's policy says — an
+          Admin and a Technician reaching this by URL get "not authorised", not a 403 page. */}
+      <Route element={<ProtectedRoute allowedRoles={DISPATCH_ROLES} />}>
+        <Route path="/approvals" element={<ApprovalsPage />} />
       </Route>
 
       {/* Catch-all. */}

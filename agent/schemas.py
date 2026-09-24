@@ -67,6 +67,21 @@ MAX_ESTIMATED_COST = Decimal("10000000")
 # IWorkOrderService.MaxToolOpenWorkOrders, since those are all the strategist is shown.
 MAX_CONSOLIDATED_ORDERS = 10
 
+# The verification agent's reason, and the reporter's comment it weighs — the same 300
+# characters as the API's ReporterConfirmationDto.Comment.
+MAX_VERIFICATION_REASON = 400
+MAX_REPORTER_COMMENT = 300
+
+# The API's row caps on the two list tools the verification agent reads:
+# IAssetService.MaxToolHistoryRows and IReportService.MaxToolRelatedReports.
+MAX_TOOL_HISTORY_ROWS = 20
+MAX_TOOL_RELATED_REPORTS = 10
+
+# Longest technician note or report description carried into the verification input.
+# The API's own column limits; a longer one would mean the contract has drifted.
+MAX_TECHNICIAN_NOTE = 2000
+MAX_REPORT_DESCRIPTION = 4000
+
 
 class AnswerType(str, Enum):
     """How the client should render the answer control for a question."""
@@ -497,6 +512,176 @@ class StrategistResult(BaseModel):
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
 
 
+class VerificationOutcome(str, Enum):
+    """
+    What the verification agent makes of a completed repair. A closed list so the reply can
+    be validated — NOT so the system can act on it.
+
+    The API sets the check's Status from the REPORTER's answer, in C#; this label is stored
+    beside it in VerificationCheck.AgentOutcome as a string, for a human to read. Same
+    reasoning as NextAction: an enum here, an opinion there.
+
+    `escalate` is not a stronger `reopen`. It says the pattern, not the one repair, is the
+    problem — "this keeps happening, stop patching it".
+    """
+
+    confirm = "confirm"
+    reopen = "reopen"
+    escalate = "escalate"
+
+
+class VerificationRequest(BaseModel):
+    """
+    What the API sends to ask for a verification: which repair, and what the reporter said.
+
+    Its presence on RunRequest is what routes a /run to the verification agent instead of
+    the report pipeline — see graph.py. Everything else the agent weighs (the resolution
+    note, the history, the reports filed since) it looks up through its own tools, so the
+    API cannot hand it a different account of the repair than the one on the record.
+
+    `reporter_confirmed` is None when the reporter never answered: the sweep queues silent
+    checks too, and silence is not a yes. Same rule as VerificationCheck.ReporterConfirmed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    work_order_id: int = Field(gt=0)
+    reporter_confirmed: bool | None = None
+    reporter_comment: str | None = Field(default=None, min_length=1, max_length=MAX_REPORTER_COMMENT)
+
+
+class ServiceVisit(BaseModel):
+    """One row of the asset's service history, as the verification agent is shown it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    serviced_on: str | None = None
+    outcome: str | None = None
+    technician_note: str | None = Field(default=None, max_length=MAX_TECHNICIAN_NOTE)
+
+    # True for the record the repair being verified appended on completion. Marked by
+    # code from the row's workOrderId, so the model never has to guess which visit is the
+    # one it is judging.
+    is_this_repair: bool = False
+
+
+class NewReport(BaseModel):
+    """A fault reported on the same asset AFTER the repair was completed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reported_at: str | None = None
+    status: str | None = None
+    description: str = Field(min_length=1, max_length=MAX_REPORT_DESCRIPTION)
+
+
+class VerificationInput(BaseModel):
+    """
+    Everything the verification agent is allowed to see, and nothing else. The prompt is
+    rendered from THIS model, so nothing reaches it that was not declared here.
+
+    Assembled by the agent from the request and its three tools, and every derived figure
+    in it is worked out by CODE, never by the model: `days_since_completion` from the work
+    order's completion date, `new_reports_since_completion` by comparing each report's
+    timestamp with it, `service_visits_on_record` by counting the history's rows. The model
+    judges what those facts mean; it does not produce them.
+
+    NULL IS NOT EMPTY, as everywhere else: `new_reports_since_completion` is None when the
+    lookup failed and [] when it answered "none", and the same for the history. `notes`
+    says which lookups failed.
+
+    No conversation history, and `extra="forbid"` makes one a validation error.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The fault as it was first reported, so a new report can be read as the same fault
+    # or a different one.
+    fault_reported: str = Field(min_length=1, max_length=MAX_REPORT_DESCRIPTION)
+
+    resolution_note: str | None = Field(default=None, max_length=MAX_TECHNICIAN_NOTE)
+    days_since_completion: int | None = Field(default=None, ge=0)
+
+    new_reports_since_completion: list[NewReport] | None = Field(
+        default=None, max_length=MAX_TOOL_RELATED_REPORTS
+    )
+
+    reporter_confirmed: bool | None = None
+    reporter_comment: str | None = Field(default=None, max_length=MAX_REPORTER_COMMENT)
+
+    service_history_newest_first: list[ServiceVisit] | None = Field(
+        default=None, max_length=MAX_TOOL_HISTORY_ROWS
+    )
+
+    # THE COUNT, from the tool's rows, so "how many times" is never the model's arithmetic.
+    # At MAX_TOOL_HISTORY_ROWS it means "at least this many" — the tool is capped.
+    service_visits_on_record: int | None = Field(default=None, ge=0)
+
+    notes: list[str] = Field(default_factory=list)
+
+
+class VerificationOutput(BaseModel):
+    """
+    The verification agent's entire output: a verdict on one repair, and why.
+
+    HARD DESIGN CONSTRAINT, the same as every other agent — do not add to this model:
+      * no free-text `message` / `reply` / `response` field,
+      * no conversation history,
+      * no follow-up or next-turn field.
+    One round, four fields. Pinned by a test that asserts `model_fields` is exactly this
+    set, and `extra="forbid"` makes a reply that adds one a validation failure.
+
+    `reason` is the model's account of why, for the manager who reads it beside the
+    reporter's answer. There is no reply to it. `evidence` needs at least one entry for the
+    same reason a Hypothesis does: a verdict standing on nothing is an invented one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: VerificationOutcome
+    confidence: Confidence
+    reason: str = Field(min_length=1, max_length=MAX_VERIFICATION_REASON)
+    evidence: list[EvidenceItem] = Field(min_length=1, max_length=MAX_EVIDENCE_ITEMS)
+
+    @classmethod
+    def stub_example(cls) -> dict[str, Any]:
+        """
+        Fixed valid JSON returned by the LLM client in STUB_MODE. Kept next to the schema
+        so it cannot drift away from it.
+
+        Deliberately NOT evidence of anything: a fixed reply cannot show the model judges
+        well. The behavioural half is agent/evals/test_verification_live.py.
+        """
+        return {
+            "outcome": "escalate",
+            "confidence": "high",
+            "reason": (
+                "The reporter says it cut out twice again this week, and this is the fourth "
+                "visit for the same thermal fault since May. Cleaning is not holding."
+            ),
+            "evidence": [
+                "Reporter: not fixed - 'Cut out twice again this week. Same as before.'",
+                "2026-07-03 and 2026-09-02: both recorded as temporary fixes",
+                "4 service visits on record for this asset",
+            ],
+        }
+
+
+class VerificationResult(BaseModel):
+    """
+    The verification agent's envelope. `output` is None on a safe failure, like the
+    diagnostic's: no verdict is not a verdict to confirm, and a placeholder would be an
+    opinion nobody formed. The check's Status is the reporter's answer either way — set in
+    C# — so a failed agent costs the manager a second opinion, never a decision.
+    """
+
+    agent: str
+    status: AgentStatus
+    output: VerificationOutput | None = None
+    error: str | None = None
+    tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
+
+
 class ToolCallOutcome(BaseModel):
     """
     The result of one call to the API's tool router.
@@ -504,7 +689,7 @@ class ToolCallOutcome(BaseModel):
     `found` mirrors the API's own distinction: the tool ran and there was no such row
     (found=False) is not the same as the tool being refused (error set).
 
-    `result` is a dict for the single-row tools (get_room, get_asset) and a LIST for
+    `result` is a dict for the single-row tools (get_room, get_asset, get_work_order) and a LIST for
     get_asset_service_history, get_related_open_reports and get_open_work_orders. An empty
     list with found=True is an answer — "never serviced", "nothing open" — and is not the
     same as found=False, which means the asset itself was not there.
@@ -544,6 +729,12 @@ class RunRequest(BaseModel):
     # run. Typed by a manager, and still treated as data by the strategist's prompt.
     revision_note: str | None = Field(default=None, min_length=1, max_length=MAX_REVISION_NOTE)
 
+    # Set only when the API is asking whether a completed repair held. Its presence sends
+    # the run to the verification agent and NOTHING else — see graph.py. `description` is
+    # then the original report's, and the report pipeline does not run: re-clarifying a
+    # fault somebody already repaired would ask the reporter questions about it again.
+    verification: VerificationRequest | None = None
+
 
 class RunResponse(BaseModel):
     """
@@ -570,3 +761,8 @@ class RunResponse(BaseModel):
     # The strategist's proposal, when the graph ran it. An addition beside the diagnosis
     # for the same reason. A proposal and nothing more: the API decides what is raised.
     strategy: StrategistResult | None = None
+
+    # The verification agent's verdict, on a verification run — the only field that run
+    # fills. Its opinion, stored as VerificationCheck.AgentOutcome; the check's status is
+    # the reporter's answer, set in C#.
+    verification: VerificationResult | None = None

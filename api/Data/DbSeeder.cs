@@ -455,7 +455,7 @@ public static class DbSeeder
                 CheckStatus: VerificationStatus.Reopened,
                 DaysAgoResponded: 9,
                 ReporterComment: "Cut out twice again this week. Same as before.",
-                AgentOutcome: "repeat_failure",
+                AgentOutcome: "escalate",
                 AgentReason: "Third thermal-related intervention on this unit in five months; two prior visits recorded as temporary fixes and one as no fault found. Cleaning is not holding. Recommend replacement assessment rather than a fourth clean."),
 
             // --- Pending, and already overdue: the sweep's first work ----------

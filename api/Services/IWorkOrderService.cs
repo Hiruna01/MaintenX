@@ -73,6 +73,15 @@ public interface IWorkOrderService
     Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// One work order as facts — what `get_work_order` returns. Null when no order has that
+    /// id, which the tool router turns into found=false.
+    ///
+    /// No visibility scope, like the other tool reads: the caller is the agent service,
+    /// behind the shared secret, not a user with a role.
+    /// </summary>
+    Task<WorkOrderFactsDto?> GetWorkOrderFactsAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Work orders still open — not Completed, Rejected or Cancelled — on ANY asset in the
     /// same room as this one, this asset's own included. Newest first, capped at
     /// <see cref="MaxToolOpenWorkOrders"/>. What `get_open_work_orders` returns.

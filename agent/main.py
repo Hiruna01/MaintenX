@@ -5,7 +5,7 @@ Two endpoints, both called by the ASP.NET Core API and by nothing else — React
 Flutter never talk to this service.
 
     GET  /health   liveness plus which mode the process is in
-    POST /run      run the workflow graph over one report
+    POST /run      run the workflow graph over one report, or one completed repair
 
 /run always answers with a well-formed RunResponse. An agent that cannot do its job
 returns status "safe_failure" with empty output and a 200, because the caller is a
@@ -22,10 +22,11 @@ from fastapi import FastAPI
 from agents.clarifier import ClarifierAgent
 from agents.diagnostic import DiagnosticAgent
 from agents.strategist import ResolutionStrategist
+from agents.verification import VerificationAgent
 from config import get_settings
 from graph import build_graph
 from llm_client import LlmClient
-from schemas import RunRequest, RunResponse
+from schemas import ClarifierOutput, RunRequest, RunResponse
 from tools import ToolClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
         ClarifierAgent(llm=llm, tools=tools),
         DiagnosticAgent(llm=llm, tools=tools),
         ResolutionStrategist(llm=llm, tools=tools),
+        VerificationAgent(llm=llm, tools=tools),
     )
 
     yield
@@ -87,10 +89,32 @@ async def run(request: RunRequest) -> RunResponse:
     The clarifier's result stays at the top level, exactly where the API already reads
     it; the diagnosis and the strategist's proposal are attached beside it. Assembling the
     response is this layer's job, which keeps every node in graph.py a one-liner.
+
+    A VERIFICATION run fills `verification` and nothing else. The clarifier did not run,
+    so the top-level fields describe the run as a whole — the verification agent's name,
+    status and error — with an empty question list, because nobody was asked anything.
     """
     final_state = await app.state.graph.ainvoke(
-        {"request": request, "response": None, "diagnosis": None, "strategy": None}
+        {
+            "request": request,
+            "response": None,
+            "diagnosis": None,
+            "strategy": None,
+            "verification": None,
+        }
     )
+
+    if request.verification is not None:
+        verdict = final_state["verification"]
+        return RunResponse(
+            workflow_id=request.workflow_id,
+            agent=verdict.agent,
+            status=verdict.status,
+            output=ClarifierOutput(),
+            error=verdict.error,
+            verification=verdict,
+        )
+
     return final_state["response"].model_copy(
         update={"diagnosis": final_state["diagnosis"], "strategy": final_state["strategy"]}
     )

@@ -186,3 +186,54 @@ def test_run_rejects_an_answer_longer_than_the_apis_own_cap(client):
     )
 
     assert response.status_code == 422
+
+
+def test_a_verification_run_fills_verification_and_runs_nothing_else(client):
+    """
+    A completed repair, not a report: the verification agent answers, and the report
+    pipeline does not run — no questions, no diagnosis, no proposal. The top-level fields
+    describe the run, with an empty question list because nobody was asked anything.
+    """
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Lecture Hall A projector keeps cutting out about ten minutes into every lecture.",
+            "verification": {
+                "work_order_id": 3,
+                "reporter_confirmed": False,
+                "reporter_comment": "Cut out twice again this week. Same as before.",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    raw = response.json()
+    body = RunResponse.model_validate(raw)
+
+    assert body.agent == "verification"
+    assert body.output.questions == []
+    assert body.diagnosis is None and body.strategy is None
+
+    assert body.verification is not None
+    assert body.verification.status is AgentStatus.ok
+    assert [c.tool for c in body.verification.tool_calls] == [
+        "get_work_order",
+        "get_asset_service_history",
+        "get_related_open_reports",
+    ]
+    assert set(raw["verification"]["output"]) == {"outcome", "confidence", "reason", "evidence"}
+
+
+def test_a_verification_comment_longer_than_the_apis_cap_is_refused(client):
+    """300 characters, the same as ReporterConfirmationDto.Comment on the API side."""
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Projector cutting out.",
+            "verification": {"work_order_id": 3, "reporter_comment": "x" * 301},
+        },
+    )
+
+    assert response.status_code == 422

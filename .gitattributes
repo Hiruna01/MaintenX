@@ -10,4 +10,6 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+# iCalendar requires CRLF. Stored as LF like everything else, checked out as CRLF.
+*.ics text eol=crlf
 *.sh  text eol=lf

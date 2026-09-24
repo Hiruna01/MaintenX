@@ -259,6 +259,69 @@ var storageSettings = new StorageSettings
 
 builder.Services.AddSingleton(storageSettings);
 
+// ---------------------------------------------------------------------------
+// Campus timetable (Google Calendar, read as a service account)
+//
+// Falls back to the GOOGLE_* names used by the root .env.example. Like the agent and storage
+// settings, an unset value does not stop the API booting — a sync then reports itself
+// degraded with NotConfigured, and the slot finder reads whatever classes are cached. The
+// key is base64 of the downloaded JSON file; see GoogleCalendarSettings for why. Locally it
+// goes in dotnet user-secrets, on Render in an environment variable, never in a file.
+//
+// A value that IS set but is not a service account key stops startup, the same as a
+// misspelt time zone: pasting the raw JSON instead of its base64, or an OAuth client secret
+// instead of a service account key, is a mistake better found now than at the first sync.
+// ---------------------------------------------------------------------------
+var googleJsonBase64 = FirstSet("Google:ServiceAccountJsonBase64", "GOOGLE_SERVICE_ACCOUNT_JSON_BASE64");
+string googleServiceAccountJson = string.Empty;
+string? googleServiceAccountEmail = null;
+
+if (googleJsonBase64 is not null)
+{
+    try
+    {
+        googleServiceAccountJson = Encoding.UTF8.GetString(Convert.FromBase64String(googleJsonBase64.Trim()));
+    }
+    catch (FormatException)
+    {
+        throw new InvalidOperationException(
+            "Google:ServiceAccountJsonBase64 / GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 is not base64. " +
+            "Set it to the base64 of the service account key file (base64 -i key.json), not the JSON itself.");
+    }
+
+    try
+    {
+        googleServiceAccountEmail = GoogleCalendarClient.CreateCredential(googleServiceAccountJson).Id;
+    }
+    catch (Exception ex)
+    {
+        throw new InvalidOperationException(
+            "Google:ServiceAccountJsonBase64 / GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 does not decode to a " +
+            "service account key. Download a JSON key from IAM & Admin → Service Accounts → Keys.", ex);
+    }
+}
+
+var googleCalendarSettings = new GoogleCalendarSettings
+{
+    CalendarId = FirstSet("Google:CalendarId", "GOOGLE_CALENDAR_ID") ?? string.Empty,
+    ServiceAccountJson = googleServiceAccountJson,
+    TimeoutSeconds = FirstSet("Google:TimeoutSeconds", "GOOGLE_CALENDAR_TIMEOUT_SECONDS") is { } googleTimeout
+        ? double.Parse(googleTimeout, System.Globalization.CultureInfo.InvariantCulture)
+        : GoogleCalendarSettings.DefaultTimeoutSeconds,
+    SyncIntervalMinutes = FirstSet("Google:SyncIntervalMinutes", "TIMETABLE_SYNC_INTERVAL_MINUTES") is { } syncInterval
+        ? int.Parse(syncInterval, System.Globalization.CultureInfo.InvariantCulture)
+        : GoogleCalendarSettings.DefaultSyncIntervalMinutes
+};
+
+// A zero timeout fails every sync; a zero interval spins. Same rule as the verification sweep.
+if (googleCalendarSettings.TimeoutSeconds <= 0 || googleCalendarSettings.SyncIntervalMinutes <= 0)
+{
+    throw new InvalidOperationException(
+        "Google:TimeoutSeconds and Google:SyncIntervalMinutes must both be greater than zero.");
+}
+
+builder.Services.AddSingleton(googleCalendarSettings);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -336,6 +399,15 @@ builder.Services.AddHttpClient(SupabaseStorageService.HttpClientName, client =>
     client.Timeout = TimeSpan.FromSeconds(30);
 });
 builder.Services.AddScoped<IFileStorageService, SupabaseStorageService>();
+
+// Campus timetable. The sync is scoped (it writes through AppDbContext); the Google client
+// is a singleton, like the workflow queue, because it holds no DbContext and keeping one
+// CalendarService reuses the service account's access token instead of fetching a new one
+// per sync. The worker runs the sync on a timer; POST /api/timetable/sync runs it on demand.
+// The slot finder in WorkOrderService reads ClassScheduleSlot and never calls Google.
+builder.Services.AddSingleton<IGoogleCalendarClient, GoogleCalendarClient>();
+builder.Services.AddScoped<ITimetableSyncService, GoogleCalendarSyncService>();
+builder.Services.AddHostedService<TimetableSyncWorker>();
 
 // Auth
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -450,6 +522,24 @@ if (!storageSettings.IsConfigured)
     app.Logger.LogWarning(
         "No Supabase Storage configured (Supabase:Url and Supabase:ServiceKey / SUPABASE_URL " +
         "and SUPABASE_SERVICE_KEY). Every photo upload will be refused with 503.");
+}
+
+// Without a timetable the slot finder sees no classes and offers every room as free. Say so
+// once; when it IS configured, say which address the calendar has to be shared with, which
+// is the setup step most easily missed.
+if (!googleCalendarSettings.IsConfigured)
+{
+    app.Logger.LogWarning(
+        "No Google Calendar configured (Google:CalendarId and Google:ServiceAccountJsonBase64 / " +
+        "GOOGLE_CALENDAR_ID and GOOGLE_SERVICE_ACCOUNT_JSON_BASE64). The timetable will not sync, " +
+        "and the slot finder will only see classes already in the database.");
+}
+else
+{
+    app.Logger.LogInformation(
+        "Timetable sync reads Google Calendar {CalendarId} as {ServiceAccountEmail}. " +
+        "The calendar must be shared with that address.",
+        googleCalendarSettings.CalendarId, googleServiceAccountEmail);
 }
 
 // First in the pipeline so it wraps everything after it.

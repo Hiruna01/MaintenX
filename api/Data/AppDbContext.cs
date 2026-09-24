@@ -479,6 +479,17 @@ public class AppDbContext : DbContext
             else if (entry.State == EntityState.Modified)
             {
                 entry.Property(nameof(User.CreatedAt)).IsModified = false;
+
+                // A re-sync that finds a class unchanged still stamps SyncedAt, and that alone
+                // is not an update: UpdatedAt says when the CLASS last changed, SyncedAt says
+                // when it was last confirmed. Bumping both would make them the same column.
+                if (entry.Entity is ClassScheduleSlot
+                    && entry.Properties.Where(p => p.IsModified)
+                        .All(p => p.Metadata.Name == nameof(ClassScheduleSlot.SyncedAt)))
+                {
+                    continue;
+                }
+
                 entry.Property(nameof(User.UpdatedAt)).CurrentValue = now;
             }
         }

@@ -7,9 +7,11 @@ import '../auth/auth_controller.dart';
 import '../auth/auth_state.dart';
 import '../reports/my_reports_screen.dart';
 import '../reports/submit_report_screen.dart';
+import '../workorders/my_jobs_screen.dart';
 
-/// The landing screen: a card per thing the app can do. Assigned work orders arrive with
-/// that feature.
+/// The landing screen: a card per thing the app can do. Navigation is role-based — "My
+/// jobs" is offered to a Technician only, since the API gives nobody else a queue of their
+/// own there.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -42,6 +44,18 @@ class HomeScreen extends ConsumerWidget {
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             const SizedBox(height: 24),
+            if (user?.role == Roles.technician) ...[
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.handyman_outlined),
+                  title: const Text('My jobs'),
+                  subtitle: const Text('Work orders assigned to you, and closing them off.'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => context.go(MyJobsScreen.path),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
             Card(
               child: ListTile(
                 leading: const Icon(Icons.report_outlined),

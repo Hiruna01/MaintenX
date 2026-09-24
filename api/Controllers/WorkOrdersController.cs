@@ -229,6 +229,89 @@ public class WorkOrdersController : ControllerBase
     }
 
     /// <summary>
+    /// Attaches the completion photo — evidence the work was done. multipart/form-data with
+    /// one file part named <c>photo</c>, JPEG or PNG, at most 5 MB. Technician policy, and
+    /// then the ASSIGNED technician only, on an order that is still live work.
+    ///
+    /// The same shape as POST /api/reports/{id}/photo, through the same IFileStorageService
+    /// and ImageUploadRules: the uploaded file name is never read, only the URL is stored,
+    /// and a storage failure is a 503 that records nothing. Called BEFORE complete, which
+    /// keeps the URL; see CompleteWorkOrderDto.CompletionPhotoUrl.
+    /// </summary>
+    [HttpPost("{id:int}/photo")]
+    [Authorize(Policy = nameof(Role.Technician))]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(typeof(CompletionPhotoDto), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    public async Task<ActionResult<CompletionPhotoDto>> UploadPhoto(
+        int id,
+        IFormFile photo,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCaller(out var callerId, out _))
+        {
+            return Unauthorized();
+        }
+
+        await using var content = photo.OpenReadStream();
+
+        var result = await _workOrderService.AttachCompletionPhotoAsync(
+            id, callerId, content, photo.ContentType, photo.Length, cancellationToken);
+
+        return result.Outcome switch
+        {
+            CompletionPhotoOutcome.Success =>
+                CreatedAtAction(nameof(GetById), new { id }, new CompletionPhotoDto(result.PhotoUrl!)),
+
+            CompletionPhotoOutcome.NotFound => NotFound(),
+
+            CompletionPhotoOutcome.NotAssignedToCaller =>
+                NotYours("A completion photo is attached by the technician the work order is "
+                       + "assigned to, and this one is not assigned to you."),
+
+            CompletionPhotoOutcome.InvalidState => Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Work order is not in a state that allows this",
+                Detail = $"Work order {id} is not live work, so there is no job to attach a photo "
+                       + "to. A photo is attached before the job is completed."
+            }),
+
+            CompletionPhotoOutcome.UnsupportedContentType =>
+                PhotoInvalid("The photo must be a JPEG (image/jpeg) or a PNG (image/png)."),
+
+            CompletionPhotoOutcome.TooLarge =>
+                PhotoInvalid($"The photo must be at most {ImageUploadRules.MaxBytes / (1024 * 1024)} MB."),
+
+            CompletionPhotoOutcome.ContentDoesNotMatchType =>
+                PhotoInvalid($"The file is not a valid {photo.ContentType} image."),
+
+            CompletionPhotoOutcome.StorageUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Photo storage is unavailable",
+                Detail = "The photo could not be stored right now and has not been attached. "
+                       + "The work order is unchanged. Try again, or complete it without one."
+            }),
+
+            // Unreachable, and deliberately loud rather than a quiet 500.
+            _ => throw new InvalidOperationException($"Unhandled photo outcome '{result.Outcome}'.")
+        };
+    }
+
+    /// <summary>The three file failures are all 400s against the photo field.</summary>
+    private ActionResult PhotoInvalid(string detail)
+    {
+        ModelState.AddModelError("photo", detail);
+        return ValidationProblem(ModelState);
+    }
+
+    /// <summary>
     /// A manager's yes on an order waiting for one. FacilitiesManager only, 204; anything
     /// not AwaitingApproval is a 409. Who approved is taken from the token.
     /// </summary>

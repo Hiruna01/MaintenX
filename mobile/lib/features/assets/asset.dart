@@ -21,6 +21,9 @@ class ServiceOutcomes {
   static const String partReplaced = 'PartReplaced';
   static const String noFaultFound = 'NoFaultFound';
 
+  /// Every member, for the completion form's outcome picker.
+  static const List<String> all = [resolved, temporaryFix, partReplaced, noFaultFound];
+
   static String label(String outcome) => splitPascalCase(outcome);
 }
 

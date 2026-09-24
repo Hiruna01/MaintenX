@@ -30,11 +30,14 @@ public record CompleteWorkOrderDto(
     // Copied verbatim into ServiceRecord.TechnicianNote, which the diagnostic agent reads
     // across months of history looking for a repeat failure. The floor is there to refuse
     // "done" — a note that says nothing is worse than a missing one, because it looks like
-    // evidence.
+    // evidence. Twenty characters is roughly "what was wrong, what was done": the shortest
+    // note a diagnostic run months later can still learn something from. Both clients hold
+    // the same floor, but this is the one that counts.
     [Required]
-    [StringLength(2000, MinimumLength = 10)]
+    [StringLength(2000, MinimumLength = 20)]
     string ResolutionNote,
 
     // A URL to wherever the image is stored, never the image bytes — same rule as
-    // Report.PhotoUrl. Optional: most jobs are closed without a photo.
+    // Report.PhotoUrl. Optional: most jobs are closed without a photo. Left out, the order
+    // keeps the photo already uploaded through POST {id}/photo; sent, it replaces it.
     [MaxLength(500)] string? CompletionPhotoUrl);

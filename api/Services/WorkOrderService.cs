@@ -52,6 +52,7 @@ public class WorkOrderService : IWorkOrderService
     private readonly TimeProvider _time;
     private readonly SchedulingSettings _scheduling;
     private readonly IAssetService _assets;
+    private readonly IFileStorageService _fileStorage;
 
     public WorkOrderService(
         AppDbContext db,
@@ -60,7 +61,8 @@ public class WorkOrderService : IWorkOrderService
         IVerificationService verificationService,
         TimeProvider time,
         SchedulingSettings scheduling,
-        IAssetService assets)
+        IAssetService assets,
+        IFileStorageService fileStorage)
     {
         _db = db;
         _approval = approval;
@@ -69,6 +71,7 @@ public class WorkOrderService : IWorkOrderService
         _time = time;
         _scheduling = scheduling;
         _assets = assets;
+        _fileStorage = fileStorage;
     }
 
     /// <summary>
@@ -235,7 +238,11 @@ public class WorkOrderService : IWorkOrderService
             return null;
         }
 
-        return ToDetailDto(order);
+        // Read only once the caller is known to be allowed the order: the diagnosis is the
+        // report's, and nobody who cannot see the order should be handed it this way.
+        var (diagnosis, _) = await LatestAgentAnalysisAsync(order.ReportId, cancellationToken);
+
+        return ToDetailDto(order, diagnosis);
     }
 
     public async Task<PagedResult<ApprovalCaseDto>> GetApprovalQueueAsync(
@@ -278,7 +285,7 @@ public class WorkOrderService : IWorkOrderService
 
             var (diagnosis, proposal) = await LatestAgentAnalysisAsync(order.ReportId, cancellationToken);
 
-            cases.Add(new ApprovalCaseDto(ToDetailDto(order), asset, summary, diagnosis, proposal));
+            cases.Add(new ApprovalCaseDto(ToDetailDto(order, diagnosis), asset, summary, diagnosis, proposal));
         }
 
         return new PagedResult<ApprovalCaseDto>(cases, page, pageSize, totalCount);
@@ -320,17 +327,21 @@ public class WorkOrderService : IWorkOrderService
         query
             .Include(w => w.Report)
             .Include(w => w.Asset)
+                .ThenInclude(a => a!.Room)
             .Include(w => w.AssignedTechnician)
             .Include(w => w.ApprovedBy)
             .Include(w => w.ScheduledSlots);
 
-    private WorkOrderDetailDto ToDetailDto(WorkOrder order)
+    private WorkOrderDetailDto ToDetailDto(WorkOrder order, AgentDiagnosisDto? diagnosis)
     {
+        var room = order.Asset!.Room!;
+
         return new WorkOrderDetailDto(
             order.Id,
             order.ReportId,
             order.Report!.Description,
             ToAssetDto(order.Asset!),
+            new RoomDto(room.Id, room.BuildingId, room.Name, room.Code, room.Floor, room.CreatedAt, room.UpdatedAt),
             order.AssignedTechnician is null ? null : ToUserDto(order.AssignedTechnician),
             order.Status,
             order.Strategy,
@@ -353,7 +364,8 @@ public class WorkOrderService : IWorkOrderService
                 .OrderBy(s => s.Id)
                 .Select(s => new ScheduledSlotDto(
                     s.Id, s.WorkOrderId, s.StartsAt, s.EndsAt, s.CreatedAt, s.UpdatedAt))
-                .ToList());
+                .ToList(),
+            diagnosis);
     }
 
     public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>
@@ -539,7 +551,11 @@ public class WorkOrderService : IWorkOrderService
         order.Status = WorkOrderStatus.Completed;
         order.ActualCost = dto.ActualCost!.Value;
         order.ResolutionNote = dto.ResolutionNote;
-        order.CompletionPhotoUrl = dto.CompletionPhotoUrl;
+
+        // A photo already uploaded through POST {id}/photo stays unless a URL is sent in its
+        // place: the phone uploads first and then completes without repeating it, and a
+        // null here must not quietly erase the evidence it just attached.
+        order.CompletionPhotoUrl = dto.CompletionPhotoUrl ?? order.CompletionPhotoUrl;
         order.CompletedAt = now;
 
         // APPENDED, never updated: this is the immutable history. The note goes in
@@ -583,6 +599,67 @@ public class WorkOrderService : IWorkOrderService
 
         await transaction.CommitAsync(cancellationToken);
         return WorkOrderActionOutcome.Success;
+    }
+
+    public async Task<CompletionPhotoResult> AttachCompletionPhotoAsync(
+        int id,
+        int callerId,
+        Stream content,
+        string? contentType,
+        long length,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await _db.WorkOrders.FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
+
+        if (order is null)
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.NotFound);
+        }
+
+        // Identity before state before content — the same order as CompleteAsync, so
+        // another technician learns nothing about the order or what was sent.
+        if (order.AssignedTechnicianId != callerId)
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.NotAssignedToCaller);
+        }
+
+        if (!ActiveStatuses.Contains(order.Status))
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.InvalidState);
+        }
+
+        // ImageUploadRules, shared with the report photo, so the two uploads cannot come to
+        // two different answers about the same file.
+        if (!ImageUploadRules.IsAllowedContentType(contentType))
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.UnsupportedContentType);
+        }
+
+        if (length > ImageUploadRules.MaxBytes)
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.TooLarge);
+        }
+
+        if (!await ImageUploadRules.HasMatchingSignatureAsync(content, contentType!, cancellationToken))
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.ContentDoesNotMatchType);
+        }
+
+        var url = await _fileStorage.UploadAsync(
+            content, contentType!.ToLowerInvariant(), $"workorders/{order.Id}", cancellationToken);
+
+        // Nothing is written on failure: the order keeps whatever photo it had, or none.
+        if (url is null)
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.StorageUnavailable);
+        }
+
+        // A second upload replaces the URL, the earlier object left orphaned in the bucket —
+        // the same trade as the report photo.
+        order.CompletionPhotoUrl = url;
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return new CompletionPhotoResult(CompletionPhotoOutcome.Success, url);
     }
 
     public async Task<WorkOrderActionOutcome> ApproveAsync(

@@ -1,4 +1,5 @@
 using CampusFacilities.Api.Models;
+using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace CampusFacilities.Api.Data;
@@ -443,14 +444,49 @@ public class AppDbContext : DbContext
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        CheckWorkflowTransitions();
         ApplyTimestamps();
         return base.SaveChangesAsync(cancellationToken);
     }
 
     public override int SaveChanges()
     {
+        CheckWorkflowTransitions();
         ApplyTimestamps();
         return base.SaveChanges();
+    }
+
+    /// <summary>
+    /// The state machine's backstop. Every service moves a workflow through
+    /// WorkflowTransitions.Move, which throws before anything else happens; this refuses the
+    /// save for any changed CurrentState that did not — a direct assignment somebody added
+    /// later — so "no state changes anywhere else" is enforced rather than hoped for.
+    ///
+    /// It compares the value loaded from the database with the one being written, so a unit
+    /// of work moves a workflow at most ONE step per save; two Moves before one save would be
+    /// checked as a single jump, and the runner saves after each for that reason. A NEW row is
+    /// not a transition and is not checked: StartAsync creates every workflow as Submitted,
+    /// and the demo seeder writes its rows where a real run would have left them.
+    /// </summary>
+    private void CheckWorkflowTransitions()
+    {
+        foreach (var entry in ChangeTracker.Entries<AgentWorkflow>())
+        {
+            if (entry.State != EntityState.Modified)
+            {
+                continue;
+            }
+
+            var state = entry.Property(w => w.CurrentState);
+
+            if (state.IsModified
+                && state.OriginalValue != state.CurrentValue
+                && !WorkflowTransitions.CanReach(state.OriginalValue, state.CurrentValue))
+            {
+                throw new InvalidWorkflowTransitionException(
+                    entry.Entity.Id, state.OriginalValue, state.CurrentValue);
+            }
+        }
     }
 
     /// <summary>

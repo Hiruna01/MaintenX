@@ -1,5 +1,6 @@
 using System.Text.Json;
 using CampusFacilities.Api.Dtos;
+using CampusFacilities.Api.Models;
 
 namespace CampusFacilities.Api.Services;
 
@@ -7,6 +8,21 @@ namespace CampusFacilities.Api.Services;
 /// The background half of "POST returns 202". A BackgroundService is a long-running
 /// IHostedService: the host starts it once at boot and it sits on the queue for the
 /// lifetime of the process, so no request thread ever waits for agent work.
+///
+/// It advances a workflow ONE AGENT AT A TIME through the state machine
+/// (WorkflowTransitions): the clarifier's step is recorded and then its transition made,
+/// then the diagnostic's step and its transition, then the strategist's. Each save stands on
+/// its own, so a poll of GET /api/workflows/{id} sees the run move agent by agent.
+///
+/// It STOPS at the two human pauses and never waits in them. AwaitingClarification ends the
+/// run; the reporter's answers re-queue the id and the run resumes from Diagnosing.
+/// AwaitingManagerApproval is never reached by the runner at all — the workflow waits in
+/// Strategizing with the proposal until a manager raises the order, and the order's gate
+/// decides. Nothing here blocks on a person; the queue simply has nothing for it.
+///
+/// One /run call per segment between pauses, not per agent: the agent service runs the
+/// graph's agents in order inside one call and returns every result (graph.py routes it).
+/// The per-agent audit and transitions happen here, from those results, in graph order.
 /// </summary>
 public class WorkflowRunner : BackgroundService
 {
@@ -55,8 +71,8 @@ public class WorkflowRunner : BackgroundService
 
     /// <summary>
     /// Writes the clarifier's AGENT-LEVEL step for this run — the first of up to three (see
-    /// <see cref="RecordDownstreamStepsAsync"/>), and the only one written when the call
-    /// never completed, because then there is no reply to read anything else out of.
+    /// <see cref="RecordDownstreamStepAsync"/>), and the only one written when the call
+    /// never completed or the clarifier paused the run for questions.
     ///
     /// Only agent-level: the tool calls the agent made on its way here already wrote their
     /// own AgentStep rows from InternalToolsController, which sees every call including the
@@ -64,8 +80,8 @@ public class WorkflowRunner : BackgroundService
     /// every tool call in the audit trail, so ToolCallsJson is the empty array and the
     /// controller stays the single owner of those rows.
     ///
-    /// DurationMs is the WHOLE /run call — the clarifier, the diagnostic and the strategist
-    /// ran inside it one after another, and the agent service reports no split between them.
+    /// DurationMs is the WHOLE /run call — when the clarifier asked nothing, the diagnostic
+    /// and the strategist ran inside it too, and the agent service reports no split.
     /// </summary>
     private static async Task RecordAgentStepAsync(
         IWorkflowService workflows,
@@ -93,40 +109,32 @@ public class WorkflowRunner : BackgroundService
     }
 
     /// <summary>
-    /// One agent-level step each for the diagnostic and the strategist, beside the
-    /// clarifier's, so a diagnosis and a proposal are kept rather than computed and thrown
-    /// away. The output goes in verbatim — the audit copy, never edited — and the approval
-    /// queue reads it back from here (see AgentAnalysis). Same "[]" ToolCallsJson as the
-    /// clarifier's step, for the same reason: their tool calls are already rows of their own.
+    /// One agent-level step for the diagnostic or the strategist, beside the clarifier's, so a
+    /// diagnosis and a proposal are kept rather than computed and thrown away. The output goes
+    /// in verbatim — the audit copy, never edited — and the approval queue reads it back from
+    /// here (see AgentAnalysis). Same "[]" ToolCallsJson as the clarifier's step, for the same
+    /// reason: their tool calls are already rows of their own.
     ///
-    /// DurationMs is 0 on these on purpose. They ran inside the one /run call whose time is
-    /// on the clarifier's step, and the agent reports no per-agent split; dividing it up here
-    /// would invent one.
-    ///
-    /// Recorded even when the clarifier failed: they are what the agent actually returned,
-    /// and an audit trail that dropped them would say they never ran. Nothing reads them to
-    /// move the workflow — what a diagnosis MEANS for the fault is still decided in C# by
-    /// whoever raises the work order.
+    /// <paramref name="durationMs"/> is the whole call's time on the FIRST agent that ran in
+    /// it and 0 on the rest: the agent reports no per-agent split, and dividing it up here
+    /// would invent one. On a first run that is the clarifier's step, so both of these get 0;
+    /// on a resume after clarification the diagnostic ran first and carries it.
     /// </summary>
-    private static async Task RecordDownstreamStepsAsync(
+    private static Task RecordDownstreamStepAsync(
         IWorkflowService workflows,
         int workflowId,
-        AgentRunResponse response,
-        CancellationToken cancellationToken)
-    {
-        foreach (var result in response.DownstreamResults())
-        {
-            await workflows.RecordStepAsync(
-                workflowId,
-                agentName: result.AgentName,
-                toolCallsJson: "[]",
-                payloadJson: result.OutputJson,
-                durationMs: 0,
-                validationResult: result.Succeeded ? "Ok" : "SafeFailure",
-                errorMessage: result.Error,
-                cancellationToken);
-        }
-    }
+        DownstreamAgentResult result,
+        int durationMs,
+        CancellationToken cancellationToken) =>
+        workflows.RecordStepAsync(
+            workflowId,
+            agentName: result.AgentName,
+            toolCallsJson: "[]",
+            payloadJson: result.OutputJson,
+            durationMs: durationMs,
+            validationResult: result.Succeeded ? "Ok" : "SafeFailure",
+            errorMessage: result.Error,
+            cancellationToken);
 
     /// <summary>
     /// Writes the clarifier's questions as ClarificationQuestion rows — the working data
@@ -175,7 +183,12 @@ public class WorkflowRunner : BackgroundService
             reportId.Value, workflowId, questions, cancellationToken);
     }
 
-    private async Task ProcessAsync(int workflowId, CancellationToken cancellationToken)
+    /// <summary>
+    /// One dequeued workflow, start to pause. Internal rather than private so
+    /// WorkflowRunnerTests can drive a single run without starting the background loop — the
+    /// same reason SlotRules is internal.
+    /// </summary>
+    internal async Task ProcessAsync(int workflowId, CancellationToken cancellationToken)
     {
         // One scope per workflow: AppDbContext and IWorkflowService are scoped, and a
         // DbContext must never be shared across concurrent units of work.
@@ -187,13 +200,15 @@ public class WorkflowRunner : BackgroundService
 
         try
         {
-            var started = await workflows.BeginProcessingAsync(workflowId, cancellationToken);
+            var from = await workflows.BeginProcessingAsync(workflowId, cancellationToken);
 
-            if (!started)
+            if (from is null)
             {
-                // Either the row is gone or something already moved it past Submitted.
+                // Gone, waiting on a person, or past the agents. A revision re-queues its
+                // workflow in Strategizing and lands here too: re-running the strategist on
+                // its own is not wired yet (see WorkOrderService.RequestRevisionAsync).
                 _logger.LogWarning(
-                    "Workflow {WorkflowId} was not in a startable state; skipping.", workflowId);
+                    "Workflow {WorkflowId} was not in a state the runner starts from; skipping.", workflowId);
                 return;
             }
 
@@ -213,64 +228,14 @@ public class WorkflowRunner : BackgroundService
                 ? null
                 : await reports.GetByIdAsync(workflow.ReportId.Value, cancellationToken);
 
-            var call = await agent.RunAsync(
-                new AgentRunRequest(
-                    WorkflowId: workflowId,
-                    Description: workflow.Objective,
-                    RoomId: report?.RoomId,
-                    // The clarifier can look a building up, but nothing here knows which
-                    // one: a report names a room, and resolving room -> building would be
-                    // a query this runner has no reason to make. The agent can call
-                    // get_room and read buildingId off the result if it needs it.
-                    BuildingId: null,
-                    // Set when triage or a QR scan named the equipment. It is what lets the
-                    // diagnostic and the strategist read the machine's service history.
-                    AssetId: report?.AssetId),
-                cancellationToken);
-
-            await RecordAgentStepAsync(workflows, workflowId, call, cancellationToken);
-
-            if (call.Response is not null)
+            if (from == WorkflowState.Submitted)
             {
-                await RecordDownstreamStepsAsync(workflows, workflowId, call.Response, cancellationToken);
+                await RunFromSubmittedAsync(workflows, clarifications, agent, workflow, report, cancellationToken);
             }
-
-            // Two different failures, one outcome. A call that never completed (timeout,
-            // refused connection, bad body) and a call that completed with the agent
-            // reporting it could not produce output both leave the workflow unable to
-            // proceed, so both move it to Failed with the reason on the row rather than
-            // leaving it parked in Diagnosing forever.
-            if (!call.Ok || call.Response is null)
+            else
             {
-                // call.Error is already a complete sentence from AgentClient; prefixing it
-                // here produced "The agent service could not be reached: Could not reach
-                // the agent service: ...", which a user reads on the workflow page.
-                await workflows.FailAsync(
-                    workflowId,
-                    call.Error ?? "The agent service call failed for an unknown reason.",
-                    cancellationToken);
-                return;
+                await ResumeAfterClarificationAsync(workflows, clarifications, agent, workflow, report, cancellationToken);
             }
-
-            if (call.Response.IsSafeFailure)
-            {
-                await workflows.FailAsync(
-                    workflowId,
-                    $"The clarifier could not produce questions: {call.Response.Error ?? "no reason given"}",
-                    cancellationToken);
-                return;
-            }
-
-            // The questions are now written TWICE, on purpose and to two different ends.
-            // RecordAgentStepAsync above stored the agent's payload verbatim: that is the
-            // audit trail and it is never edited. This stores the same questions as rows
-            // the application can actually use — queried per report, ordered, rendered as
-            // a form and answered. Neither replaces the other.
-            await RecordClarificationQuestionsAsync(
-                clarifications, workflow.ReportId, workflowId, call.Response, cancellationToken);
-
-            await workflows.CompleteClarificationAsync(
-                workflowId, call.Response.QuestionCount, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -284,9 +249,185 @@ public class WorkflowRunner : BackgroundService
             }
             catch (Exception failureEx)
             {
+                // Including an illegal transition: if the workflow already reached a pause,
+                // Failed is not a move it may make, and the pause is the truer state.
                 _logger.LogError(failureEx,
                     "Could not mark workflow {WorkflowId} as failed.", workflowId);
             }
         }
     }
+
+    /// <summary>
+    /// A fresh report: the clarifier first, and — only if it asked nothing — the diagnostic
+    /// and the strategist, which graph.py runs in the same call.
+    /// </summary>
+    private async Task RunFromSubmittedAsync(
+        IWorkflowService workflows,
+        IClarificationService clarifications,
+        IAgentClient agent,
+        WorkflowDetailDto workflow,
+        ReportDto? report,
+        CancellationToken cancellationToken)
+    {
+        var call = await agent.RunAsync(RequestFor(workflow, report, answers: null), cancellationToken);
+
+        await RecordAgentStepAsync(workflows, workflow.Id, call, cancellationToken);
+
+        // Two different failures, one outcome. A call that never completed (timeout,
+        // refused connection, bad body) and a clarifier that reported it could not produce
+        // output both leave the run unable to decide whether to pause, so both move it to
+        // Failed with the reason on the row rather than leaving it parked in Submitted.
+        if (!call.Ok || call.Response is null)
+        {
+            // call.Error is already a complete sentence from AgentClient; prefixing it
+            // here produced "The agent service could not be reached: Could not reach
+            // the agent service: ...", which a user reads on the workflow page.
+            await workflows.FailAsync(
+                workflow.Id,
+                call.Error ?? "The agent service call failed for an unknown reason.",
+                cancellationToken);
+            return;
+        }
+
+        if (call.Response.IsSafeFailure)
+        {
+            await workflows.FailAsync(
+                workflow.Id,
+                $"The clarifier could not produce questions: {call.Response.Error ?? "no reason given"}",
+                cancellationToken);
+            return;
+        }
+
+        // The questions are now written TWICE, on purpose and to two different ends.
+        // RecordAgentStepAsync above stored the agent's payload verbatim: that is the
+        // audit trail and it is never edited. This stores the same questions as rows
+        // the application can actually use — queried per report, ordered, rendered as
+        // a form and answered. Neither replaces the other.
+        await RecordClarificationQuestionsAsync(
+            clarifications, workflow.ReportId, workflow.Id, call.Response, cancellationToken);
+
+        await workflows.CompleteClarificationAsync(
+            workflow.Id, call.Response.QuestionCount, cancellationToken);
+
+        if (call.Response.QuestionCount > 0)
+        {
+            // HUMAN PAUSE 1. The run ends here, and graph.py stopped at the clarifier for
+            // the same reason: a diagnosis made before the answers would be made without
+            // the detail the clarifier just said it needed.
+            return;
+        }
+
+        // The clarifier's step already carries the whole call's time.
+        await AdvanceThroughDownstreamAsync(workflows, workflow.Id, call.Response, firstDurationMs: 0, cancellationToken);
+    }
+
+    /// <summary>
+    /// The reporter has answered, and ClarificationService moved the workflow to Diagnosing.
+    /// The answers go to the agent service, whose graph goes straight to the diagnostic when
+    /// it sees them — the clarifier is not asked again about a report it already asked about.
+    /// </summary>
+    private async Task ResumeAfterClarificationAsync(
+        IWorkflowService workflows,
+        IClarificationService clarifications,
+        IAgentClient agent,
+        WorkflowDetailDto workflow,
+        ReportDto? report,
+        CancellationToken cancellationToken)
+    {
+        // THIS run's questions only: a report may have been clarified by an earlier run, and
+        // those answers were given to other questions.
+        var answers = workflow.ReportId is null
+            ? new List<AgentClarificationAnswer>()
+            : (await clarifications.GetForReportAsync(workflow.ReportId.Value, cancellationToken))
+                .Where(q => q.WorkflowId == workflow.Id && q.AnswerText is not null)
+                .OrderBy(q => q.DisplayOrder)
+                .Select(q => new AgentClarificationAnswer(q.QuestionText, q.AnswerText!))
+                .ToList();
+
+        if (answers.Count == 0)
+        {
+            // Sent without answers, the graph would run the clarifier again and ask the same
+            // questions — the loop the answers exist to break. Refused rather than run.
+            await workflows.FailAsync(
+                workflow.Id,
+                "The workflow was resumed for diagnosis but has no answered clarification questions.",
+                cancellationToken);
+            return;
+        }
+
+        var call = await agent.RunAsync(RequestFor(workflow, report, answers), cancellationToken);
+
+        if (!call.Ok || call.Response is null)
+        {
+            // No clarifier ran, so there is no clarifier step to write — the reason is on
+            // the workflow row, where a poll reads it.
+            await workflows.FailAsync(
+                workflow.Id,
+                call.Error ?? "The agent service call failed for an unknown reason.",
+                cancellationToken);
+            return;
+        }
+
+        await AdvanceThroughDownstreamAsync(workflows, workflow.Id, call.Response, call.DurationMs, cancellationToken);
+    }
+
+    /// <summary>
+    /// The diagnostic, then the strategist: each one's step written, then its transition
+    /// made, in graph order. The workflow is in Diagnosing on the way in and in Strategizing
+    /// on the way out, waiting for a manager to raise the order.
+    ///
+    /// An agent that safe-failed still moves the workflow on — the failure is on its step,
+    /// and a missing diagnosis or proposal costs advice, not the ability to raise an order.
+    /// An agent that is ABSENT from the reply is different: the graph did not do what this
+    /// runner was promised, so the run is Failed with that said.
+    /// </summary>
+    private static async Task AdvanceThroughDownstreamAsync(
+        IWorkflowService workflows,
+        int workflowId,
+        AgentRunResponse response,
+        int firstDurationMs,
+        CancellationToken cancellationToken)
+    {
+        var results = response.DownstreamResults();
+
+        var diagnosis = results.FirstOrDefault(r => r.AgentName == AgentRunResponse.DiagnosticAgentName);
+
+        if (diagnosis is null)
+        {
+            await workflows.FailAsync(workflowId, "The agent service returned no diagnosis.", cancellationToken);
+            return;
+        }
+
+        await RecordDownstreamStepAsync(workflows, workflowId, diagnosis, firstDurationMs, cancellationToken);
+        await workflows.CompleteDiagnosisAsync(workflowId, diagnosis.Succeeded, cancellationToken);
+
+        var proposal = results.FirstOrDefault(r => r.AgentName == AgentRunResponse.StrategistAgentName);
+
+        if (proposal is null)
+        {
+            await workflows.FailAsync(workflowId, "The agent service returned no proposal.", cancellationToken);
+            return;
+        }
+
+        await RecordDownstreamStepAsync(workflows, workflowId, proposal, 0, cancellationToken);
+        await workflows.RecordProposalAsync(workflowId, proposal.Succeeded, cancellationToken);
+    }
+
+    private static AgentRunRequest RequestFor(
+        WorkflowDetailDto workflow,
+        ReportDto? report,
+        IReadOnlyList<AgentClarificationAnswer>? answers) =>
+        new(
+            WorkflowId: workflow.Id,
+            Description: workflow.Objective,
+            RoomId: report?.RoomId,
+            // The clarifier can look a building up, but nothing here knows which one: a
+            // report names a room, and resolving room -> building would be a query this
+            // runner has no reason to make. The agent can call get_room and read buildingId
+            // off the result if it needs it.
+            BuildingId: null,
+            // Set when triage or a QR scan named the equipment. It is what lets the
+            // diagnostic and the strategist read the machine's service history.
+            AssetId: report?.AssetId,
+            ClarificationAnswers: answers);
 }

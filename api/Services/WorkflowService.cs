@@ -139,51 +139,60 @@ public class WorkflowService : IWorkflowService
         return true;
     }
 
-    public async Task<bool> BeginProcessingAsync(int workflowId, CancellationToken cancellationToken = default)
+    public async Task<WorkflowState?> BeginProcessingAsync(int workflowId, CancellationToken cancellationToken = default)
     {
         var workflow = await _db.AgentWorkflows
             .FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
 
-        if (workflow is null)
+        // The only two states an agent run starts from. Anything else is waiting on a
+        // person or already past the agents, and a stray queue entry must not rewind it.
+        if (workflow is null
+            || workflow.CurrentState is not (WorkflowState.Submitted or WorkflowState.Diagnosing))
         {
-            return false;
+            return null;
         }
 
-        // Only a freshly submitted workflow may be started. Anything else is either
-        // already running or finished, and a second queue entry must not rewind it.
-        if (workflow.CurrentState != WorkflowState.Submitted)
-        {
-            return false;
-        }
-
-        workflow.StartedAt = DateTime.UtcNow;
-        workflow.CurrentState = WorkflowState.Diagnosing;
+        // When the runner FIRST picked it up — a resume after clarification keeps it.
+        workflow.StartedAt ??= DateTime.UtcNow;
 
         await _db.SaveChangesAsync(cancellationToken);
-        return true;
+        return workflow.CurrentState;
     }
 
-    public async Task<bool> FailAsync(int workflowId, string reason, CancellationToken cancellationToken = default)
-    {
-        var workflow = await _db.AgentWorkflows
-            .FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
+    public Task<bool> FailAsync(int workflowId, string reason, CancellationToken cancellationToken = default) =>
+        MoveAsync(workflowId, WorkflowTrigger.AgentFailed, reason, completed: true, cancellationToken);
 
-        if (workflow is null)
-        {
-            return false;
-        }
-
-        workflow.CurrentState = WorkflowState.Failed;
-        workflow.Outcome = reason;
-        workflow.CompletedAt = DateTime.UtcNow;
-
-        await _db.SaveChangesAsync(cancellationToken);
-        return true;
-    }
-
-    public async Task<bool> CompleteClarificationAsync(
+    public Task<bool> CompleteClarificationAsync(
         int workflowId,
         int questionCount,
+        CancellationToken cancellationToken = default) =>
+        MoveAsync(
+            workflowId,
+            WorkflowTransitions.ForClarification(questionCount),
+            questionCount > 0
+                // The questions themselves are on the AgentStep and in ClarificationQuestion
+                // rows; POST /api/reports/{id}/clarifications is what moves it on again.
+                ? $"The clarifier asked {questionCount} question(s) about this report."
+                : "The clarifier found nothing that needed clarifying.",
+            completed: false,
+            cancellationToken);
+
+    public Task<bool> CompleteDiagnosisAsync(
+        int workflowId,
+        bool diagnosed,
+        CancellationToken cancellationToken = default) =>
+        MoveAsync(
+            workflowId,
+            WorkflowTrigger.Diagnosed,
+            diagnosed
+                ? "Diagnosed; the strategist is proposing a resolution."
+                : "The diagnostic produced no diagnosis; the strategist is proposing without one.",
+            completed: false,
+            cancellationToken);
+
+    public async Task<bool> RecordProposalAsync(
+        int workflowId,
+        bool proposed,
         CancellationToken cancellationToken = default)
     {
         var workflow = await _db.AgentWorkflows
@@ -194,22 +203,40 @@ public class WorkflowService : IWorkflowService
             return false;
         }
 
-        if (questionCount > 0)
+        workflow.Outcome = proposed
+            ? "The strategist has proposed a resolution. Waiting for a facilities manager to raise the work order."
+            : "The strategist produced no proposal. Waiting for a facilities manager to raise the work order.";
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// One transition, saved on its own. Through WorkflowTransitions.Move, so an illegal one
+    /// throws before anything is written. <paramref name="completed"/> stamps CompletedAt
+    /// for a run that has ended.
+    /// </summary>
+    private async Task<bool> MoveAsync(
+        int workflowId,
+        WorkflowTrigger trigger,
+        string outcome,
+        bool completed,
+        CancellationToken cancellationToken)
+    {
+        var workflow = await _db.AgentWorkflows
+            .FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
+
+        if (workflow is null)
         {
-            // There is something to ask the reporter, so the workflow waits for it. The
-            // questions themselves are recorded on the AgentStep and as ClarificationQuestion
-            // rows; POST /api/reports/{id}/clarifications is what moves the workflow out of
-            // here again, back to Diagnosing.
-            workflow.CurrentState = WorkflowState.AwaitingClarification;
-            workflow.Outcome =
-                $"The clarifier asked {questionCount} question(s) about this report.";
+            return false;
         }
-        else
+
+        WorkflowTransitions.Move(workflow, trigger);
+        workflow.Outcome = outcome;
+
+        if (completed)
         {
-            // Nothing needed clarifying — a valid and meaningful answer. The workflow stays
-            // in Diagnosing, waiting on the diagnostician agent that does not exist yet.
-            // Deliberately NOT marked Completed: no diagnosis has been made.
-            workflow.Outcome = "The clarifier found nothing that needed clarifying.";
+            workflow.CompletedAt = DateTime.UtcNow;
         }
 
         await _db.SaveChangesAsync(cancellationToken);

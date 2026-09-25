@@ -6,16 +6,23 @@ logic, prompt text, tool names or parsing. All of that belongs in agents/<name>.
 by one person, so that adding an agent is one node and one edge here and a new file there
 instead of four people editing the same function.
 
-Today the graph is two paths from one routing rule:
+Two routing rules, both plain Python reading the state — never a judgement made by a model:
 
-    START -> clarify -> diagnose -> strategize -> END     a report
-    START -> verify -> END                                 a completed repair
+    START -> clarify -> diagnose -> strategize -> END     a fresh report, nothing to ask
+    START -> clarify -> END                               a fresh report, questions asked
+    START -> diagnose -> strategize -> END                the reporter has answered
+    START -> verify -> END                                a completed repair
 
-A report and a verification are different questions about different things, so they do
-not run in one line: a verification appended after `strategize` would re-clarify and
-re-diagnose a fault somebody has already repaired, and the clarifier would put questions
-to the reporter about it again. Which path runs is `_route_from_start` — plain Python
-reading whether the request carries a verification, never a judgement made by a model.
+`_route_from_start` reads what the request carries. A verification is a different question
+about a different thing, so it never runs in line with the report pipeline: appended after
+`strategize` it would re-clarify and re-diagnose a fault somebody has already repaired.
+Clarification answers mean the clarifier has already asked, so the run resumes at the
+diagnostic — sending it to `clarify` again would ask the same questions and loop.
+
+`_route_after_clarify` is the first human pause. A clarifier that asked anything, or that
+could not produce questions at all, ends the run: a diagnosis made before the answers would
+be made without the detail the clarifier just said it needed. The API records the pause as
+AwaitingClarification and calls /run again with the answers.
 
 When the next agent lands, add its node and move the edge. Any other routing decision
 goes in `add_conditional_edges` the same way.
@@ -31,7 +38,14 @@ from agents.clarifier import ClarifierAgent
 from agents.diagnostic import DiagnosticAgent
 from agents.strategist import ResolutionStrategist
 from agents.verification import VerificationAgent
-from schemas import DiagnosticResult, RunRequest, RunResponse, StrategistResult, VerificationResult
+from schemas import (
+    AgentStatus,
+    DiagnosticResult,
+    RunRequest,
+    RunResponse,
+    StrategistResult,
+    VerificationResult,
+)
 
 
 class GraphState(TypedDict):
@@ -45,8 +59,21 @@ class GraphState(TypedDict):
 
 
 def _route_from_start(state: GraphState) -> str:
-    """A deterministic rule: the request says which question it is asking."""
-    return "verify" if state["request"].verification is not None else "clarify"
+    """A deterministic rule: the request says which question it is asking, and how far along."""
+    request = state["request"]
+    if request.verification is not None:
+        return "verify"
+    if request.clarification_answers:
+        return "diagnose"
+    return "clarify"
+
+
+def _route_after_clarify(state: GraphState) -> str:
+    """Human pause 1: carry on only when the clarifier ran cleanly and asked nothing."""
+    response = state["response"]
+    if response.status is AgentStatus.ok and not response.output.questions:
+        return "diagnose"
+    return END
 
 
 def build_graph(
@@ -74,8 +101,8 @@ def build_graph(
     builder.add_node("diagnose", diagnose)
     builder.add_node("strategize", strategize)
     builder.add_node("verify", verify)
-    builder.add_conditional_edges(START, _route_from_start, ["clarify", "verify"])
-    builder.add_edge("clarify", "diagnose")
+    builder.add_conditional_edges(START, _route_from_start, ["clarify", "diagnose", "verify"])
+    builder.add_conditional_edges("clarify", _route_after_clarify, ["diagnose", END])
     builder.add_edge("diagnose", "strategize")
     builder.add_edge("strategize", END)
     builder.add_edge("verify", END)

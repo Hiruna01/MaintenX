@@ -43,7 +43,7 @@ public class SweepClockApiFactory : ApiFactory
 
 /// <summary>
 /// The verification sweep — the pass VerificationSweepService runs on a timer and
-/// POST /api/verifications/run-sweep runs on demand.
+/// POST /api/workflows/verification-sweep runs on demand.
 ///
 /// Each test takes its OWN factory: a sweep acts on every due row in the table, so its
 /// counts are only meaningful against rows the test itself created. What is pinned:
@@ -55,6 +55,8 @@ public class SweepClockApiFactory : ApiFactory
 ///   * a check is queued once, not once per pass;
 ///   * ONE BAD ROW DOES NOT STOP THE SWEEP — it is expired with a reason and the rest are
 ///     processed — and an answered check is never expired for a sweep failure;
+///   * a Completed workflow moves to AwaitingVerification exactly when its delay is up, and
+///     a second pass moves and creates nothing;
 ///   * the manual trigger is FacilitiesManager only, 401 and 403 kept apart.
 /// </summary>
 public class VerificationSweepTests
@@ -91,7 +93,7 @@ public class VerificationSweepTests
 
         var result = await service.ProcessDueChecksAsync();
 
-        Assert.Equal(new VerificationSweepResultDto(Processed: 1, AskedReporter: 1, QueuedForAgent: 0, Failed: 0), result);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 1, WorkflowsAwaitingVerification: 0, AskedReporter: 1, QueuedForAgent: 0, Failed: 0), result);
 
         var after = await SnapshotAsync(db);
 
@@ -131,7 +133,7 @@ public class VerificationSweepTests
             scope.ServiceProvider.GetRequiredService<ILogger<VerificationService>>());
 
         var first = await service.ProcessDueChecksAsync();
-        Assert.Equal(new VerificationSweepResultDto(Processed: 4, AskedReporter: 1, QueuedForAgent: 2, Failed: 1), first);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 4, WorkflowsAwaitingVerification: 0, AskedReporter: 1, QueuedForAgent: 2, Failed: 1), first);
 
         var afterFirst = await SnapshotAsync(db);
         Assert.Equal(VerificationStatus.Expired, afterFirst[bad].Status);
@@ -144,7 +146,7 @@ public class VerificationSweepTests
 
             var again = await service.ProcessDueChecksAsync();
 
-            Assert.Equal(new VerificationSweepResultDto(Processed: 0, AskedReporter: 0, QueuedForAgent: 0, Failed: 0), again);
+            Assert.Equal(new VerificationSweepResultDto(Processed: 0, WorkflowsAwaitingVerification: 0, AskedReporter: 0, QueuedForAgent: 0, Failed: 0), again);
             Assert.Equal(afterFirst, await SnapshotAsync(db));
         }
     }
@@ -170,7 +172,7 @@ public class VerificationSweepTests
 
         var result = await service.ProcessDueChecksAsync();
 
-        Assert.Equal(new VerificationSweepResultDto(Processed: 3, AskedReporter: 1, QueuedForAgent: 2, Failed: 0), result);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 3, WorkflowsAwaitingVerification: 0, AskedReporter: 1, QueuedForAgent: 2, Failed: 0), result);
 
         db.ChangeTracker.Clear();
         var rows = await db.VerificationChecks.ToDictionaryAsync(v => v.Id);
@@ -194,7 +196,7 @@ public class VerificationSweepTests
         factory.Clock.Now += TimeSpan.FromMinutes(1);
         var second = await service.ProcessDueChecksAsync();
 
-        Assert.Equal(new VerificationSweepResultDto(Processed: 1, AskedReporter: 0, QueuedForAgent: 1, Failed: 0), second);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 1, WorkflowsAwaitingVerification: 0, AskedReporter: 0, QueuedForAgent: 1, Failed: 0), second);
     }
 
     [Fact]
@@ -221,7 +223,7 @@ public class VerificationSweepTests
 
         var result = await service.ProcessDueChecksAsync();
 
-        Assert.Equal(new VerificationSweepResultDto(Processed: 3, AskedReporter: 2, QueuedForAgent: 0, Failed: 1), result);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 3, WorkflowsAwaitingVerification: 0, AskedReporter: 2, QueuedForAgent: 0, Failed: 1), result);
 
         db.ChangeTracker.Clear();
         var rows = await db.VerificationChecks.ToDictionaryAsync(v => v.Id);
@@ -260,7 +262,7 @@ public class VerificationSweepTests
 
         var result = await service.ProcessDueChecksAsync();
 
-        Assert.Equal(new VerificationSweepResultDto(Processed: 2, AskedReporter: 0, QueuedForAgent: 1, Failed: 1), result);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 2, WorkflowsAwaitingVerification: 0, AskedReporter: 0, QueuedForAgent: 1, Failed: 1), result);
 
         db.ChangeTracker.Clear();
         var row = await db.VerificationChecks.SingleAsync(v => v.Id == answered);
@@ -289,27 +291,110 @@ public class VerificationSweepTests
         }
 
         // No token: who are you?
-        var anonymous = await factory.CreateClient().PostAsync("/api/verifications/run-sweep", null);
+        var anonymous = await factory.CreateClient().PostAsync("/api/workflows/verification-sweep", null);
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
 
         // A valid token with the wrong role: no. Admin included — the policy names one role.
         foreach (var role in new[] { Role.Reporter, Role.Technician, Role.Admin })
         {
             var client = await ClientForAsync(factory, role);
-            var refused = await client.PostAsync("/api/verifications/run-sweep", null);
+            var refused = await client.PostAsync("/api/workflows/verification-sweep", null);
             Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
         }
 
         var manager = await ClientForAsync(factory, Role.FacilitiesManager);
-        var response = await manager.PostAsync("/api/verifications/run-sweep", null);
+        var response = await manager.PostAsync("/api/workflows/verification-sweep", null);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var result = await response.Content.ReadFromJsonAsync<VerificationSweepResultDto>(JsonOptions);
-        Assert.Equal(new VerificationSweepResultDto(Processed: 1, AskedReporter: 1, QueuedForAgent: 0, Failed: 0), result);
+        Assert.Equal(new VerificationSweepResultDto(Processed: 1, WorkflowsAwaitingVerification: 0, AskedReporter: 1, QueuedForAgent: 0, Failed: 0), result);
 
         // Pressing it again straight away does nothing new.
-        var again = await manager.PostAsync("/api/verifications/run-sweep", null);
+        var again = await manager.PostAsync("/api/workflows/verification-sweep", null);
         Assert.Equal(0, (await again.Content.ReadFromJsonAsync<VerificationSweepResultDto>(JsonOptions))!.Processed);
+    }
+
+    /// <summary>
+    /// Step 0 of the sweep — §8's "AwaitingVerification (BackgroundService, N days later)" —
+    /// through the real endpoints: a repair completed, the delay stood on to the minute, and
+    /// the manual trigger pressed twice.
+    ///
+    /// IDEMPOTENT: the second pass moves nothing and CREATES nothing — no second check, no
+    /// step, no workflow — and leaves the first pass's timestamps exactly as they were.
+    /// Verified to fail with the Completed filter removed from the workflow query.
+    /// </summary>
+    [Fact]
+    public async Task Sweep_MovesACompletedWorkflowOnlyOnceItsDelayHasPassed_AndASecondPassChangesNothing()
+    {
+        using var factory = new SweepClockApiFactory();
+        var delayDays = factory.Services.GetRequiredService<VerificationSettings>().DelayDays;
+        var scene = await StateMachineScene.BuildAsync(factory);
+
+        var reportId = await scene.FileReportAsync();
+        await WorkflowTestData.ReadyForWorkOrderAsync(factory.Services, reportId);
+
+        var raised = await scene.Manager.PostAsJsonAsync("/api/workorders",
+            new CreateWorkOrderDto(reportId, scene.AssetId, WorkOrderStrategy.SingleJob, 500m, null), JsonOptions);
+        var order = await raised.Content.ReadFromJsonAsync<WorkOrderDto>(JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, (await scene.Manager.PutAsJsonAsync(
+            $"/api/workorders/{order!.Id}/assign", new AssignTechnicianDto(scene.TechnicianId), JsonOptions)).StatusCode);
+
+        // Completed at Start, by the injected clock.
+        var completed = await scene.Technician.PostAsJsonAsync($"/api/workorders/{order.Id}/complete",
+            new CompleteWorkOrderDto(480m, ServiceOutcome.Resolved, "Replaced the lamp and cleaned the filter.", null),
+            JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, completed.StatusCode);
+        Assert.Equal(WorkflowState.Completed, await WorkflowTestData.StateAsync(factory.Services, reportId));
+
+        // A minute short of the delay: the fault has not had its time to come back.
+        factory.Clock.Now = SweepClockApiFactory.Start.AddDays(delayDays).AddMinutes(-1);
+        Assert.Equal(new VerificationSweepResultDto(0, 0, 0, 0, 0), await SweepAsync(scene.Manager));
+        Assert.Equal(WorkflowState.Completed, await WorkflowTestData.StateAsync(factory.Services, reportId));
+
+        // Exactly the delay: the workflow and its check reach "ask" in the same pass.
+        factory.Clock.Now = SweepClockApiFactory.Start.AddDays(delayDays);
+        Assert.Equal(
+            new VerificationSweepResultDto(Processed: 2, WorkflowsAwaitingVerification: 1, AskedReporter: 1, QueuedForAgent: 0, Failed: 0),
+            await SweepAsync(scene.Manager));
+        Assert.Equal(WorkflowState.AwaitingVerification, await WorkflowTestData.StateAsync(factory.Services, reportId));
+
+        var afterFirst = await TablesAsync(factory, order.Id);
+
+        // Pressed again: nothing to do, and nothing written.
+        Assert.Equal(new VerificationSweepResultDto(0, 0, 0, 0, 0), await SweepAsync(scene.Manager));
+
+        Assert.Equal(afterFirst, await TablesAsync(factory, order.Id));
+        Assert.Equal(1, afterFirst.ChecksForOrder);
+        Assert.Equal(WorkflowState.AwaitingVerification, await WorkflowTestData.StateAsync(factory.Services, reportId));
+    }
+
+    private static async Task<VerificationSweepResultDto> SweepAsync(HttpClient manager)
+    {
+        var response = await manager.PostAsync("/api/workflows/verification-sweep", null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return (await response.Content.ReadFromJsonAsync<VerificationSweepResultDto>(JsonOptions))!;
+    }
+
+    /// <summary>Everything a sweep could create or touch, as one comparable value.</summary>
+    private record Tables(
+        int Workflows, int Steps, int Checks, int ChecksForOrder, int ServiceRecords,
+        DateTime WorkflowUpdatedAt, VerificationStatus CheckStatus, DateTime? CheckProcessedAt);
+
+    private static async Task<Tables> TablesAsync(ApiFactory factory, int orderId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var check = await db.VerificationChecks.AsNoTracking().SingleAsync(v => v.WorkOrderId == orderId);
+
+        return new Tables(
+            await db.AgentWorkflows.CountAsync(),
+            await db.AgentSteps.CountAsync(),
+            await db.VerificationChecks.CountAsync(),
+            await db.VerificationChecks.CountAsync(v => v.WorkOrderId == orderId),
+            await db.ServiceRecords.CountAsync(),
+            await db.AgentWorkflows.MaxAsync(w => w.UpdatedAt),
+            check.Status,
+            check.ProcessedAt);
     }
 
     // ---------------------------------------------------------------------------

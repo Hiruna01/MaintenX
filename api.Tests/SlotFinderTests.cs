@@ -186,6 +186,8 @@ public class SlotFinderTests : IClassFixture<ApiFactory>
                 "/api/reports", new CreateReportDto("Projector keeps cutting out mid-lecture.", roomId), JsonOptions))
             .Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, report!.Id);
+
         var raised = await manager.PostAsJsonAsync("/api/workorders",
             new CreateWorkOrderDto(report!.Id, assetId, WorkOrderStrategy.SingleJob, 500m, null), JsonOptions);
         Assert.Equal(HttpStatusCode.Created, raised.StatusCode);

@@ -1,0 +1,279 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using CampusFacilities.Api.Dtos;
+using CampusFacilities.Api.Models;
+using CampusFacilities.Api.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
+using Xunit;
+
+namespace api.Tests;
+
+/// <summary>Stands in for the agent service: answers each /run with the next scripted reply.</summary>
+public class ScriptedAgentClient : IAgentClient
+{
+    public Queue<AgentCallResult> Replies { get; } = new();
+
+    public List<AgentRunRequest> Requests { get; } = new();
+
+    public Task<AgentCallResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
+    {
+        Requests.Add(request);
+        return Task.FromResult(Replies.Dequeue());
+    }
+}
+
+/// <summary>An ApiFactory whose agent service is a script — no test reaches the real one.</summary>
+public class AgentStubApiFactory : StateMachineApiFactory
+{
+    public ScriptedAgentClient Agent { get; } = new();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<IAgentClient>();
+            services.AddSingleton<IAgentClient>(Agent);
+        });
+    }
+}
+
+/// <summary>
+/// WorkflowRunner, one run at a time (it is removed from the container in every test, so
+/// each test calls ProcessAsync itself). What is pinned:
+///
+///   * it advances ONE AGENT AT A TIME — a step recorded, then that agent's transition —
+///     and every step is visible through the polling read, GET /api/workflows/{id};
+///   * it STOPS at human pause 1 with the clarifier's step alone, and a workflow waiting on
+///     a person is never run again by a stray queue entry;
+///   * the reporter's answers resume the run at the diagnostic, WITH the answers, and the
+///     clarifier is not asked again;
+///   * it never reaches human pause 2 itself: it waits in Strategizing, and the manager
+///     raising the order is what moves it on;
+///   * an agent service that is down ends the run in Failed with the reason, and a manager
+///     can still raise the order by hand.
+/// </summary>
+public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
+{
+    private static readonly JsonSerializerOptions JsonOptions = WorkflowStateMachineTests.JsonOptions;
+
+    private const string Asks = """
+        {"workflow_id": 1, "agent": "clarifier", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"questions": [
+            {"question_text": "Is the power light on?", "answer_type": "yes_no"},
+            {"question_text": "How often does it cut out?", "answer_type": "single_select",
+             "options": ["Once", "Every lecture"]}]}}
+        """;
+
+    private const string Diagnosis = """
+        {"agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"hypotheses": [{"cause": "Overheating", "confidence": "high",
+                    "evidence": ["2026-09-02: fan bearing weak"]}],
+                    "recommended_next_action": "repair", "reasoning_summary": "Thermal."}}
+        """;
+
+    private const string Proposal = """
+        {"agent": "strategist", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"strategy": "single_job", "estimated_cost": 4500.0, "urgency": "high",
+                    "justification": "Replace the fan.", "consolidate_with_work_order_ids": []}}
+        """;
+
+    private static readonly string AsksNothing = $$"""
+        {"workflow_id": 1, "agent": "clarifier", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"questions": []}, "diagnosis": {{Diagnosis}}, "strategy": {{Proposal}}}
+        """;
+
+    private static readonly string Resumed = $$"""
+        {"workflow_id": 1, "agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"questions": []}, "diagnosis": {{Diagnosis}}, "strategy": {{Proposal}}}
+        """;
+
+    private readonly AgentStubApiFactory _factory;
+
+    public WorkflowRunnerTests(AgentStubApiFactory factory)
+    {
+        _factory = factory;
+        _factory.Agent.Replies.Clear();
+        _factory.Agent.Requests.Clear();
+    }
+
+    [Fact]
+    public async Task AReportTheClarifierAsksAbout_StopsAtAwaitingClarification_AndIsNotRunAgain()
+    {
+        var scene = await _factory.SceneAsync();
+        var workflowId = await WorkflowOfNewReportAsync(scene);
+
+        _factory.Agent.Replies.Enqueue(Reply(Asks, durationMs: 1200));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.AwaitingClarification, detail.CurrentState);
+
+        var step = Assert.Single(detail.Steps);
+        Assert.Equal(AgentRunResponse.ClarifierAgentName, step.AgentName);
+        Assert.Equal("[]", step.ToolCallsJson);
+        Assert.Equal(1200, step.DurationMs);
+        Assert.Equal("Ok", step.ValidationResult);
+
+        // A fresh report goes out with no answers — the field is left off the wire entirely.
+        Assert.Null(Assert.Single(_factory.Agent.Requests).ClarificationAnswers);
+
+        // A stray queue entry for a workflow waiting on its reporter does nothing at all.
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        Assert.Single(_factory.Agent.Requests);
+        Assert.Equal(WorkflowState.AwaitingClarification, (await PollAsync(scene, workflowId)).CurrentState);
+    }
+
+    [Fact]
+    public async Task AReportWithNothingToAsk_AdvancesOneAgentAtATime_AndWaitsInStrategizingForAManager()
+    {
+        var scene = await _factory.SceneAsync();
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothing, durationMs: 1500));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+        Assert.Contains("raise the work order", detail.Outcome);
+
+        // One step per agent, in graph order; the whole call's time on the first.
+        Assert.Equal(
+            new[] { ("clarifier", 1500), ("diagnostic", 0), ("strategist", 0) },
+            detail.Steps.Select(s => (s.AgentName, s.DurationMs)));
+        Assert.All(detail.Steps, s => Assert.Equal("Ok", s.ValidationResult));
+
+        // Human pause 2 is reached by a manager raising the order, never by the runner: over
+        // the threshold, so it waits for a decision.
+        var raised = await RaiseAsync(scene, reportId, 42_000m);
+        Assert.Equal(HttpStatusCode.Created, raised.StatusCode);
+        Assert.Equal(WorkflowState.AwaitingManagerApproval, (await PollAsync(scene, workflowId)).CurrentState);
+    }
+
+    [Fact]
+    public async Task AnsweredQuestions_ResumeTheRunAtTheDiagnostic_WithTheAnswers()
+    {
+        var scene = await _factory.SceneAsync();
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        _factory.Agent.Replies.Enqueue(Reply(Asks));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var questions = await scene.Reporter.GetFromJsonAsync<List<ClarificationQuestionDto>>(
+            $"/api/reports/{reportId}/clarifications", JsonOptions);
+        var answered = await scene.Reporter.PostAsJsonAsync(
+            $"/api/reports/{reportId}/clarifications",
+            new SubmitAnswersRequest(new[]
+            {
+                new SubmittedAnswer(questions![0].Id, "No"),
+                new SubmittedAnswer(questions[1].Id, "Every lecture")
+            }),
+            JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, answered.StatusCode);
+        Assert.Equal(WorkflowState.Diagnosing, (await PollAsync(scene, workflowId)).CurrentState);
+
+        _factory.Agent.Replies.Enqueue(Reply(Resumed, durationMs: 900));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        // The second call carries THIS run's answers, in the order they were asked — which is
+        // what sends graph.py straight to the diagnostic.
+        var resume = _factory.Agent.Requests[1];
+        Assert.Equal(
+            new[]
+            {
+                new AgentClarificationAnswer("Is the power light on?", "No"),
+                new AgentClarificationAnswer("How often does it cut out?", "Every lecture")
+            },
+            resume.ClarificationAnswers);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+
+        // No second clarifier step: it did not run. The diagnostic ran first, so it has the time.
+        Assert.Equal(
+            new[] { ("clarifier", 1000), ("diagnostic", 900), ("strategist", 0) },
+            detail.Steps.Select(s => (s.AgentName, s.DurationMs)));
+    }
+
+    [Fact]
+    public async Task AnAgentServiceThatIsDown_FailsTheRunWithTheReason_AndAManagerCanStillRaiseTheOrder()
+    {
+        var scene = await _factory.SceneAsync();
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        const string Reason = "Could not reach the agent service: Connection refused.";
+        _factory.Agent.Replies.Enqueue(new AgentCallResult(false, null, Reason, 30));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Failed, detail.CurrentState);
+        Assert.Equal(Reason, detail.Outcome);
+        Assert.Equal("CallFailed", Assert.Single(detail.Steps).ValidationResult);
+
+        // The agent failing costs advice, not the ability to act.
+        var raised = await RaiseAsync(scene, reportId, 500m);
+        Assert.Equal(HttpStatusCode.Created, raised.StatusCode);
+        Assert.Equal(WorkflowState.WorkOrderRaised, (await PollAsync(scene, workflowId)).CurrentState);
+    }
+
+    /// <summary>
+    /// The agent's RunRequest is extra="forbid" and its clarification_answers is a list, so a
+    /// JSON null there would be a 422 on every fresh report. Serialised the way AgentClient's
+    /// PostAsJsonAsync does it.
+    /// </summary>
+    [Fact]
+    public void TheAnswersAreSnakeCaseOnTheWire_AndLeftOffWhenThereAreNone()
+    {
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        var fresh = JsonSerializer.Serialize(new AgentRunRequest(1, "Projector cutting out.", 3, null), web);
+        Assert.DoesNotContain("clarification_answers", fresh);
+
+        var resumed = JsonSerializer.Serialize(
+            new AgentRunRequest(1, "Projector cutting out.", 3, null, null,
+                new[] { new AgentClarificationAnswer("Is the power light on?", "No") }),
+            web);
+        Assert.Contains("\"clarification_answers\":[{\"question_text\":\"Is the power light on?\",\"answer_text\":\"No\"}]", resumed);
+    }
+
+    // ---------------------------------------------------------------------------------
+
+    private WorkflowRunner Runner() => new(
+        _factory.Services.GetRequiredService<IWorkflowQueue>(),
+        _factory.Services.GetRequiredService<IServiceScopeFactory>(),
+        NullLogger<WorkflowRunner>.Instance);
+
+    private static AgentCallResult Reply(string json, int durationMs = 1000) =>
+        new(true, JsonSerializer.Deserialize<AgentRunResponse>(json)!, null, durationMs);
+
+    private async Task<int> WorkflowOfNewReportAsync(StateMachineScene scene) =>
+        await WorkflowOfAsync(scene, await scene.FileReportAsync());
+
+    private static async Task<int> WorkflowOfAsync(StateMachineScene scene, int reportId)
+    {
+        var page = await scene.Manager.GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
+            "/api/workflows?page=1&pageSize=100", JsonOptions);
+
+        return Assert.Single(page!.Items, w => w.ReportId == reportId).Id;
+    }
+
+    /// <summary>What a client polling the workflow sees.</summary>
+    private static async Task<WorkflowDetailDto> PollAsync(StateMachineScene scene, int workflowId) =>
+        (await scene.Manager.GetFromJsonAsync<WorkflowDetailDto>($"/api/workflows/{workflowId}", JsonOptions))!;
+
+    private static Task<HttpResponseMessage> RaiseAsync(StateMachineScene scene, int reportId, decimal cost) =>
+        scene.Manager.PostAsJsonAsync(
+            "/api/workorders",
+            new CreateWorkOrderDto(reportId, scene.AssetId, WorkOrderStrategy.SingleJob, cost, null),
+            JsonOptions);
+}

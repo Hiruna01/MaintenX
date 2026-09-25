@@ -218,7 +218,10 @@ public class ApprovalTests : IClassFixture<ApiFactory>
                 "/api/reports", new CreateReportDto("Projector keeps cutting out mid-lecture.", room.Id), JsonOptions))
             .Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
-        return new Fault(report!.Id, asset!.Id);
+        // Where a finished agent run leaves it: a work order is raised from Strategizing.
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, report!.Id);
+
+        return new Fault(report.Id, asset!.Id);
     }
 
     private static async Task<WorkOrderDto> RaiseAsync(

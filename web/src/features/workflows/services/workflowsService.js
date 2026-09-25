@@ -16,7 +16,6 @@ export const WORKFLOW_STATES = [
   'Completed',
   'AwaitingVerification',
   'Closed',
-  'Reopened',
   'Failed',
 ];
 

@@ -2,8 +2,12 @@ namespace CampusFacilities.Api.Services;
 
 /// <summary>
 /// Runs the verification sweep on a timer — once at startup, then every
-/// <see cref="VerificationSettings.SweepIntervalMinutes"/>. POST /api/verifications/run-sweep
-/// runs the same pass on demand, so a demo never waits an hour for this.
+/// <see cref="VerificationSettings.SweepIntervalMinutes"/> (Verification:SweepIntervalMinutes, or
+/// VERIFICATION_SWEEP_INTERVAL_MINUTES).
+/// POST /api/workflows/verification-sweep runs the same pass on demand, so a demo never
+/// waits an hour for this. The pass moves Completed workflows DelayDays old to
+/// AwaitingVerification and asks the reporter about their checks — see
+/// IVerificationService.ProcessDueChecksAsync.
 ///
 /// Same shape as WorkflowRunner and TimetableSyncWorker: a singleton hosted service that
 /// holds no DbContext and no IVerificationService — both are scoped, and holding either

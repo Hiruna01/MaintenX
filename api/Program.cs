@@ -402,7 +402,7 @@ builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
 
 // The sweep on a timer — once at startup, then every Verification:SweepIntervalMinutes.
 // A singleton like every hosted service, so it opens a scope per pass and resolves
-// IVerificationService there. POST /api/verifications/run-sweep runs the same pass on demand.
+// IVerificationService there. POST /api/workflows/verification-sweep runs the same pass on demand.
 builder.Services.AddHostedService<VerificationSweepService>();
 
 // Work orders — the approval gate, assignment and completion. Completion raises the

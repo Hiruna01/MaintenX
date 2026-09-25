@@ -473,13 +473,16 @@ public class WorkOrderService : IWorkOrderService
         // disagree — a workflow never says AwaitingManagerApproval with no order waiting,
         // nor WorkOrderRaised with none raised. Same rule as ClarificationService moving a
         // report alongside its questions.
+        //
+        // Legal only from Strategizing (or Failed — a manager may act when the agent could
+        // not). A report still waiting on its reporter or still being diagnosed, or one that
+        // already has an order raised, is a 409 — a second order must not be able to move
+        // a workflow that is waiting on a manager as if the manager had approved.
         var workflow = await LatestWorkflowForReportAsync(dto.ReportId, cancellationToken);
 
         if (workflow is not null)
         {
-            workflow.CurrentState = needsApproval
-                ? WorkflowState.AwaitingManagerApproval
-                : WorkflowState.WorkOrderRaised;
+            WorkflowTransitions.Move(workflow, WorkflowTransitions.ForRaisedWorkOrder(needsApproval));
         }
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -591,17 +594,22 @@ public class WorkOrderService : IWorkOrderService
             WorkOrderId = order.Id
         });
 
+        // Completed, NOT AwaitingVerification: the verification sweep moves it on once
+        // VerificationSettings.DelayDays have passed since this CompletedAt — the same
+        // instant the check below falls due. Inside the transaction, so an illegal move
+        // rolls the whole completion back and the job stays open.
         var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
 
         if (workflow is not null)
         {
-            workflow.CurrentState = WorkflowState.AwaitingVerification;
+            WorkflowTransitions.Move(workflow, WorkflowTrigger.WorkCompleted);
+            workflow.CompletedAt = now;
         }
 
         await _db.SaveChangesAsync(cancellationToken);
 
-        // AwaitingVerification has to be waiting ON something. The check falls due
-        // VerificationSettings.DelayDays after CompletedAt — see VerificationService.
+        // The check the sweep will ask the reporter. It falls due VerificationSettings.DelayDays
+        // after CompletedAt — see VerificationService.
         var check = await _verificationService.CreateForCompletedWorkOrderAsync(order.Id, cancellationToken);
 
         if (check is null)
@@ -706,7 +714,7 @@ public class WorkOrderService : IWorkOrderService
 
         if (workflow is not null)
         {
-            workflow.CurrentState = WorkflowState.WorkOrderRaised;
+            WorkflowTransitions.Move(workflow, WorkflowTrigger.ManagerApproved);
         }
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -744,7 +752,7 @@ public class WorkOrderService : IWorkOrderService
 
         if (workflow is not null)
         {
-            workflow.CurrentState = WorkflowState.Closed;
+            WorkflowTransitions.Move(workflow, WorkflowTrigger.ManagerRejected);
             workflow.CompletedAt = now;
             workflow.Outcome = $"Work order {order.Id} was rejected by a facilities manager: {reason}";
         }
@@ -785,7 +793,7 @@ public class WorkOrderService : IWorkOrderService
         order.Status = WorkOrderStatus.Draft;
         order.RevisionNote = note;
 
-        workflow.CurrentState = WorkflowState.Strategizing;
+        WorkflowTransitions.Move(workflow, WorkflowTrigger.RevisionRequested);
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -793,10 +801,10 @@ public class WorkOrderService : IWorkOrderService
         // not been written yet. CancellationToken.None, not the request's: that token is
         // cancelled as soon as the response is written, which would abort the hand-off.
         //
-        // NOTE: WorkflowRunner.BeginProcessingAsync only starts a workflow in Submitted, so
-        // today the runner logs a warning and skips this item — there is no Strategist
-        // agent yet. The hand-off is made anyway, so the resume point already sits where
-        // it belongs, the same as the clarification resume.
+        // NOTE: the runner starts only from Submitted and Diagnosing, so it logs a warning
+        // and skips this item. Re-running the strategist alone needs a route in graph.py
+        // that reads revision_note, and nothing sends revision_note yet. The hand-off is
+        // made anyway, so the resume point already sits where it belongs.
         await _workflowQueue.EnqueueAsync(workflow.Id, CancellationToken.None);
 
         return WorkOrderActionOutcome.Success;

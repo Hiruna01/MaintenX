@@ -93,6 +93,13 @@ async def run(request: RunRequest) -> RunResponse:
     A VERIFICATION run fills `verification` and nothing else. The clarifier did not run,
     so the top-level fields describe the run as a whole — the verification agent's name,
     status and error — with an empty question list, because nobody was asked anything.
+
+    A RESUMED run — one carrying the reporter's clarification answers — starts at the
+    diagnostic, so again the clarifier did not run and the top-level fields are the first
+    agent that did: the diagnostic's name, status and error, with an empty question list.
+
+    A run the clarifier PAUSED carries its questions and no diagnosis or proposal: graph.py
+    stopped there, and the API waits for the reporter.
     """
     final_state = await app.state.graph.ainvoke(
         {
@@ -113,6 +120,18 @@ async def run(request: RunRequest) -> RunResponse:
             output=ClarifierOutput(),
             error=verdict.error,
             verification=verdict,
+        )
+
+    if final_state["response"] is None:
+        diagnosis = final_state["diagnosis"]
+        return RunResponse(
+            workflow_id=request.workflow_id,
+            agent=diagnosis.agent,
+            status=diagnosis.status,
+            output=ClarifierOutput(),
+            error=diagnosis.error,
+            diagnosis=diagnosis,
+            strategy=final_state["strategy"],
         )
 
     return final_state["response"].model_copy(

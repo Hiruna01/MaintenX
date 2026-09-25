@@ -22,4 +22,22 @@ public record AgentRunRequest(
     // is the normal case for a fresh report (see Report.AssetId). It is what lets the
     // diagnostic and the strategist read the asset's service history through their tools;
     // without it they reason from the report text alone.
-    [property: JsonPropertyName("asset_id")] int? AssetId = null);
+    [property: JsonPropertyName("asset_id")] int? AssetId = null,
+
+    // The reporter's answers to the questions THIS workflow's clarifier asked, sent when the
+    // run resumes after human pause 1. Their presence is what routes graph.py straight to
+    // the diagnostic, so the clarifier is not asked again about a report it already asked
+    // about. Omitted from the body when null — the agent's field is a list, and a JSON null
+    // there would be a 422.
+    [property: JsonPropertyName("clarification_answers"),
+              JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<AgentClarificationAnswer>? ClarificationAnswers = null);
+
+/// <summary>
+/// One answered question, in the shape of the agent's ClarificationAnswer: the question with
+/// its answer, so the diagnostic knows what was asked. Both capped on both sides already —
+/// QuestionText at 300 by the column, AnswerText at 100 by ClarificationService.
+/// </summary>
+public record AgentClarificationAnswer(
+    [property: JsonPropertyName("question_text")] string QuestionText,
+    [property: JsonPropertyName("answer_text")] string AnswerText);

@@ -42,25 +42,52 @@ public interface IWorkflowService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Called by the background runner once it dequeues a workflow: stamps StartedAt and
-    /// moves Submitted to Diagnosing. Returns false when the workflow has vanished or is
-    /// no longer in a state that can be started.
+    /// Called by the background runner once it dequeues a workflow. Returns the state the
+    /// run starts FROM — Submitted for a fresh report, Diagnosing for one whose reporter has
+    /// answered the clarifier's questions — and stamps StartedAt the first time.
+    ///
+    /// Not a transition: the clarifier runs while the workflow is still Submitted, because
+    /// what it says decides whether the next state is AwaitingClarification or Diagnosing.
+    /// Null when the workflow has vanished or sits anywhere else — waiting on a person, or
+    /// already past the agents — so a stray queue entry can never rewind it.
     /// </summary>
-    Task<bool> BeginProcessingAsync(int workflowId, CancellationToken cancellationToken = default);
+    Task<WorkflowState?> BeginProcessingAsync(int workflowId, CancellationToken cancellationToken = default);
 
-    /// <summary>Moves a workflow to Failed and records why. Used when the runner throws.</summary>
+    /// <summary>
+    /// Moves a workflow to Failed and records why. Used when the agent call fails, when the
+    /// clarifier safe-fails, and when the runner throws. Refused (an
+    /// InvalidWorkflowTransitionException) from a state the runner does not own.
+    /// </summary>
     Task<bool> FailAsync(int workflowId, string reason, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Called by the background runner once the clarifier has answered. Decides where the
-    /// workflow goes next from the number of questions it asked.
-    ///
-    /// The rule lives here, next to the other transitions, because which state follows
-    /// which is a deterministic business rule and belongs in C# — never in a prompt, and
-    /// not scattered through the runner either.
+    /// The clarifier has answered: Submitted to AwaitingClarification when it asked anything
+    /// (human pause 1 — the run stops here), otherwise to Diagnosing. The choice is
+    /// WorkflowTransitions.ForClarification, beside every other rule of the machine.
     /// </summary>
     Task<bool> CompleteClarificationAsync(
         int workflowId,
         int questionCount,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The diagnostic has run: Diagnosing to Strategizing, whether or not it produced a
+    /// diagnosis. A failed diagnosis costs the strategist its evidence, not its turn — it is
+    /// written to reason without one — and the failure is on the diagnostic's own step.
+    /// </summary>
+    Task<bool> CompleteDiagnosisAsync(
+        int workflowId,
+        bool diagnosed,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The strategist has run. NOT a transition: the workflow stays in Strategizing until a
+    /// manager raises the work order, and the order's approval gate decides whether that
+    /// lands in WorkOrderRaised or AwaitingManagerApproval. The proposal is advice, so it
+    /// moves nothing; only the Outcome line says what the workflow is waiting for.
+    /// </summary>
+    Task<bool> RecordProposalAsync(
+        int workflowId,
+        bool proposed,
         CancellationToken cancellationToken = default);
 }

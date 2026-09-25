@@ -256,7 +256,8 @@ and 14 service records.
 
 - `AgentWorkflow` (one row per objective) and `AgentStep` (one row per agent action) live in
   `Models/`, same layer rule as everything else. `CurrentState` is a C# enum
-  (`WorkflowState`) persisted as a string, same as `Role`.
+  (`WorkflowState`) persisted as a string, same as `Role`, and it moves only through
+  `WorkflowTransitions` — see THE WORKFLOW STATE MACHINE below.
 - `PlanJson`, `ToolCallsJson` and `PayloadJson` are PostgreSQL **`jsonb`** columns, not
   `text` — configured in `AppDbContext`. Index `AgentStep.WorkflowId`.
 - **`POST /api/workflows` must never block on the agent service.** It creates the row,
@@ -271,8 +272,27 @@ and 14 service records.
   connection, a non-200 or an unreadable body all come back as a result the runner turns
   into `Failed` with the reason on the row. A background exception has no request to
   surface on, so a workflow must never be left parked because the agent was down.
+- **The runner advances the workflow ONE AGENT AT A TIME**: each agent's step is recorded,
+  then that agent's transition made, each saved on its own, so a poll sees the run move.
+  One `/run` call per segment between human pauses, not per agent — the graph runs the
+  agents in order inside it and the runner walks the results in graph order.
+  - **From `Submitted`**: the clarifier runs while the workflow is still `Submitted` (what
+    it says picks the next state). A call that failed or a clarifier safe failure →
+    `Failed`. Questions → `AwaitingClarification`, and the run **stops** — `graph.py`
+    stopped there too. None → `Diagnosing`, then the diagnostic (→ `Strategizing`), then the
+    strategist (no transition).
+  - **From `Diagnosing`** (the reporter answered): the answers to THIS workflow's questions
+    go out as `clarification_answers`, which sends the graph straight to the diagnostic.
+    No answers to send → `Failed` rather than re-asking.
+  - **It never reaches `AwaitingManagerApproval` itself.** It leaves the workflow in
+    `Strategizing` with the proposal, and a manager raising the order moves it on through
+    the approval gate. A diagnostic or strategist that safe-failed still moves the workflow
+    on — the failure is on its step, and missing advice is not a reason to stop a manager
+    acting. One ABSENT from the reply (the graph broke its promise) → `Failed`.
+  - Anything else dequeued — waiting on a person, a revision re-queued in `Strategizing` —
+    is skipped with a warning. `ProcessAsync` is `internal` for `WorkflowRunnerTests`.
 - **The runner records one agent-level step per AGENT that ran** — the clarifier's, then
-  the diagnostic's and the strategist's, which run inside the same `/run` call — each with
+  the diagnostic's and the strategist's — each with
   `ToolCallsJson` `"[]"` and that agent's output verbatim. Tool calls are recorded by
   `InternalToolsController` alone — recording the agent's returned `tool_calls` here as well
   would double every tool call in the audit trail. It also writes the clarifier's questions
@@ -281,11 +301,11 @@ and 14 service records.
 - **The step's name comes from the FIELD the result arrived in, never from the envelope's
   own `agent` value**: `AgentRunResponse.DiagnosticAgentName` (`"diagnostic"`) and
   `StrategistAgentName` (`"strategist"`), and `DownstreamResults()` is the only place those
-  two envelopes are read. The clarifier's step carries the whole call's `DurationMs`; the
-  other two carry **0**, because the agent reports no per-agent split and dividing it would
-  invent one — the reasoning panel shows them as "timed with the run". They are recorded
-  even when the clarifier failed: they are what the agent returned. Nothing reads them to
-  move the workflow.
+  two envelopes are read. The FIRST agent that ran in the call carries its whole
+  `DurationMs` — the clarifier's step, or the diagnostic's on a resume — and the rest carry
+  **0**, because the agent reports no per-agent split and dividing it would invent one — the
+  reasoning panel shows them as "timed with the run". What they SAY moves nothing; that they
+  RAN is a transition.
 - **`AgentWorkflow.PlanJson` is still never populated.** The clarifier produces questions,
   and questions are not a plan; the strategist's proposal is advice about ONE order, not a
   plan for the workflow. Both go in `AgentStep.PayloadJson` where step output belongs — and, because they are working data as well as audit, into
@@ -355,17 +375,61 @@ expects four 404s.
 triage or a QR scan names the equipment — so the diagnostic and strategist can read the
 machine's history. Their results are stored as agent-level steps (above) and read back into
 typed DTOs by `AgentAnalysis`, the counterpart of `ParseQuestions` and the only place the
-API reads those two shapes. **`revision_note` is still not sent**: the runner only starts
-`Submitted` workflows, so a revised one is never re-run (see request-revision below).
+API reads those two shapes. **`revision_note` is still not sent**: the runner starts only
+from `Submitted` and `Diagnosing`, so a revised one is never re-run (see request-revision
+below). Re-running the strategist alone needs its own route in `graph.py`.
 
-**The resume path needs a routing decision before it can be wired.** Submitting answers
-moves the workflow to `Diagnosing` and re-queues it (see `POST /api/reports/{id}/clarifications`
-below), but `/run` always runs `clarify` first — and the clarifier does not read
-`clarification_answers`, so a resumed run would ask the questions just answered and put
-the report back into `AwaitingClarification`. A loop. The fix is a conditional edge from
-`START` in `graph.py` — go straight to `diagnose` when `request.clarification_answers` is
-non-empty — which is exactly the kind of routing the file allows: plain Python reading the
-state, never a judgement made by a model. It has to land with, or before, the C# resume.
+**The clarification resume is wired.** Answers move the workflow to `Diagnosing` and re-queue
+it; the runner sends them as `clarification_answers` (`AgentRunRequest`, left off the wire
+when null — the agent's field is a list, and a JSON null is a 422); `graph.py` routes a
+request carrying answers straight to `diagnose`. Without that route the clarifier would ask
+the questions just answered — a loop.
+
+### THE WORKFLOW STATE MACHINE — `WorkflowTransitions`, and nowhere else
+
+DEVELOPMENT_GUIDE.md §8, as a hardcoded table in `Services/WorkflowTransitions.cs`. **Keyed
+by (state, `WorkflowTrigger`), not by pairs of states**: the same pair can be reached by
+events that must not stand in for each other. `AwaitingManagerApproval → WorkOrderRaised` is
+a manager APPROVING; with a state-only table, raising a second order on the same report took
+that edge and read as an approval nobody gave. It is a viva question.
+
+- **`WorkflowTransitions.Move(workflow, trigger)` is the only way a state changes.** Every
+  service calls it — `WorkflowService` (the runner's moves), `WorkOrderService` (raise,
+  approve, reject, revision, complete), `ClarificationService` (answered),
+  `VerificationService` (the sweep). No `CurrentState =` anywhere else, except the two
+  places a row is CREATED (`StartAsync` and the seeder) — creation is not a transition.
+- **An illegal move throws `InvalidWorkflowTransitionException`**, and
+  `ExceptionHandlingMiddleware` makes it a **409** "Illegal workflow transition" on any
+  request, logged as a warning. Thrown before `SaveChanges`, and `complete`'s transaction
+  rolls back, so a 409 means nothing was written.
+- **`AppDbContext` checks every changed `CurrentState` on save** against `CanReach` (is
+  there ANY trigger from the old state to the new one). The backstop for a direct assignment
+  somebody adds later. It sees states, not events, so it cannot catch the second-order case —
+  `Move` does. It compares the loaded value with the written one, so a unit of work moves a
+  workflow **one step per save**; the runner saves after each.
+- **The states are exactly §8's plus `Failed`.** `Reopened` was removed: Verified / Reopened
+  / Escalated are edges out of `AwaitingVerification` (to `Closed`, `Diagnosing`,
+  `AwaitingManagerApproval`), not places a workflow sits — same decision as `ReportStatus`
+  having no `Reopened`. `Failed` is kept because a dead agent must end a run somewhere a
+  poll can see.
+- **Deviations from §8, each on purpose:** `Failed` accepts a raised order (`→
+  WorkOrderRaised` / `AwaitingManagerApproval`) — the agent failing costs advice, never the
+  ability to act. `WorkOrderRaised → Completed` directly as well as through `InProgress`,
+  because nothing starts a job yet (no endpoint sets `WorkOrderStatus.InProgress`), so
+  `WorkStarted` is never fired.
+- **A work order is raised only from `Strategizing` (or `Failed`).** A report still awaiting
+  its reporter, still diagnosing, or already holding an order is a 409 — **one report's run
+  raises one order**. Tests that need several orders on one asset file a report for each.
+- **`VerificationDue`, and nothing else, moves `Completed → AwaitingVerification`** — the
+  sweep, `VerificationSettings.DelayDays` after the workflow's `CompletedAt`, which
+  `complete` stamps with the order's own `CompletedAt` so the workflow and its check fall due
+  in the same pass. **Verified / reopened / escalated are in the table and fired by
+  nothing yet** — they belong to the VerificationAgent's C# runner, which does not exist.
+- Pinned by `WorkflowStateMachineTests`: the table literally (a changed table must change
+  the test), every other (state, trigger) pair throws, the save-time check, and **every
+  illegal move through every endpoint that moves a workflow is a 409 that writes nothing**.
+  Verified to fail with `Move` removed from `CreateAsync` and from `CompleteAsync`, and with
+  the save-time check removed.
 
 ---
 
@@ -557,15 +621,16 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
   whichever way. Reject needs `RejectWorkOrderDto.Reason` (400 if missing or blank) and
   closes the workflow. **Request-revision puts the order back to `Draft` with the note on
   `WorkOrder.RevisionNote`**, moves the workflow to `Strategizing` and re-queues it — the
-  runner skips it with a warning today (`BeginProcessingAsync` starts only `Submitted`, and
-  there is no Strategist yet), the same as the clarification resume.
+  runner skips it with a warning today: it starts only from `Submitted` and `Diagnosing`,
+  and re-running the strategist alone needs a `graph.py` route reading `revision_note`.
 - `assign` needs an order that has cleared approval and is not finished (`Approved`,
   `Scheduled`, `InProgress`) and a user whose role is `Technician` (400 otherwise). It does
   not book a time and does not change the status.
 - **`complete` is one real EF Core transaction**, and it has to be one rather than one
   `SaveChanges`: the order goes `Completed`, a `ServiceRecord` is **appended** (note
   verbatim, `WorkOrderId` set, `ServicedOn` the UTC date of `CompletedAt` from the injected
-  `TimeProvider`), the workflow goes `AwaitingVerification`, and then
+  `TimeProvider`), the workflow goes `Completed` with the same `CompletedAt` (the sweep
+  moves it to `AwaitingVerification` once the delay is up), and then
   `IVerificationService.CreateForCompletedWorkOrderAsync` raises the check — which reads the
   order back as `Completed` and saves on its own. Only the assigned technician may call it
   (403 for anyone else, checked before state). Pinned by a test that makes the verification
@@ -796,12 +861,27 @@ opening one DI scope per pass and calling `ProcessDueChecksAsync` in it. One pas
 — a host that sleeps when idle wakes with checks piled up — then every
 `SweepIntervalMinutes`. It catches everything per pass, so the loop never dies.
 
-**`POST /api/verifications/run-sweep`** runs the same pass now, `FacilitiesManager` only (an
-Admin is refused, as everywhere), 200 with `VerificationSweepResultDto` —
-`Processed` / `AskedReporter` / `QueuedForAgent` / `Failed`. **It is not optional**: Render's
+**`POST /api/workflows/verification-sweep`** (on `WorkflowsController`; it was
+`/api/verifications/run-sweep` until the sweep began moving workflows) runs the same pass
+now, `FacilitiesManager` only (an Admin is refused, as everywhere), 200 with
+`VerificationSweepResultDto` — `Processed` / `WorkflowsAwaitingVerification` /
+`AskedReporter` / `QueuedForAgent` / `Failed`. There is ONE sweep and one button: a second
+BackgroundService for the workflows would race this one over the same repairs.
+The interval is `Verification:SweepIntervalMinutes` (or `VERIFICATION_SWEEP_INTERVAL_MINUTES`);
+**do not put `Verification:*` values in the committed `appsettings.json`** — Program.cs reads
+that key before the env-var name, so a value there silently overrides Render's. **It is not optional**: Render's
 free tier sleeps idle services and a demo cannot wait an hour for a timer. A static
 `SemaphoreSlim` in the service stops the button and the timer running at once.
 
+- **Step 0 — the workflows.** `Completed` workflows whose `CompletedAt` is at least
+  `DelayDays` old → `AwaitingVerification`, through `WorkflowTransitions` (`VerificationDue`)
+  — §8's "BackgroundService, N days later". Same delay from the same instant as the check's
+  `DueAt`, so a repair's workflow and check reach "ask" in the same pass. **Idempotent by
+  state**: a moved workflow is no longer `Completed`, and the step creates no rows. A
+  workflow that throws is logged, counted in `Failed` and left `Completed` for the next pass.
+  Pinned (delay to the minute, then two presses of the button) by
+  `Sweep_MovesACompletedWorkflowOnlyOnceItsDelayHasPassed_AndASecondPassChangesNothing`,
+  verified to fail with the `Completed` filter removed and with `<` for `<=`.
 - **Step 1 — ask.** `Pending` and `DueAt` passed → `AwaitingReporterResponse`, `ProcessedAt`
   stamped as the moment the reporter was asked. The state change **is** the notification:
   the check appears on the reporter's list (`GET /api/verifications`, below). The web client
@@ -1028,6 +1108,12 @@ agent/config.py        settings read from the environment
   every node a one-liner. Routing decisions go in `add_conditional_edges` as plain Python
   reading the state — never a judgement made by a model. Compile **without a
   checkpointer**: nothing persists between runs.
+- **`_route_after_clarify` is human pause 1**: a clarifier that asked anything, or
+  safe-failed, ends the run at `clarify`; only a clean "nothing to ask" goes on to
+  `diagnose`. `START` routes a request carrying `clarification_answers` straight to
+  `diagnose` (the resume), and `main.py` then fills the top-level fields from the
+  diagnostic, as it does from the verifier on a verification run. Pinned by spy agents in
+  `tests/test_graph.py`, each rule verified to fail its test when removed.
 - **Two paths from `START`, chosen by `_route_from_start`**: a request carrying
   `verification` goes `START -> verify -> END`, anything else the report pipeline. A
   verification is not appended after `strategize` because it is a different question about
@@ -1092,7 +1178,8 @@ is on `RunRequest` but is not looked up.
 
 ### `DiagnosticAgent` — facts in, advice out
 
-`START -> clarify -> diagnose -> END`. Proposes one to three causes for a fault from the
+`START -> clarify -> diagnose -> strategize -> END` when nothing needed asking, or
+`START -> diagnose -> …` on the resume. Proposes one to three causes for a fault from the
 asset's own service history, each with a confidence and the evidence behind it, and one
 `recommended_next_action` (`inspect` / `repair` / `replace` / `monitor`).
 
@@ -1118,7 +1205,7 @@ asset's own service history, each with a confidence and the evidence behind it, 
 
 ### `ResolutionStrategist` — it proposes, C# decides
 
-`START -> clarify -> diagnose -> strategize -> END`. Takes the report, the diagnosis and —
+After `diagnose`, on either path. Takes the report, the diagnosis and —
 on a re-run — the manager's `revision_note`, and proposes ONE `strategy` (`known_fix` /
 `single_job` / `consolidated_job` / `inspect_first` / `defer` / `escalate_replacement`, the
 API's `WorkOrderStrategy` in snake_case), an `estimated_cost`, an `urgency` and a
@@ -1309,6 +1396,12 @@ flakiness to retry away.
   each test creates exactly the users it needs.
 - **Where a rule is tested.** Before adding a test, look for the one that already pins it:
   a rule tested twice is two places to update and one to forget.
+  - `WorkflowStateMachineTests` — `WorkflowTransitions`: the table pinned literally, every
+    illegal (state, trigger) pair, the save-time check, and every illegal move through the
+    API a 409 that writes nothing. `WorkflowRunnerTests` — the runner with a scripted
+    `IAgentClient` (`AgentStubApiFactory`): one agent at a time, both pauses, the resume.
+    `WorkflowTestData` puts a report's workflow in a state as DATA (ExecuteUpdate, around
+    the machine) — every test that raises an order starts from `Strategizing` through it.
   - `WorkOrderEndpointTests` — the work order lifecycle end to end: the approval gate either
     side of the threshold, a Technician's 403, reject / request-revision, assign, the
     completion transaction, visibility, the cost sort, and the slot endpoints' wiring
@@ -1869,11 +1962,10 @@ succeed by replacing. See "The unique index will not save a writer that has alre
 the answer" above.
 
 Success writes the answers, moves the report to `Clarified` and the workflow to `Diagnosing`
-in ONE `SaveChanges`, then re-queues the workflow id on `IWorkflowQueue`. **The runner skips
-that item today**, with a warning: `BeginProcessingAsync` only starts a workflow in
-`Submitted`, and the clarifier handed an answered report would ask the same questions again.
-The hand-off is made anyway so the resume point sits where it belongs — the runner branches
-on `CurrentState` when the diagnostician lands.
+in ONE `SaveChanges`, then re-queues the workflow id on `IWorkflowQueue`. The runner picks it
+up in `Diagnosing` and resumes the run with the answers — see AGENT WORKFLOWS. The move is
+`WorkflowTransitions`' `ReporterAnswered`, legal only from `AwaitingClarification`, so a
+workflow that is anywhere else is a 409 even when the report looks answerable.
 
 ### The report endpoints — a visibility rule and a lifecycle
 

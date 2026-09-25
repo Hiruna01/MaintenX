@@ -81,8 +81,10 @@ public interface IVerificationService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// THE SWEEP — one pass of it. Two steps, each a deterministic rule in C#:
+    /// THE SWEEP — one pass of it. Three steps, each a deterministic rule in C#:
     ///
+    ///   0. Every Completed WORKFLOW whose CompletedAt is at least DelayDays old moves to
+    ///      AwaitingVerification (WorkflowTransitions) — §8's "BackgroundService, N days later".
     ///   1. Every Pending check whose DueAt has passed moves to AwaitingReporterResponse,
     ///      with ProcessedAt stamped as the moment the reporter was asked.
     ///   2. Every check not yet queued for the verification agent is queued (AgentQueuedAt)
@@ -102,7 +104,7 @@ public interface IVerificationService
     /// The body lives here, in a scoped service, rather than inside the hosted service that
     /// calls it on a timer — the same split as WorkflowRunner and IWorkflowService. That
     /// keeps the rule testable without starting a background worker, and keeps a scoped
-    /// DbContext out of a singleton. POST /api/verifications/run-sweep calls it too; a
+    /// DbContext out of a singleton. POST /api/workflows/verification-sweep calls it too; a
     /// static lock stops that and the timer running at once.
     ///
     /// Deliberately does no asking of its own: what "notify the reporter" means is a

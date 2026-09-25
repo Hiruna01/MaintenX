@@ -21,7 +21,7 @@ public class VerificationService : IVerificationService
     };
 
     /// <summary>
-    /// One sweep at a time. The timer and POST /api/verifications/run-sweep can both start
+    /// One sweep at a time. The timer and POST /api/workflows/verification-sweep can both start
     /// one, and two passes over the same rows would each count the same check as asked.
     /// Static because the service is scoped: every instance must share the one lock — same
     /// as GoogleCalendarSyncService.
@@ -351,6 +351,13 @@ public class VerificationService : IVerificationService
         var queued = 0;
         var failed = 0;
 
+        // STEP 0 — the workflows. Completed ones whose repair is VerificationSettings.DelayDays
+        // old move to AwaitingVerification. The same delay, measured from the same instant
+        // (WorkOrderService stamps the workflow and the order with one CompletedAt), as the
+        // check below falling due, so the workflow and the check reach "ask" in the same pass.
+        var (movedWorkflows, failedWorkflows) = await AdvanceCompletedWorkflowsAsync(now, cancellationToken);
+        failed += failedWorkflows;
+
         // STEP 1 — ask the reporter. Exactly the shape the composite index on
         // (Status, DueAt) serves: equality on the leading column, range on the second.
         // Ids only: each row is loaded, changed and saved on its own below.
@@ -416,16 +423,78 @@ public class VerificationService : IVerificationService
             if (outcome == StepOutcome.Failed) failed++;
         }
 
-        var processed = asked + queued + failed;
+        var processed = movedWorkflows + asked + queued + failed;
 
         if (processed > 0)
         {
             _logger.LogInformation(
-                "Verification sweep: {Asked} asked the reporter, {Queued} queued for the agent, {Failed} failed.",
-                asked, queued, failed);
+                "Verification sweep: {Workflows} workflow(s) now awaiting verification, {Asked} asked the "
+                + "reporter, {Queued} queued for the agent, {Failed} failed.",
+                movedWorkflows, asked, queued, failed);
         }
 
-        return new VerificationSweepResultDto(processed, asked, queued, failed);
+        return new VerificationSweepResultDto(processed, movedWorkflows, asked, queued, failed);
+    }
+
+    /// <summary>
+    /// Step 0 of the sweep: Completed workflows whose CompletedAt is at least DelayDays old,
+    /// moved to AwaitingVerification through WorkflowTransitions.
+    ///
+    /// IDEMPOTENT BY STATE: a moved workflow is no longer Completed, so no later pass can pick
+    /// it again, and nothing here creates a row — the verification check it waits on was raised
+    /// with the completion itself. Running the sweep twice moves each workflow once.
+    ///
+    /// One workflow at a time, each saved on its own, like the check steps. A workflow that
+    /// throws is logged and left Completed for the next pass — there is no answer on it to
+    /// protect and no Expired state to give it; a workflow is only ever moved forward.
+    /// </summary>
+    private async Task<(int Moved, int Failed)> AdvanceCompletedWorkflowsAsync(
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        var completedBy = now.AddDays(-_settings.DelayDays);
+
+        var dueIds = await _db.AgentWorkflows
+            .AsNoTracking()
+            .Where(w => w.CurrentState == WorkflowState.Completed
+                && w.CompletedAt != null
+                && w.CompletedAt <= completedBy)
+            .OrderBy(w => w.Id)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken);
+
+        var moved = 0;
+        var failed = 0;
+
+        foreach (var id in dueIds)
+        {
+            try
+            {
+                var workflow = await _db.AgentWorkflows.FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
+
+                // Re-read, not assumed: the row may have moved since the ids were listed.
+                if (workflow is null || workflow.CurrentState != WorkflowState.Completed)
+                {
+                    continue;
+                }
+
+                WorkflowTransitions.Move(workflow, WorkflowTrigger.VerificationDue);
+                workflow.Outcome = "The repair is being verified with the reporter.";
+
+                await _db.SaveChangesAsync(cancellationToken);
+                moved++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Verification sweep failed on workflow {WorkflowId}.", id);
+
+                // Same reason as RunStepAsync: the failed change would ride along with the next save.
+                _db.ChangeTracker.Clear();
+                failed++;
+            }
+        }
+
+        return (moved, failed);
     }
 
     private enum StepOutcome

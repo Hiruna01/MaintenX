@@ -126,7 +126,7 @@ public class ApiFactory : WebApplicationFactory<Program>
             // through POST /api/timetable/sync instead. The verification sweep likewise —
             // it runs a pass at startup, which would move a test's Pending checks before
             // the test looked at them. Tests call ProcessDueChecksAsync or
-            // POST /api/verifications/run-sweep.
+            // POST /api/workflows/verification-sweep.
             foreach (var worker in services
                 .Where(d => d.ImplementationType == typeof(WorkflowRunner)
                          || d.ImplementationType == typeof(TimetableSyncWorker)

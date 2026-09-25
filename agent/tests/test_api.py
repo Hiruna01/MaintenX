@@ -73,11 +73,11 @@ def test_run_requires_a_description(client):
     assert response.status_code == 422
 
 
-def test_run_returns_a_diagnosis_beside_the_clarifier_output(client):
+def test_a_report_the_clarifier_asks_about_stops_at_the_clarifier(client):
     """
-    Two agents, one response — and the clarifier's fields are exactly where they were.
-    The API's AgentRunResponse reads agent, status and output by name, so the diagnosis
-    has to be an addition to this contract, never a reinterpretation of it.
+    Human pause 1. The stub clarifier asks two questions, so the run ends with them: no
+    diagnosis and no proposal, because both would be made without the detail the clarifier
+    just said it needed. The clarifier's fields are exactly where the API reads them.
     """
     response = client.post(
         "/run",
@@ -94,7 +94,37 @@ def test_run_returns_a_diagnosis_beside_the_clarifier_output(client):
     body = RunResponse.model_validate(response.json())
     assert body.agent == "clarifier"
     assert body.status is AgentStatus.ok
-    assert len(body.output.questions) <= MAX_QUESTIONS
+    assert 0 < len(body.output.questions) <= MAX_QUESTIONS
+    assert body.diagnosis is None and body.strategy is None
+
+
+def test_a_resumed_run_returns_the_diagnosis_and_the_proposal_without_asking_again(client):
+    """
+    The reporter has answered, so the run starts at the diagnostic. The clarifier did not
+    run: the top-level fields are the diagnostic's, with an empty question list, and the
+    diagnosis and the proposal sit where they always do. The proposal carries no approval
+    anywhere — the API decides that.
+    """
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Lecture Hall A projector keeps cutting out mid lecture.",
+            "room_id": 1,
+            "asset_id": 1,
+            "clarification_answers": [
+                {"question_text": "Is the equipment completely unresponsive?", "answer_text": "No"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    raw = response.json()
+
+    body = RunResponse.model_validate(raw)
+    assert body.agent == "diagnostic"
+    assert body.status is AgentStatus.ok
+    assert body.output.questions == []
 
     assert body.diagnosis is not None
     assert body.diagnosis.agent == "diagnostic"
@@ -105,29 +135,6 @@ def test_run_returns_a_diagnosis_beside_the_clarifier_output(client):
         "get_related_open_reports",
     ]
 
-
-def test_run_returns_the_strategists_proposal_beside_the_diagnosis(client):
-    """
-    Third agent, still an addition: the clarifier's fields and the diagnosis are where they
-    were. The proposal carries no approval anywhere — the API decides that.
-    """
-    response = client.post(
-        "/run",
-        json={
-            "workflow_id": 7,
-            "description": "Lecture Hall A projector keeps cutting out mid lecture.",
-            "room_id": 1,
-            "asset_id": 1,
-        },
-    )
-
-    assert response.status_code == 200
-    raw = response.json()
-
-    body = RunResponse.model_validate(raw)
-    assert body.agent == "clarifier"
-    assert body.diagnosis is not None and body.diagnosis.status is AgentStatus.ok
-
     assert body.strategy is not None
     assert body.strategy.agent == "strategist"
     assert body.strategy.status is AgentStatus.ok
@@ -136,6 +143,9 @@ def test_run_returns_the_strategists_proposal_beside_the_diagnosis(client):
         "get_asset_service_history",
         "get_open_work_orders",
     ]
+
+    # No clarifier tool call anywhere: get_room is the clarifier's alone.
+    assert "get_room" not in {c.tool for c in body.diagnosis.tool_calls + body.strategy.tool_calls}
 
     # Money as a JSON number on the wire, for the API's decimal to read.
     assert isinstance(raw["strategy"]["output"]["estimated_cost"], float)

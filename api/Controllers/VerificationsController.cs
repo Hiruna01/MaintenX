@@ -162,27 +162,6 @@ public class VerificationsController : ControllerBase
     }
 
     /// <summary>
-    /// Runs one pass of the verification sweep now, rather than waiting for the timer.
-    ///
-    /// Not optional: Render's free tier sleeps an idle service, and a demo cannot wait an
-    /// hour for VerificationSweepService to tick. It is the same pass the timer runs, under
-    /// the same lock, so pressing it while the timer is mid-pass waits rather than doubling up.
-    ///
-    /// FacilitiesManager only, and like every one-role policy here an Admin is refused too.
-    /// 200 even when some rows failed — a failed row is expired and counted in Failed, and
-    /// the rest were processed.
-    /// </summary>
-    [HttpPost("run-sweep")]
-    [Authorize(Policy = nameof(Role.FacilitiesManager))]
-    [ProducesResponseType(typeof(VerificationSweepResultDto), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-    [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<VerificationSweepResultDto>> RunSweep(CancellationToken cancellationToken)
-    {
-        return Ok(await _verificationService.ProcessDueChecksAsync(cancellationToken));
-    }
-
-    /// <summary>
     /// An ownership refusal, with a body: the policy-generated 403s elsewhere are role
     /// refusals, and the two read identically without one.
     /// </summary>

@@ -334,7 +334,11 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         var check = await db.VerificationChecks.AsNoTracking().SingleAsync(v => v.WorkOrderId == order.Id);
         Assert.Equal(VerificationStatus.Pending, check.Status);
 
-        Assert.Equal(WorkflowState.AwaitingVerification, await WorkflowStateAsync(fault.ReportId));
+        // Completed, not yet AwaitingVerification: the sweep moves it once the delay has
+        // passed, the same instant the check falls due (VerificationSweepTests).
+        var workflow = await db.AgentWorkflows.AsNoTracking().SingleAsync(w => w.ReportId == fault.ReportId);
+        Assert.Equal(WorkflowState.Completed, workflow.CurrentState);
+        Assert.Equal(stored.CompletedAt, workflow.CompletedAt);
 
         // Completed is the end of the order's life as live work.
         var again = await technician.PostAsJsonAsync($"/api/workorders/{order.Id}/complete",
@@ -510,8 +514,8 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         // Compared as strings, "9000.00" sorts above "10000.00" and "950.00" above both —
         // exactly what SQLite would do with a decimal stored as TEXT.
         await RaiseAsync(manager, fault, 9_000m);
-        await RaiseAsync(manager, fault, 10_000m);
-        await RaiseAsync(manager, fault, 950m);
+        await RaiseAsync(manager, await AnotherReportOnAsync(fault), 10_000m);
+        await RaiseAsync(manager, await AnotherReportOnAsync(fault), 950m);
 
         var page = await manager.GetFromJsonAsync<PagedResult<WorkOrderDto>>(
             $"/api/workorders?assetId={fault.AssetId}&sort=Cost", JsonOptions);
@@ -525,7 +529,7 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         var (manager, _) = await ClientAsync(Role.FacilitiesManager);
         var fault = await NewFaultAsync();
         var waiting = await RaiseAsync(manager, fault, 42_000m);
-        await RaiseAsync(manager, fault, 10m);
+        await RaiseAsync(manager, await AnotherReportOnAsync(fault), 10m);
 
         var page = await manager.GetFromJsonAsync<PagedResult<WorkOrderDto>>(
             $"/api/workorders?assetId={fault.AssetId}&status=AwaitingApproval", JsonOptions);
@@ -756,7 +760,36 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.Created, reportResponse.StatusCode);
         var report = await reportResponse.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
-        return new Fault(report!.Id, asset!.Id);
+        // Where a finished agent run leaves it: a work order is raised from Strategizing.
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, report!.Id);
+
+        return new Fault(report.Id, asset!.Id);
+    }
+
+    /// <summary>
+    /// Another report against the same asset, ready for its order. One report's run raises
+    /// one work order — a second order on the same report is a 409 — so a test that needs
+    /// several orders on one asset files a report for each, as the reporters would.
+    /// </summary>
+    private async Task<Fault> AnotherReportOnAsync(Fault fault)
+    {
+        int roomId;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            roomId = await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+                .Assets.Where(a => a.Id == fault.AssetId).Select(a => a.RoomId).SingleAsync();
+        }
+
+        var (reporter, _) = await ClientAsync(Role.Reporter);
+        var response = await reporter.PostAsJsonAsync(
+            "/api/reports", new CreateReportDto("Projector cutting out again, same room.", roomId), JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var report = await response.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
+
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, report!.Id);
+
+        return fault with { ReportId = report.Id };
     }
 
     private static async Task<WorkOrderDto> RaiseAsync(

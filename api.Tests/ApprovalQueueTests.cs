@@ -440,7 +440,10 @@ public class ApprovalQueueTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.Created, reportResponse.StatusCode);
         var report = await reportResponse.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
-        return new Fault(report!.Id, asset!.Id);
+        // Where a finished agent run leaves it: a work order is raised from Strategizing.
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, report!.Id);
+
+        return new Fault(report.Id, asset!.Id);
     }
 
     private static async Task<WorkOrderDto> RaiseAsync(

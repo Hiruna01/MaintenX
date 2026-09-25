@@ -857,6 +857,11 @@ public class ClarificationTests : IClassFixture<ApiFactory>
         {
             var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
             await clarifications.RecordQuestionsAsync(report!.Id, workflow.Id, parsed);
+
+            // Then exactly what the runner does next: the workflow pauses for the answers.
+            // Only from AwaitingClarification may "the reporter answered" move it on.
+            var workflowService = scope.ServiceProvider.GetRequiredService<IWorkflowService>();
+            await workflowService.CompleteClarificationAsync(workflow.Id, parsed.Count);
         }
 
         var questions = await client.GetFromJsonAsync<List<ClarificationQuestionDto>>(

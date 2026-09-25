@@ -222,6 +222,8 @@ public class WorkOrderPhotoTests : IClassFixture<StorageStubApiFactory>
                 "/api/reports", new CreateReportDto("Projector keeps cutting out mid-lecture.", room.Id), JsonOptions))
             .Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, report!.Id);
+
         var raised = await manager.PostAsJsonAsync(
             "/api/workorders",
             new CreateWorkOrderDto(report!.Id, asset!.Id, WorkOrderStrategy.SingleJob, 500m, null),

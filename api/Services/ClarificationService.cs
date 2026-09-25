@@ -299,8 +299,9 @@ public class ClarificationService : IClarificationService
         else
         {
             // The clarification is over, so the run goes back to what it was doing. Which
-            // state follows which is a business rule and lives in C#, never in a prompt.
-            workflow.CurrentState = WorkflowState.Diagnosing;
+            // state follows which is a business rule and lives in C#, never in a prompt —
+            // WorkflowTransitions, which refuses (409) a workflow that is not waiting here.
+            WorkflowTransitions.Move(workflow, WorkflowTrigger.ReporterAnswered);
         }
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -312,12 +313,8 @@ public class ClarificationService : IClarificationService
         // the response is written, which would abort the hand-off we just promised. Same
         // reasoning as ReportService.CreateAsync.
         //
-        // WORTH KNOWING: the runner SKIPS this item today, with a warning, and that is not
-        // a bug here. BeginProcessingAsync only starts a workflow in state Submitted, and
-        // the only agent that exists is the clarifier — which, handed an answered report,
-        // would ask the same questions over again. The hand-off is made now so the resume
-        // point is where it belongs; what picks it up is the diagnostician, and the runner
-        // will branch on CurrentState when that agent lands.
+        // The runner picks it up in Diagnosing and resumes the run with these answers, which
+        // is what sends graph.py straight to the diagnostic without asking again.
         await _workflowQueue.EnqueueAsync(workflowId, CancellationToken.None);
 
         return new SubmitAnswersResult(SubmitAnswersOutcome.Success);

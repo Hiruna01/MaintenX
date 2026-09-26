@@ -16,6 +16,7 @@ import '../verification/confirm_fix_screen.dart';
 import '../verification/verification_status_chip.dart';
 import 'clarification_screen.dart';
 import 'report.dart';
+import 'report_stage.dart';
 import 'report_status_chip.dart';
 import 'reports_api.dart';
 import 'submit_report_screen.dart';
@@ -316,6 +317,7 @@ class _ReportCard extends StatelessWidget {
     final waiting = report.isWaitingOnReporter;
     final count = report.unansweredQuestionCount;
     final verification = report.verification;
+    final stage = report.stage;
 
     return MxCard(
       padding: EdgeInsets.zero,
@@ -369,8 +371,17 @@ class _ReportCard extends StatelessWidget {
                     Expanded(child: Text(report.roomName, style: theme.textTheme.bodySmall)),
                   ],
                 ),
-                if (verification != null) ...[
+                // What has happened since it was filed — the diagnosis, a manager's decision,
+                // the repair — as the API words it for the reporter.
+                if (stage != null) ...[
                   const SizedBox(height: 14),
+                  MxWell(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                    child: ReportStageLine(stage: stage),
+                  ),
+                ],
+                if (verification != null) ...[
+                  SizedBox(height: stage != null ? 10 : 14),
                   MxWell(
                     padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
                     child: ReportVerificationLine(verification: verification),

@@ -55,6 +55,7 @@ class ReportListItem {
     required this.roomName,
     required this.description,
     required this.status,
+    required this.stage,
     required this.unansweredQuestionCount,
     required this.verification,
     required this.createdAt,
@@ -64,6 +65,12 @@ class ReportListItem {
   final String roomName;
   final String description;
   final String status;
+
+  /// Where the report has got to in the reporter's words — `ReportStages`, derived by the API
+  /// from the report's status and its latest workflow. Null from an API older than the field,
+  /// which renders no progress line rather than a guessed one.
+  final String? stage;
+
   final int unansweredQuestionCount;
 
   /// The latest check on this report's repair. The report's own status stops at
@@ -85,6 +92,7 @@ class ReportListItem {
       roomName: json['roomName'] as String,
       description: json['description'] as String,
       status: json['status'] as String,
+      stage: json['stage'] as String?,
       unansweredQuestionCount: json['unansweredQuestionCount'] as int,
       verification: json['verification'] == null
           ? null

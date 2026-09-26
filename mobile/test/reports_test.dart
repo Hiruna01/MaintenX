@@ -103,6 +103,7 @@ List<Map<String, dynamic>> _form() => [
 Map<String, dynamic> _row(
   int id, {
   String status = 'Submitted',
+  String? stage = 'BeingReviewed',
   int unanswered = 0,
   String description = 'Projector cuts out mid lecture',
 }) =>
@@ -114,6 +115,7 @@ Map<String, dynamic> _row(
       'assetId': null,
       'description': description,
       'status': status,
+      if (stage != null) 'stage': stage,
       'unansweredQuestionCount': unanswered,
       'createdAt': '2026-09-23T07:00:00Z',
       'updatedAt': '2026-09-23T07:00:00Z',
@@ -726,6 +728,41 @@ void main() {
       await tester.tap(find.text('2 questions waiting on you'));
       await tester.pumpAndSettle();
       expect(find.text('CLARIFY 7'), findsOneWidget);
+    });
+
+    testWidgets('each report shows the stage the API sent, worded for the reporter',
+        (tester) async {
+      await pump(
+        tester,
+        (_) async => _json(_page([
+              _row(1, status: 'WorkOrderRaised', stage: 'AwaitingApproval'),
+              _row(2, status: 'Closed', stage: 'NotGoingAhead', description: 'Door lock jams'),
+            ])),
+      );
+
+      // By NAME, with its sentence — and never a cost, an estimate or who is sent.
+      expect(find.text('Awaiting Approval'), findsOneWidget);
+      expect(find.text('A repair has been proposed and is waiting for a manager to sign it off.'),
+          findsOneWidget);
+      expect(find.text('Not Going Ahead'), findsOneWidget);
+      expect(find.text('A manager decided not to go ahead with this repair.'), findsOneWidget);
+      expect(find.textContaining('Rs'), findsNothing);
+    });
+
+    testWidgets('an unknown stage is shown by its name; no stage means no progress line',
+        (tester) async {
+      await pump(
+        tester,
+        (_) async => _json(_page([
+              _row(3, status: 'Diagnosed', stage: 'SomethingNew', description: 'Bin overflowing'),
+              _row(4, stage: null, description: 'Blind stuck half way'),
+            ])),
+      );
+
+      // Not guessed at: a member added to the C# enum first still reads as what it is.
+      expect(find.text('Something New'), findsOneWidget);
+      expect(find.text('Blind stuck half way'), findsOneWidget);
+      expect(find.text('Progress'), findsOneWidget);
     });
 
     testWidgets('the status filter goes to the API by NAME; nothing matching is empty',

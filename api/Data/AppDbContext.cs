@@ -209,6 +209,14 @@ public class AppDbContext : DbContext
                   .WithMany()
                   .HasForeignKey(w => w.ReportId)
                   .OnDelete(DeleteBehavior.Restrict);
+
+            // The repair that did not hold. A real key, no navigation, Restrict — the same
+            // shape as ServiceRecord.WorkOrderId: the order is the evidence the workflow was
+            // reopened on, so deleting it must fail loudly.
+            entity.HasOne<WorkOrder>()
+                  .WithMany()
+                  .HasForeignKey(w => w.ReopenedWorkOrderId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AgentStep>(entity =>

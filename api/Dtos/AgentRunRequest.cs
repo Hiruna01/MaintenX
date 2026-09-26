@@ -31,7 +31,17 @@ public record AgentRunRequest(
     // there would be a 422.
     [property: JsonPropertyName("clarification_answers"),
               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<AgentClarificationAnswer>? ClarificationAnswers = null);
+    IReadOnlyList<AgentClarificationAnswer>? ClarificationAnswers = null,
+
+    // True when verification reopened this workflow: the repair did not hold and the fault is
+    // being diagnosed again. Like the answers, it routes graph.py straight to the diagnostic —
+    // re-clarifying a fault somebody already repaired would put the same questions to the
+    // reporter again. It carries no data of its own: what changed since the first diagnosis
+    // (the repair's ServiceRecord, the reports filed since) the diagnostic reads through its
+    // tools. Left off the wire when false, so every other run's body is unchanged.
+    [property: JsonPropertyName("reopened"),
+              JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    bool Reopened = false);
 
 /// <summary>
 /// One answered question, in the shape of the agent's ClarificationAnswer: the question with

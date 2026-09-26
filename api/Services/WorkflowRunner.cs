@@ -15,7 +15,8 @@ namespace CampusFacilities.Api.Services;
 /// its own, so a poll of GET /api/workflows/{id} sees the run move agent by agent.
 ///
 /// It STOPS at the two human pauses and never waits in them. AwaitingClarification ends the
-/// run; the reporter's answers re-queue the id and the run resumes from Diagnosing.
+/// run; the reporter's answers re-queue the id and the run resumes from Diagnosing. A repair
+/// that verification reopens resumes from Diagnosing too, and the diagnostic runs again.
 /// AwaitingManagerApproval is never reached by the runner at all — the workflow waits in
 /// Strategizing with the proposal until a manager raises the order, and the order's gate
 /// decides. Nothing here blocks on a person; the queue simply has nothing for it.
@@ -196,6 +197,7 @@ public class WorkflowRunner : BackgroundService
         var workflows = scope.ServiceProvider.GetRequiredService<IWorkflowService>();
         var reports = scope.ServiceProvider.GetRequiredService<IReportService>();
         var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
+        var workOrders = scope.ServiceProvider.GetRequiredService<IWorkOrderService>();
         var agent = scope.ServiceProvider.GetRequiredService<IAgentClient>();
 
         try
@@ -234,7 +236,7 @@ public class WorkflowRunner : BackgroundService
             }
             else
             {
-                await ResumeAfterClarificationAsync(workflows, clarifications, agent, workflow, report, cancellationToken);
+                await ResumeAtDiagnosisAsync(workflows, clarifications, workOrders, agent, workflow, report, cancellationToken);
             }
         }
         catch (Exception ex)
@@ -269,7 +271,9 @@ public class WorkflowRunner : BackgroundService
         ReportDto? report,
         CancellationToken cancellationToken)
     {
-        var call = await agent.RunAsync(RequestFor(workflow, report, answers: null), cancellationToken);
+        var call = await agent.RunAsync(
+            RequestFor(workflow, report, answers: null, assetId: report?.AssetId, reopened: false),
+            cancellationToken);
 
         await RecordAgentStepAsync(workflows, workflow.Id, call, cancellationToken);
 
@@ -322,20 +326,33 @@ public class WorkflowRunner : BackgroundService
     }
 
     /// <summary>
-    /// The reporter has answered, and ClarificationService moved the workflow to Diagnosing.
-    /// The answers go to the agent service, whose graph goes straight to the diagnostic when
-    /// it sees them — the clarifier is not asked again about a report it already asked about.
+    /// The run resumes at the diagnostic, for one of two reasons. Both leave the workflow in
+    /// Diagnosing, and ReopenedWorkOrderId is what tells them apart:
+    ///
+    ///   * the reporter answered, and ClarificationService moved it here — the answers go out
+    ///     as clarification_answers;
+    ///   * verification reopened a repair that did not hold, and
+    ///     IWorkflowService.ReopenForDiagnosisAsync moved it here — the request says reopened.
+    ///     The diagnostic's tools then read the service history as it is NOW, with the record
+    ///     the repair appended, and any report filed since.
+    ///
+    /// Either way graph.py goes straight to the diagnostic: the clarifier is not asked again
+    /// about a report it already asked about, nor about a fault somebody already repaired.
+    /// The diagnosis and the proposal are APPENDED as new steps, so a re-diagnosis sits beside
+    /// the first one rather than replacing it.
     /// </summary>
-    private async Task ResumeAfterClarificationAsync(
+    private async Task ResumeAtDiagnosisAsync(
         IWorkflowService workflows,
         IClarificationService clarifications,
+        IWorkOrderService workOrders,
         IAgentClient agent,
         WorkflowDetailDto workflow,
         ReportDto? report,
         CancellationToken cancellationToken)
     {
         // THIS run's questions only: a report may have been clarified by an earlier run, and
-        // those answers were given to other questions.
+        // those answers were given to other questions. On a re-diagnosis they are sent again:
+        // they are still the reporter's own account of the fault that came back.
         var answers = workflow.ReportId is null
             ? new List<AgentClarificationAnswer>()
             : (await clarifications.GetForReportAsync(workflow.ReportId.Value, cancellationToken))
@@ -344,9 +361,11 @@ public class WorkflowRunner : BackgroundService
                 .Select(q => new AgentClarificationAnswer(q.QuestionText, q.AnswerText!))
                 .ToList();
 
-        if (answers.Count == 0)
+        var reopened = workflow.ReopenedWorkOrderId is not null;
+
+        if (answers.Count == 0 && !reopened)
         {
-            // Sent without answers, the graph would run the clarifier again and ask the same
+            // Sent with neither, the graph would run the clarifier again and ask the same
             // questions — the loop the answers exist to break. Refused rather than run.
             await workflows.FailAsync(
                 workflow.Id,
@@ -355,7 +374,21 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        var call = await agent.RunAsync(RequestFor(workflow, report, answers), cancellationToken);
+        // The report names the asset once triage or a QR scan has; the reopened work order
+        // ALWAYS does (WorkOrder.AssetId is not nullable). Without this, a report whose asset
+        // was never filled in would be re-diagnosed with no service history at all — and the
+        // history, with the failed repair now on it, is the whole point of running again.
+        var assetId = report?.AssetId;
+
+        if (assetId is null && reopened)
+        {
+            var order = await workOrders.GetWorkOrderFactsAsync(workflow.ReopenedWorkOrderId!.Value, cancellationToken);
+            assetId = order?.AssetId;
+        }
+
+        var call = await agent.RunAsync(
+            RequestFor(workflow, report, answers.Count == 0 ? null : answers, assetId, reopened),
+            cancellationToken);
 
         if (!call.Ok || call.Response is null)
         {
@@ -416,7 +449,9 @@ public class WorkflowRunner : BackgroundService
     private static AgentRunRequest RequestFor(
         WorkflowDetailDto workflow,
         ReportDto? report,
-        IReadOnlyList<AgentClarificationAnswer>? answers) =>
+        IReadOnlyList<AgentClarificationAnswer>? answers,
+        int? assetId,
+        bool reopened) =>
         new(
             WorkflowId: workflow.Id,
             Description: workflow.Objective,
@@ -426,8 +461,10 @@ public class WorkflowRunner : BackgroundService
             // runner has no reason to make. The agent can call get_room and read buildingId
             // off the result if it needs it.
             BuildingId: null,
-            // Set when triage or a QR scan named the equipment. It is what lets the
-            // diagnostic and the strategist read the machine's service history.
-            AssetId: report?.AssetId,
-            ClarificationAnswers: answers);
+            // Set when triage or a QR scan named the equipment, or — on a re-diagnosis — by
+            // the reopened work order. It is what lets the diagnostic and the strategist read
+            // the machine's service history.
+            AssetId: assetId,
+            ClarificationAnswers: answers,
+            Reopened: reopened);
 }

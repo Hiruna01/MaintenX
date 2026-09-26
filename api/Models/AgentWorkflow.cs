@@ -40,6 +40,18 @@ public class AgentWorkflow
 
     public DateTime? CompletedAt { get; set; }
 
+    /// <summary>
+    /// The completed work order whose repair did not hold, set when verification reopens the
+    /// workflow (RepairReopened, AwaitingVerification -> Diagnosing). Null on a workflow that
+    /// has never been reopened, and the latest one after a second reopen.
+    ///
+    /// It is what tells the runner a Diagnosing workflow is a RE-DIAGNOSIS rather than a
+    /// resume after clarification — both start from the same state — and it names the
+    /// equipment when the report never did: a work order always carries its asset, so the
+    /// diagnostic can read the history the failed repair was appended to.
+    /// </summary>
+    public int? ReopenedWorkOrderId { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

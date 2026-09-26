@@ -2298,6 +2298,28 @@ th.work-order-table__num .sort-button {
   font-weight: 500;
 }
 
+/* ---------- diagnoses compared (workflow page) ---------- */
+
+.diagnosis-comparison {
+  margin: 2rem 0;
+}
+
+.diagnosis-comparison__lead {
+  max-width: 70ch;
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Side by side while there is room for two readable columns; stacked, oldest first, below. */
+.diagnosis-comparison__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
 /* ---------- decision controls ---------- */
 
 .decision {

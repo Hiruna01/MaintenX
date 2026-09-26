@@ -53,6 +53,7 @@ public class WorkOrderService : IWorkOrderService
     private readonly SchedulingSettings _scheduling;
     private readonly IAssetService _assets;
     private readonly IFileStorageService _fileStorage;
+    private readonly ILogger<WorkOrderService> _logger;
 
     public WorkOrderService(
         AppDbContext db,
@@ -62,7 +63,8 @@ public class WorkOrderService : IWorkOrderService
         TimeProvider time,
         SchedulingSettings scheduling,
         IAssetService assets,
-        IFileStorageService fileStorage)
+        IFileStorageService fileStorage,
+        ILogger<WorkOrderService> logger)
     {
         _db = db;
         _approval = approval;
@@ -72,6 +74,7 @@ public class WorkOrderService : IWorkOrderService
         _scheduling = scheduling;
         _assets = assets;
         _fileStorage = fileStorage;
+        _logger = logger;
     }
 
     /// <summary>
@@ -488,7 +491,11 @@ public class WorkOrderService : IWorkOrderService
         }
         else
         {
-            WorkflowTransitions.Move(workflow, WorkflowTransitions.ForRaisedWorkOrder(needsApproval));
+            var trigger = WorkflowTransitions.ForRaisedWorkOrder(needsApproval);
+            WorkflowTransitions.Move(workflow, trigger);
+
+            // The report goes to WorkOrderRaised in the same transaction (ReportProgress).
+            await ReportProgress.AdvanceAsync(_db, workflow, trigger, _logger, cancellationToken);
 
             // Where the gate routed the order goes on the run's audit trail (ApprovalAudit),
             // and the step needs the order's id, which exists only after the first save — so
@@ -689,11 +696,25 @@ public class WorkOrderService : IWorkOrderService
             return new CompletionPhotoResult(CompletionPhotoOutcome.ContentDoesNotMatchType);
         }
 
-        var url = await _fileStorage.UploadAsync(
-            content, contentType!.ToLowerInvariant(), $"workorders/{order.Id}", cancellationToken);
+        var type = contentType!.ToLowerInvariant();
+
+        // Metadata stripped before the public bucket, exactly as for the report photo.
+        await using var stripped = await ImageUploadRules.WithoutMetadataAsync(content, type, cancellationToken);
+
+        if (stripped is null)
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.ContentDoesNotMatchType);
+        }
+
+        var upload = await _fileStorage.UploadAsync(stripped, type, $"workorders/{order.Id}", cancellationToken);
 
         // Nothing is written on failure: the order keeps whatever photo it had, or none.
-        if (url is null)
+        if (upload.Outcome == StorageUploadOutcome.RateLimited)
+        {
+            return new CompletionPhotoResult(CompletionPhotoOutcome.StorageRateLimited, RetryAfter: upload.RetryAfter);
+        }
+
+        if (upload.Url is not { } url)
         {
             return new CompletionPhotoResult(CompletionPhotoOutcome.StorageUnavailable);
         }
@@ -775,6 +796,9 @@ public class WorkOrderService : IWorkOrderService
         if (workflow is not null)
         {
             WorkflowTransitions.Move(workflow, WorkflowTrigger.ManagerRejected);
+
+            // Nothing more will happen on the report, so it is Closed in the same save (ReportProgress).
+            await ReportProgress.AdvanceAsync(_db, workflow, WorkflowTrigger.ManagerRejected, _logger, cancellationToken);
             workflow.CompletedAt = now;
             workflow.Outcome = $"Work order {order.Id} was rejected by a facilities manager: {reason}";
             _db.AgentSteps.Add(ApprovalAudit.Step(

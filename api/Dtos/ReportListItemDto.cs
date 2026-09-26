@@ -16,6 +16,9 @@ namespace CampusFacilities.Api.Dtos;
 /// stops at WorkOrderRaised or Closed, and neither says whether the repair HELD — so a
 /// reporter who answered "no, still broken" would see nothing on their report change. The
 /// latest check's state travels on the row instead, so the report says what happened next.
+///
+/// Stage is the same idea for the middle of the lifecycle: what the agents and a manager have
+/// done since the reporter filed it, which the report's status alone says too coarsely.
 /// </summary>
 public record ReportListItemDto(
     int Id,
@@ -25,6 +28,13 @@ public record ReportListItemDto(
     int? AssetId,
     string Description,
     ReportStatus Status,
+
+    // Where the report has got to in its REPORTER's words — derived in C# by
+    // ReportProgress.StageFor from the status, the latest workflow's state and whether the
+    // latest order was rejected. The workflow state itself is not on the row: a reporter is
+    // not told that a run is Strategizing or Failed. No cost, estimate or technician.
+    ReportStage Stage,
+
     int UnansweredQuestionCount,
 
     // The newest verification check on a work order raised for this report. NULL when there

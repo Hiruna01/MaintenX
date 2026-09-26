@@ -179,17 +179,26 @@ public enum AttachPhotoOutcome
     TooLarge,
 
     /// <summary>
-    /// The bytes do not start the way the claimed type always starts, or there are none.
-    /// A 400.
+    /// The bytes do not start the way the claimed type always starts, there are none, or the
+    /// file's structure cannot be walked to strip its metadata (ImageMetadata). A 400.
     /// </summary>
     ContentDoesNotMatchType,
 
     /// <summary>Storage was unreachable or refused the upload; nothing was recorded. A 503.</summary>
-    StorageUnavailable
+    StorageUnavailable,
+
+    /// <summary>
+    /// Storage rate-limited the upload (429); nothing was recorded. A 503 too, with the
+    /// provider's Retry-After passed on when it sent one.
+    /// </summary>
+    StorageRateLimited
 }
 
-/// <summary><see cref="PhotoUrl"/> is set only on <see cref="AttachPhotoOutcome.Success"/>.</summary>
-public record AttachPhotoResult(AttachPhotoOutcome Outcome, string? PhotoUrl = null);
+/// <summary>
+/// <see cref="PhotoUrl"/> is set only on <see cref="AttachPhotoOutcome.Success"/>,
+/// <see cref="RetryAfter"/> only on <see cref="AttachPhotoOutcome.StorageRateLimited"/>.
+/// </summary>
+public record AttachPhotoResult(AttachPhotoOutcome Outcome, string? PhotoUrl = null, string? RetryAfter = null);
 
 /// <summary>
 /// Why an <see cref="IReportService.UpdateStatusAsync"/> call ended as it did. A plain enum

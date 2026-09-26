@@ -271,10 +271,33 @@ public class ReportsController : ControllerBase
                        + "the report. The report itself is unchanged. Please try again later."
             }),
 
+            AttachPhotoOutcome.StorageRateLimited => StorageBusy(result.RetryAfter,
+                "Photo storage is receiving too many uploads right now. The photo has not been "
+                + "attached and the report is unchanged. Please try again shortly."),
+
             // Unreachable, and deliberately loud rather than a quiet 500: a new outcome
             // added without a case here is a bug in this switch, not in the caller.
             _ => throw new InvalidOperationException($"Unhandled photo outcome '{result.Outcome}'.")
         };
+    }
+
+    /// <summary>
+    /// A 503 for a rate-limited upload, with the storage provider's Retry-After passed on when
+    /// it sent one. Still a 503 rather than a 429: it is not THIS caller who sent too many.
+    /// </summary>
+    private ObjectResult StorageBusy(string? retryAfter, string detail)
+    {
+        if (retryAfter is not null)
+        {
+            Response.Headers.RetryAfter = retryAfter;
+        }
+
+        return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+        {
+            Status = StatusCodes.Status503ServiceUnavailable,
+            Title = "Photo storage is busy",
+            Detail = detail
+        });
     }
 
     /// <summary>The three file failures are all 400s against the photo field.</summary>

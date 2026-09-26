@@ -216,6 +216,8 @@ public class ReportService : IReportService
                 r.AssetId,
                 r.Description,
                 r.Status,
+                // Filled in below with the verification, from the page's workflows and orders.
+                ReportStage.BeingReviewed,
                 // The one thing a list needs to say about clarification — "this report is
                 // waiting on you" — without pulling the questions themselves.
                 r.ClarificationQuestions.Count(q => q.Answer == null),
@@ -243,10 +245,39 @@ public class ReportService : IReportService
                 g => g.Key,
                 g => g.MaxBy(c => c.Id)!);
 
+        // The reporter's stage needs the latest workflow and the latest order per report —
+        // two more queries for the page, the newest picked in C# for the same SQLite reason.
+        var workflows = await _db.AgentWorkflows
+            .AsNoTracking()
+            .Where(w => w.ReportId != null && reportIds.Contains(w.ReportId.Value))
+            .Select(w => new { ReportId = w.ReportId!.Value, w.Id, w.CurrentState })
+            .ToListAsync(cancellationToken);
+
+        var latestWorkflow = workflows
+            .GroupBy(w => w.ReportId)
+            .ToDictionary(g => g.Key, g => g.MaxBy(w => w.Id)!.CurrentState);
+
+        var orders = await _db.WorkOrders
+            .AsNoTracking()
+            .Where(o => reportIds.Contains(o.ReportId))
+            .Select(o => new { o.ReportId, o.Id, o.Status })
+            .ToListAsync(cancellationToken);
+
+        var latestOrderRejected = orders
+            .GroupBy(o => o.ReportId)
+            .ToDictionary(g => g.Key, g => g.MaxBy(o => o.Id)!.Status == WorkOrderStatus.Rejected);
+
         items = items
-            .Select(i => latestCheck.TryGetValue(i.Id, out var c)
-                ? i with { Verification = new ReportVerificationDto(c.Id, c.Status, c.AgentOutcome) }
-                : i)
+            .Select(i => i with
+            {
+                Stage = ReportProgress.StageFor(
+                    i.Status,
+                    latestWorkflow.TryGetValue(i.Id, out var state) ? state : null,
+                    latestOrderRejected.GetValueOrDefault(i.Id)),
+                Verification = latestCheck.TryGetValue(i.Id, out var c)
+                    ? new ReportVerificationDto(c.Id, c.Status, c.AgentOutcome)
+                    : null
+            })
             .ToList();
 
         return new PagedResult<ReportListItemDto>(items, page, pageSize, totalCount);
@@ -311,6 +342,13 @@ public class ReportService : IReportService
             .Select(w => new { w.Id, w.CurrentState })
             .FirstOrDefaultAsync(cancellationToken);
 
+        var latestOrderStatus = await _db.WorkOrders
+            .AsNoTracking()
+            .Where(o => o.ReportId == id)
+            .OrderByDescending(o => o.Id)
+            .Select(o => (WorkOrderStatus?)o.Status)
+            .FirstOrDefaultAsync(cancellationToken);
+
         return new ReportDetailDto(
             report.Id,
             report.ReporterId,
@@ -334,7 +372,11 @@ public class ReportService : IReportService
                     latestWorkflow.CurrentState,
                     WorkflowTransitions.CanRaiseWorkOrder(latestWorkflow.CurrentState)
                     && report.Status != ReportStatus.Closed),
-            proposalStep is null ? null : AgentAnalysis.ToProposal(proposalStep));
+            proposalStep is null ? null : AgentAnalysis.ToProposal(proposalStep),
+            ReportProgress.StageFor(
+                report.Status,
+                latestWorkflow?.CurrentState,
+                latestOrderStatus == WorkOrderStatus.Rejected));
     }
 
     public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>
@@ -421,6 +463,14 @@ public class ReportService : IReportService
             Status = ReportStatus.Submitted
         };
 
+        // ONE TRANSACTION FOR THE REPORT AND ITS WORKFLOW. They are two SaveChanges — StartAsync
+        // saves on its own, and needs the report's id — so without it a failure between the two
+        // would leave a report no agent will ever process: filed, Submitted, and with no run
+        // for the startup re-queue to find. WorkflowService shares this scoped DbContext, so its
+        // save joins the transaction. Same shape as WorkOrderService raising an order with its
+        // audit step.
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
         _db.Reports.Add(report);
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -437,8 +487,13 @@ public class ReportService : IReportService
         var started = await _workflowService.StartAsync(
             new StartWorkflowRequest(report.Description, report.Id), cancellationToken);
 
+        await transaction.CommitAsync(cancellationToken);
+
         // A report written a moment ago exists, is Submitted and has no run yet, so StartAsync
         // can only have started one. Checked anyway rather than assumed.
+        //
+        // Enqueued only AFTER the commit, so the runner never dequeues a workflow that is not
+        // committed yet — or one a rollback took away.
         if (started.Workflow is not null)
         {
             // CancellationToken.None, not the request's: that token is cancelled as soon as
@@ -509,11 +564,26 @@ public class ReportService : IReportService
         }
 
         // Lower-cased so the stored object's type does not depend on how the client spelt it.
-        var url = await _fileStorage.UploadAsync(
-            content, contentType!.ToLowerInvariant(), $"reports/{report.Id}", cancellationToken);
+        var type = contentType!.ToLowerInvariant();
+
+        // The bucket is public: the photo goes up WITHOUT its EXIF/GPS and other metadata. A
+        // file whose structure cannot be walked is refused like a wrong signature — fail closed.
+        await using var stripped = await ImageUploadRules.WithoutMetadataAsync(content, type, cancellationToken);
+
+        if (stripped is null)
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.ContentDoesNotMatchType);
+        }
+
+        var upload = await _fileStorage.UploadAsync(stripped, type, $"reports/{report.Id}", cancellationToken);
 
         // Nothing is written on failure: the report keeps whatever photo it had, or none.
-        if (url is null)
+        if (upload.Outcome == StorageUploadOutcome.RateLimited)
+        {
+            return new AttachPhotoResult(AttachPhotoOutcome.StorageRateLimited, RetryAfter: upload.RetryAfter);
+        }
+
+        if (upload.Url is not { } url)
         {
             return new AttachPhotoResult(AttachPhotoOutcome.StorageUnavailable);
         }

@@ -27,7 +27,8 @@ public class WorkOrderPhotoTests : IClassFixture<StorageStubApiFactory>
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
-    private static readonly byte[] JpegBytes = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10 };
+    /// <summary>A JPEG whose structure is real (TestImages), so its metadata can be stripped.</summary>
+    private static readonly byte[] JpegBytes = TestImages.Jpeg;
 
     private const string Note = "Lamp housing fan replaced, filter cleaned. Ran 40min, no cutout.";
 
@@ -153,6 +154,44 @@ public class WorkOrderPhotoTests : IClassFixture<StorageStubApiFactory>
         var complete = await technician.PostAsJsonAsync($"/api/workorders/{orderId}/complete",
             new CompleteWorkOrderDto(100m, ServiceOutcome.Resolved, Note, null), JsonOptions);
         Assert.Equal(HttpStatusCode.NoContent, complete.StatusCode);
+    }
+
+    [Fact]
+    public async Task Upload_StripsTheMetadata_LikeTheReportPhoto()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, technicianId) = await ClientAsync(Role.Technician);
+        var orderId = await AssignedOrderAsync(manager, technicianId);
+
+        var response = await technician.PostAsync(
+            $"/api/workorders/{orderId}/photo", PhotoForm(TestImages.JpegWithMetadata));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var (_, body, _) = Assert.Single(_factory.Storage.Requests);
+        Assert.Equal(TestImages.JpegWithMetadataStripped, body);
+    }
+
+    [Fact]
+    public async Task Upload_WhenStorageRateLimits_Is503WithItsRetryAfter_AndRecordsNothing()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, technicianId) = await ClientAsync(Role.Technician);
+        var orderId = await AssignedOrderAsync(manager, technicianId);
+
+        _factory.Storage.Respond = () =>
+        {
+            var tooMany = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            tooMany.Headers.TryAddWithoutValidation("Retry-After", "45");
+            return tooMany;
+        };
+
+        var response = await technician.PostAsync($"/api/workorders/{orderId}/photo", PhotoForm(JpegBytes));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(TimeSpan.FromSeconds(45), response.Headers.RetryAfter!.Delta);
+
+        var detail = await technician.GetFromJsonAsync<WorkOrderDetailDto>($"/api/workorders/{orderId}", JsonOptions);
+        Assert.Null(detail!.CompletionPhotoUrl);
     }
 
     // ---------------------------------------------------------------------------------

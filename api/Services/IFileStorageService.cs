@@ -20,13 +20,42 @@ public interface IFileStorageService
     /// client-supplied name is the classic path-traversal vector ("../../other/thing.png"),
     /// and the only way to be sure it is never used is for there to be nowhere to pass it.
     ///
-    /// RETURNS NULL WHEN THE STORAGE IS UNAVAILABLE — unreachable, timed out, not configured,
-    /// or refusing the upload. It never throws for any of those, so a caller can simply
-    /// decline to record a URL: a URL pointing at nothing is worse than no photo.
+    /// NEVER THROWS FOR A STORAGE FAILURE — unreachable, timed out, not configured, refusing
+    /// the upload or rate-limiting it all come back as a <see cref="StorageUploadResult"/>
+    /// with no URL, so a caller can simply decline to record one: a URL pointing at nothing
+    /// is worse than no photo.
     /// </summary>
-    Task<string?> UploadAsync(
+    Task<StorageUploadResult> UploadAsync(
         Stream content,
         string contentType,
         string folder,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>How an upload ended. A plain enum, like every other outcome in this API.</summary>
+public enum StorageUploadOutcome
+{
+    /// <summary>Stored; <see cref="StorageUploadResult.Url"/> is set.</summary>
+    Stored,
+
+    /// <summary>Unreachable, timed out, not configured or refused. A 503 to the client.</summary>
+    Unavailable,
+
+    /// <summary>
+    /// The storage provider said too many requests (HTTP 429). Still a 503 to the client —
+    /// storage is unavailable to it either way — but told apart in the log, and carrying the
+    /// provider's Retry-After when it sent one, so the client is told when to try again
+    /// rather than to hammer a service that asked it to wait.
+    /// </summary>
+    RateLimited
+}
+
+/// <summary>
+/// <see cref="Url"/> is set only when <see cref="Outcome"/> is Stored. <see cref="RetryAfter"/>
+/// is the provider's Retry-After header, re-serialised after parsing (delta-seconds or an
+/// HTTP date), and only ever set when RateLimited.
+/// </summary>
+public record StorageUploadResult(StorageUploadOutcome Outcome, string? Url = null, string? RetryAfter = null)
+{
+    public static StorageUploadResult Unavailable { get; } = new(StorageUploadOutcome.Unavailable);
 }

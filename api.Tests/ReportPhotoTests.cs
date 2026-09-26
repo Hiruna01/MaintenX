@@ -18,7 +18,7 @@ namespace api.Tests;
 /// <summary>
 /// ApiFactory with Supabase Storage replaced by <see cref="StubStorageHandler"/> at the HTTP
 /// level. The real SupabaseStorageService still runs — building the object path, the
-/// headers and the public URL, and turning failures into null — and only the network is
+/// headers and the public URL, and turning failures into results — and only the network is
 /// fake, so these tests can never reach a real Supabase project.
 /// </summary>
 public class StorageStubApiFactory : ApiFactory
@@ -82,11 +82,10 @@ public class ReportPhotoTests : IClassFixture<StorageStubApiFactory>
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
 
-    /// <summary>The smallest thing that passes as a PNG: its eight-byte signature and a little more.</summary>
-    private static readonly byte[] PngBytes =
-        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D };
+    /// <summary>The smallest PNG and JPEG whose structure is real — see TestImages. Neither carries metadata.</summary>
+    private static readonly byte[] PngBytes = TestImages.Png();
 
-    private static readonly byte[] JpegBytes = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10 };
+    private static readonly byte[] JpegBytes = TestImages.Jpeg;
 
     public ReportPhotoTests(StorageStubApiFactory factory)
     {
@@ -213,8 +212,8 @@ public class ReportPhotoTests : IClassFixture<StorageStubApiFactory>
         var reporter = await CreateAuthenticatedClientAsync();
         var reportId = await CreateReportAsync(reporter);
 
-        var bytes = new byte[ImageUploadRules.MaxBytes];
-        PngBytes.CopyTo(bytes, 0);
+        var bytes = TestImages.Png((int)ImageUploadRules.MaxBytes);
+        Assert.Equal(ImageUploadRules.MaxBytes, bytes.Length);
 
         var response = await reporter.PostAsync($"/api/reports/{reportId}/photo", PhotoForm(bytes));
 
@@ -227,8 +226,7 @@ public class ReportPhotoTests : IClassFixture<StorageStubApiFactory>
         var reporter = await CreateAuthenticatedClientAsync();
         var reportId = await CreateReportAsync(reporter);
 
-        var bytes = new byte[ImageUploadRules.MaxBytes + 1];
-        PngBytes.CopyTo(bytes, 0);
+        var bytes = TestImages.Png((int)ImageUploadRules.MaxBytes + 1);
 
         var response = await reporter.PostAsync($"/api/reports/{reportId}/photo", PhotoForm(bytes));
 
@@ -377,5 +375,100 @@ public class ReportPhotoTests : IClassFixture<StorageStubApiFactory>
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, second.StatusCode);
         Assert.Equal(firstUrl, await ReadPhotoUrlAsync(reporter, reportId));
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Metadata — the bucket is public, so nothing a phone wrote beside the pixels goes up
+    // ---------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("image/jpeg")]
+    [InlineData("image/png")]
+    public async Task Upload_StripsExifGpsAndOtherMetadata_BeforeTheBytesReachStorage(string contentType)
+    {
+        var reporter = await CreateAuthenticatedClientAsync();
+        var reportId = await CreateReportAsync(reporter);
+
+        var (sent, expected) = contentType == "image/jpeg"
+            ? (TestImages.JpegWithMetadata, TestImages.JpegWithMetadataStripped)
+            : (TestImages.PngWithMetadata, TestImages.Png());
+
+        var response = await reporter.PostAsync($"/api/reports/{reportId}/photo", PhotoForm(sent, contentType));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        // Exactly the image without its metadata: every pixel byte kept, in order, and none
+        // of the GPS position, comment, XMP or trailer — wherever in the file it sat.
+        var (_, body, _) = Assert.Single(_factory.Storage.Requests);
+        Assert.Equal(expected, body);
+        Assert.DoesNotContain(TestImages.Secret, Encoding.ASCII.GetString(body));
+    }
+
+    [Theory]
+    [InlineData("image/png")]
+    [InlineData("image/jpeg")]
+    public async Task Upload_WithTheRightSignature_ButAStructureThatCannotBeWalked_Is400AndUploadsNothing(string contentType)
+    {
+        var reporter = await CreateAuthenticatedClientAsync();
+        var reportId = await CreateReportAsync(reporter);
+
+        // Both start with the right magic bytes and then stop: nothing can promise such a
+        // file's metadata is gone, so it is refused rather than published as it came.
+        var bytes = contentType == "image/png"
+            ? TestImages.TruncatedPng
+            : TestImages.Jpeg[..^2];
+
+        var response = await reporter.PostAsync($"/api/reports/{reportId}/photo", PhotoForm(bytes, contentType));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_factory.Storage.Requests);
+        Assert.Null(await ReadPhotoUrlAsync(reporter, reportId));
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Rate limiting — told apart from an outage, still nothing written
+    // ---------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData("30")]
+    [InlineData(null)]
+    public async Task Upload_WhenStorageRateLimits_Is503WithItsRetryAfter_LoggedAsRateLimited_AndRecordsNothing(
+        string? retryAfter)
+    {
+        var reporter = await CreateAuthenticatedClientAsync();
+        var reportId = await CreateReportAsync(reporter);
+
+        _factory.Storage.Respond = () =>
+        {
+            var tooMany = new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+            {
+                Content = new StringContent("rate limit exceeded")
+            };
+
+            if (retryAfter is not null)
+            {
+                tooMany.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
+            }
+
+            return tooMany;
+        };
+
+        var response = await reporter.PostAsync($"/api/reports/{reportId}/photo", PhotoForm(PngBytes));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        // Supabase's Retry-After passed on when it sent one; none invented when it did not.
+        if (retryAfter is null)
+        {
+            Assert.Null(response.Headers.RetryAfter);
+        }
+        else
+        {
+            Assert.Equal(TimeSpan.FromSeconds(30), response.Headers.RetryAfter!.Delta);
+        }
+
+        Assert.Equal("Photo storage is busy", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString());
+        Assert.Contains(_factory.Logs.Entries, e => e.Message.Contains("rate-limited an upload"));
+        Assert.Null(await ReadPhotoUrlAsync(reporter, reportId));
     }
 }

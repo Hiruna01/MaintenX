@@ -10,12 +10,15 @@ import { adviceLabel, formatDateTime } from '../services/workOrdersApi';
  * whether money is spent is the approval they are about to give or withhold. The evidence is
  * shown verbatim because it is where the agent cites the dated visits it is going on — and
  * the service history beside this panel is there to check it against.
+ *
+ * `title` lets the workflow page label each run when a reopened repair was diagnosed again;
+ * `reportId` may be null there, for a workflow started from a bare objective.
  */
-export function DiagnosisPanel({ diagnosis, reportId }) {
+export function DiagnosisPanel({ diagnosis, reportId, title = 'Diagnosis' }) {
   return (
-    <section className="approval-panel" aria-label="The diagnosis">
+    <section className="approval-panel" aria-label={title}>
       <header className="approval-panel__head">
-        <h3>Diagnosis</h3>
+        <h3>{title}</h3>
         <span className="approval-panel__source">DiagnosticAgent · advice</span>
       </header>
 
@@ -47,8 +50,8 @@ function DiagnosisBody({ diagnosis, reportId }) {
   if (!diagnosis.outputReadable) {
     return (
       <p className="approval-panel__empty approval-panel__empty--failed">
-        A diagnosis was recorded but could not be read. The raw output is in the{' '}
-        <Link to={`/reports/${reportId}`}>report&apos;s agent reasoning</Link>.
+        A diagnosis was recorded but could not be read.{' '}
+        <ReasoningLink reportId={reportId} lead="The raw output is in the" />
       </p>
     );
   }
@@ -85,10 +88,20 @@ function DiagnosisBody({ diagnosis, reportId }) {
       ) : null}
 
       <p className="approval-panel__footnote">
-        From workflow #{diagnosis.workflowId}, recorded {formatDateTime(diagnosis.recordedAt)}.
-        Every step the agents took is in the{' '}
-        <Link to={`/reports/${reportId}`}>report&apos;s agent reasoning</Link>.
+        From workflow #{diagnosis.workflowId}, recorded {formatDateTime(diagnosis.recordedAt)}.{' '}
+        <ReasoningLink reportId={reportId} lead="Every step the agents took is in the" />
       </p>
+    </>
+  );
+}
+
+/** No report, no reasoning panel to point at — a link to /reports/null would be a 404. */
+function ReasoningLink({ reportId, lead }) {
+  if (!reportId) return null;
+
+  return (
+    <>
+      {lead} <Link to={`/reports/${reportId}`}>report&apos;s agent reasoning</Link>.
     </>
   );
 }

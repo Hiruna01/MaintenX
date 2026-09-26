@@ -725,6 +725,14 @@ class RunRequest(BaseModel):
         max_length=MAX_CLARIFICATION_ANSWERS,
     )
 
+    # True when verification reopened the workflow: a repair did not hold, and the fault is
+    # diagnosed AGAIN. It routes the run straight to the diagnostic, like the answers do —
+    # re-clarifying a fault somebody already repaired would put the same questions to the
+    # reporter again. It is NOT shown to any agent (DiagnosticInput has no field for it):
+    # what changed since the first diagnosis — the repair's own service record, the reports
+    # filed since — is in the data the tools return, read fresh on this run.
+    reopened: bool = False
+
     # The manager's note when a proposal was sent back for revision; null on every first
     # run. Typed by a manager, and still treated as data by the strategist's prompt.
     revision_note: str | None = Field(default=None, min_length=1, max_length=MAX_REVISION_NOTE)

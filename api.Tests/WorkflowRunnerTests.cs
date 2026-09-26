@@ -57,7 +57,10 @@ public class AgentStubApiFactory : StateMachineApiFactory
 ///   * it never reaches human pause 2 itself: it waits in Strategizing, and the manager
 ///     raising the order is what moves it on;
 ///   * an agent service that is down ends the run in Failed with the reason, and a manager
-///     can still raise the order by hand.
+///     can still raise the order by hand;
+///   * a repair verification REOPENS runs the diagnostic again — not the clarifier — on the
+///     asset the failed order names, with the ServiceRecord that repair appended visible to
+///     its tool, and the second diagnosis is appended beside the first, never over it.
 /// </summary>
 public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
 {
@@ -88,6 +91,24 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         {"workflow_id": 1, "agent": "clarifier", "status": "ok", "error": null, "tool_calls": [],
          "output": {"questions": []}, "diagnosis": {{Diagnosis}}, "strategy": {{Proposal}}}
         """;
+
+    // The second opinion, after the repair did not hold. Deliberately a different cause from
+    // Diagnosis, so the test can tell which step holds which.
+    private const string Rediagnosis = """
+        {"agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"hypotheses": [{"cause": "Failing cooling fan", "confidence": "high",
+                    "evidence": ["temporary fix after the repair, fan noisy"]}],
+                    "primary_hypothesis_index": 0,
+                    "recommended_next_action": "replace", "reasoning_summary": "Came back."}}
+        """;
+
+    private static readonly string Rediagnosed = $$"""
+        {"workflow_id": 1, "agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"questions": []}, "diagnosis": {{Rediagnosis}}, "strategy": {{Proposal}}}
+        """;
+
+    private const string TemporaryFixNote =
+        "cleaned vents + filter. still very hot to touch after 25min, fan noisy. temporary fix.";
 
     private static readonly string Resumed = $$"""
         {"workflow_id": 1, "agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [],
@@ -246,7 +267,154 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Contains("\"clarification_answers\":[{\"question_text\":\"Is the power light on?\",\"answer_text\":\"No\"}]", resumed);
     }
 
+    [Fact]
+    public async Task AReopenedRepair_RunsTheDiagnosticAgain_OnTheOrdersAsset_AndKeepsBothDiagnoses()
+    {
+        var scene = await _factory.SceneAsync();
+        var (reportId, workflowId, orderId) = await CompletedRepairAsync(scene);
+
+        // The sweep's own move to AwaitingVerification is VerificationSweepTests'; here the
+        // workflow is simply where the sweep would have left it.
+        await WorkflowTestData.PutInStateAsync(_factory.Services, reportId, WorkflowState.AwaitingVerification);
+
+        Assert.True(await ReopenAsync(orderId));
+
+        var reopened = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Diagnosing, reopened.CurrentState);
+        Assert.Equal(orderId, reopened.ReopenedWorkOrderId);
+
+        _factory.Agent.Replies.Enqueue(Reply(Rediagnosed, durationMs: 1100));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        // Flagged as a reopen — which is what sends graph.py to the diagnostic, not the
+        // clarifier — and carrying the ORDER's asset: the report never named one, and without
+        // it the second run would have no history to read.
+        var second = _factory.Agent.Requests[1];
+        Assert.True(second.Reopened);
+        Assert.Equal(scene.AssetId, second.AssetId);
+        Assert.Null(second.ClarificationAnswers);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+
+        // Appended, not replaced: the first run's three steps untouched, then the second run's
+        // two — the diagnostic ran first in that call, so it carries the call's time.
+        var agentRuns = detail.Steps.Where(s => s.ToolCallsJson == "[]").ToList();
+        Assert.Equal(
+            new[] { ("clarifier", 1500), ("diagnostic", 0), ("strategist", 0), ("diagnostic", 1100), ("strategist", 0) },
+            agentRuns.Select(s => (s.AgentName, s.DurationMs)));
+
+        var diagnoses = agentRuns.Where(s => s.AgentName == AgentRunResponse.DiagnosticAgentName).ToList();
+        Assert.Contains("Overheating", diagnoses[0].PayloadJson);
+        Assert.Contains("Failing cooling fan", diagnoses[1].PayloadJson);
+        Assert.DoesNotContain("Failing cooling fan", diagnoses[0].PayloadJson);
+
+        // And read back, one entry per run, for the workflow view to set side by side — by the
+        // approval queue's own reader, so the second is the one it now shows too.
+        Assert.Equal(diagnoses.Select(d => d.Id), detail.Diagnoses.Select(d => d.StepId));
+        var rediagnosis = detail.Diagnoses[1];
+        Assert.True(rediagnosis.OutputReadable);
+        Assert.Equal("Failing cooling fan", rediagnosis.Hypotheses[rediagnosis.PrimaryHypothesisIndex!.Value].Cause);
+        Assert.Equal("replace", rediagnosis.RecommendedNextAction);
+
+        // What the second run's history tool reads: the record the completion appended, newest
+        // first. Nothing is cached between runs — the tool reads the table as it is now.
+        var history = await CallToolAsync("get_asset_service_history", workflowId, second.AssetId!.Value);
+        var newest = history.GetProperty("result")[0];
+        Assert.Equal(orderId, newest.GetProperty("workOrderId").GetInt32());
+        Assert.Equal("TemporaryFix", newest.GetProperty("outcome").GetString());
+        Assert.Equal(TemporaryFixNote, newest.GetProperty("technicianNote").GetString());
+    }
+
+    [Fact]
+    public async Task AReopenIsRefused_UnlessTheRepairIsAwaitingVerification_AndARefusalWritesNothing()
+    {
+        var scene = await _factory.SceneAsync();
+        var (_, workflowId, orderId) = await CompletedRepairAsync(scene);
+
+        // Completed, but the delay has not passed — there is nothing to have "not held" yet.
+        await Assert.ThrowsAsync<InvalidWorkflowTransitionException>(() => ReopenAsync(orderId));
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Completed, detail.CurrentState);
+        Assert.Null(detail.ReopenedWorkOrderId);
+
+        // No such order, or one that never finished: no repair to reopen.
+        Assert.False(await ReopenAsync(999_999));
+
+        var openReport = await scene.FileReportAsync();
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, openReport);
+        var open = await (await RaiseAsync(scene, openReport, 500m)).Content.ReadFromJsonAsync<WorkOrderDto>(JsonOptions);
+        Assert.False(await ReopenAsync(open!.Id));
+    }
+
+    [Fact]
+    public void TheReopenFlagIsSnakeCaseOnTheWire_AndLeftOffWhenFalse()
+    {
+        var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        var fresh = JsonSerializer.Serialize(new AgentRunRequest(1, "Projector cutting out.", 3, null), web);
+        Assert.DoesNotContain("reopened", fresh);
+
+        var reopened = JsonSerializer.Serialize(
+            new AgentRunRequest(1, "Projector cutting out.", 3, null, 7, Reopened: true), web);
+        Assert.Contains("\"reopened\":true", reopened);
+        Assert.Contains("\"asset_id\":7", reopened);
+    }
+
     // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A report run to Strategizing by the runner, its order raised, assigned and completed
+    /// through the real endpoints as a temporary fix — so the ServiceRecord is the one
+    /// completion appends, not one written for the test. The workflow ends Completed.
+    /// </summary>
+    private async Task<(int ReportId, int WorkflowId, int OrderId)> CompletedRepairAsync(StateMachineScene scene)
+    {
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothing, durationMs: 1500));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var raised = await RaiseAsync(scene, reportId, 500m);
+        Assert.Equal(HttpStatusCode.Created, raised.StatusCode);
+        var orderId = (await raised.Content.ReadFromJsonAsync<WorkOrderDto>(JsonOptions))!.Id;
+
+        var assigned = await scene.Manager.PutAsJsonAsync(
+            $"/api/workorders/{orderId}/assign", new AssignTechnicianDto(scene.TechnicianId), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, assigned.StatusCode);
+
+        var completed = await scene.Technician.PostAsJsonAsync(
+            $"/api/workorders/{orderId}/complete",
+            new CompleteWorkOrderDto(480m, ServiceOutcome.TemporaryFix, TemporaryFixNote, null),
+            JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, completed.StatusCode);
+        Assert.Equal(WorkflowState.Completed, (await PollAsync(scene, workflowId)).CurrentState);
+
+        return (reportId, workflowId, orderId);
+    }
+
+    /// <summary>What the VerificationAgent's runner will call once it exists.</summary>
+    private async Task<bool> ReopenAsync(int orderId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<IWorkflowService>()
+            .ReopenForDiagnosisAsync(orderId, CancellationToken.None);
+    }
+
+    /// <summary>A tool call exactly as the agent service makes it: the shared secret, no JWT.</summary>
+    private async Task<JsonElement> CallToolAsync(string toolName, int workflowId, int id)
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Agent-Secret", ApiFactory.AgentSharedSecret);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/internal/tools/{toolName}", new ToolCallRequest(workflowId, id, "diagnostic"), JsonOptions);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        return await response.Content.ReadFromJsonAsync<JsonElement>(JsonOptions);
+    }
 
     private WorkflowRunner Runner() => new(
         _factory.Services.GetRequiredService<IWorkflowQueue>(),

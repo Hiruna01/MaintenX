@@ -152,6 +152,46 @@ def test_a_resumed_run_returns_the_diagnosis_and_the_proposal_without_asking_aga
     assert "approved" not in raw["strategy"]["output"]
 
 
+def test_a_reopened_run_is_the_diagnostic_again_with_fresh_lookups(client):
+    """
+    A repair that did not hold. The clarifier does not run; the diagnostic and the strategist
+    do, and each makes its own tool calls on this run — nothing is carried over from the
+    first one, which is what lets the service record the repair appended be read.
+    """
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Lecture Hall A projector keeps cutting out mid lecture.",
+            "room_id": 1,
+            "asset_id": 1,
+            "reopened": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = RunResponse.model_validate(response.json())
+
+    assert body.agent == "diagnostic"
+    assert body.output.questions == []
+    assert body.diagnosis is not None and body.diagnosis.status is AgentStatus.ok
+    assert [c.tool for c in body.diagnosis.tool_calls] == [
+        "get_asset",
+        "get_asset_service_history",
+        "get_related_open_reports",
+    ]
+    assert body.strategy is not None
+
+
+def test_run_rejects_a_reopened_flag_that_is_not_a_boolean(client):
+    response = client.post(
+        "/run",
+        json={"workflow_id": 7, "description": "Projector cutting out.", "reopened": "the fault is back"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_run_accepts_a_managers_revision_note(client):
     response = client.post(
         "/run",

@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import ErrorMessage from '../../../components/ErrorMessage';
 import Spinner from '../../../components/Spinner';
+import DiagnosisComparison from '../components/DiagnosisComparison';
 import WorkflowSteps from '../components/WorkflowSteps';
 import useWorkflow from '../hooks/useWorkflow';
 import { workflowStateLabel } from '../services/workflowsService';
@@ -74,7 +75,29 @@ export function WorkflowDetailPage() {
               <dt>Completed</dt>
               <dd>{formatDate(data.completedAt)}</dd>
             </div>
+            {data.reopenedWorkOrderId ? (
+              <div className="detail__row">
+                <dt>Reopened</dt>
+                <dd>
+                  The repair on{' '}
+                  <Link to={`/workorders/${data.reopenedWorkOrderId}`}>
+                    work order #{data.reopenedWorkOrderId}
+                  </Link>{' '}
+                  did not hold
+                </dd>
+              </div>
+            ) : null}
           </dl>
+
+          {/* Only when the diagnostic has run: a workflow still waiting on its reporter has
+              no diagnosis, and an empty panel would read as one that failed. */}
+          {data.diagnoses?.length > 0 ? (
+            <DiagnosisComparison
+              diagnoses={data.diagnoses}
+              reportId={data.reportId}
+              reopenedWorkOrderId={data.reopenedWorkOrderId}
+            />
+          ) : null}
 
           <h2>Steps</h2>
 

@@ -94,8 +94,8 @@ async def run(request: RunRequest) -> RunResponse:
     so the top-level fields describe the run as a whole — the verification agent's name,
     status and error — with an empty question list, because nobody was asked anything.
 
-    A RESUMED run — one carrying the reporter's clarification answers — starts at the
-    diagnostic, so again the clarifier did not run and the top-level fields are the first
+    A RESUMED run — one carrying the reporter's clarification answers, or a repair that
+    verification reopened — starts at the diagnostic, so again the clarifier did not run and the top-level fields are the first
     agent that did: the diagnostic's name, status and error, with an empty question list.
 
     A run the clarifier PAUSED carries its questions and no diagnosis or proposal: graph.py

@@ -109,3 +109,19 @@ async def test_a_run_carrying_answers_resumes_at_the_diagnostic_without_asking_a
     # The answers reach the diagnostic on the request it is handed.
     assert diagnostic.args[0].clarification_answers == answered.clarification_answers
     assert state["response"] is None
+
+
+async def test_a_reopened_repair_is_diagnosed_again_without_asking_again():
+    """
+    Verification reopened the repair, and the run carries no answers of its own. Routed to
+    the clarifier, it would put questions to the reporter about a fault somebody already
+    repaired; it goes straight to the diagnostic, and on to the strategist for a new proposal.
+    """
+    graph, (_, diagnostic, _, _), calls = _graph(_clarifier_reply(questions=2))
+    reopened = FRESH.model_copy(update={"reopened": True})
+
+    state = await graph.ainvoke(_initial(reopened))
+
+    assert calls == ["diagnose", "strategize"]
+    assert diagnostic.args[0].reopened is True
+    assert state["response"] is None

@@ -284,6 +284,14 @@ and 14 service records.
   - **From `Diagnosing`** (the reporter answered): the answers to THIS workflow's questions
     go out as `clarification_answers`, which sends the graph straight to the diagnostic.
     No answers to send → `Failed` rather than re-asking.
+  - **From `Diagnosing`, reopened** (`AgentWorkflow.ReopenedWorkOrderId` set — the only
+    thing that tells the two apart): the request carries `reopened: true` (plus any answers),
+    which also routes to the diagnostic, and `asset_id` falls back to the reopened ORDER's
+    asset when the report never named one — without it the re-diagnosis would have no
+    history, which is the whole point of running again. Diagnostic and strategist steps are
+    **appended**, so the first diagnosis stays beside the second. Pinned by
+    `AReopenedRepair_RunsTheDiagnosticAgain_OnTheOrdersAsset_AndKeepsBothDiagnoses`,
+    verified to fail with the asset fallback removed and with `ReopenedWorkOrderId` unset.
   - **It never reaches `AwaitingManagerApproval` itself.** It leaves the workflow in
     `Strategizing` with the proposal, and a manager raising the order moves it on through
     the approval gate. A diagnostic or strategist that safe-failed still moves the workflow
@@ -425,6 +433,13 @@ that edge and read as an approval nobody gave. It is a viva question.
   `complete` stamps with the order's own `CompletedAt` so the workflow and its check fall due
   in the same pass. **Verified / reopened / escalated are in the table and fired by
   nothing yet** — they belong to the VerificationAgent's C# runner, which does not exist.
+  `RepairReopened` has its entry point ready: **`IWorkflowService.ReopenForDiagnosisAsync
+  (workOrderId)`** — the order must be `Completed` (false otherwise) and its report's latest
+  workflow `AwaitingVerification` (`InvalidWorkflowTransitionException` otherwise, nothing
+  written); it stamps `ReopenedWorkOrderId` (a `Restrict` FK, `AddWorkflowReopenedWorkOrder`)
+  and re-queues. **Nothing calls it yet.** Whether the agent's `reopen` label may fire it on
+  its own, or only the reporter's "no", is for that runner to settle — `AgentOutcome` is
+  deliberately a string the system does not act on (see VERIFICATION).
 - Pinned by `WorkflowStateMachineTests`: the table literally (a changed table must change
   the test), every other (state, trigger) pair throws, the save-time check, and **every
   illegal move through every endpoint that moves a workflow is a 409 that writes nothing**.
@@ -1108,6 +1123,14 @@ agent/config.py        settings read from the environment
   every node a one-liner. Routing decisions go in `add_conditional_edges` as plain Python
   reading the state — never a judgement made by a model. Compile **without a
   checkpointer**: nothing persists between runs.
+- **A reopened repair (`RunRequest.reopened`) routes `START -> diagnose` too**, like
+  answers: re-clarifying a repaired fault would question the reporter again. The flag
+  routes and is **not shown to the diagnostic** (`DiagnosticInput` has no field for it):
+  what changed — the repair's `ServiceRecord`, reports filed since — reaches it through the
+  same three tools, looked up afresh, and its first diagnosis is **not** passed in (no
+  history across runs; a second opinion anchored on the first is not one). Pinned in
+  `test_graph.py`, `test_api.py` and `tests/test_reopen.py`; the route verified to fail both
+  with `or request.reopened` removed.
 - **`_route_after_clarify` is human pause 1**: a clarifier that asked anything, or
   safe-failed, ends the run at `clarify`; only a clean "nothing to ask" goes on to
   `diagnose`. `START` routes a request carrying `clarification_answers` straight to
@@ -1292,6 +1315,19 @@ nothing else. `agents/verification.py`, prompts `verification.md` +
   `AgentQueuedAt`, sending `verification` and writing `AgentOutcome` / `AgentReason` back is
   the next piece — and it has the late-answer question above to settle.
 
+### The reopen golden case — `tests/reopen_cases.py`
+
+A projector (`PRJ-ENG204-01`, not seeded) whose first-run history points at the HDMI cable;
+the repair finds the cable fine and the fan rattling and is written up as a `TemporaryFix`;
+a report since says it cut out hot and rattling. **Not the seeded projector**: its first
+diagnosis already names the fan, so a second one agreeing would prove nothing was read.
+`tests/test_reopen.py` pins what the code controls — six tool calls over two runs, the
+repair record leading the second prompt verbatim, the new report in it, nothing of the first
+answer in it. `evals/test_reopen_live.py` asserts the behaviour: a cooling cause, different
+from the first run's, `repair` or `replace`, the repair visit cited by date. **Not yet run
+against a live model.** No prompt was changed for it, so the diagnostic's "Last verified"
+line still stands.
+
 **Untrusted text goes in as ONE JSON object between markers, never spliced raw.** The
 report, the clarification answers and the technician notes are all typed by people. JSON
 encoding escapes every newline inside them, so a description containing
@@ -1399,7 +1435,8 @@ flakiness to retry away.
   - `WorkflowStateMachineTests` — `WorkflowTransitions`: the table pinned literally, every
     illegal (state, trigger) pair, the save-time check, and every illegal move through the
     API a 409 that writes nothing. `WorkflowRunnerTests` — the runner with a scripted
-    `IAgentClient` (`AgentStubApiFactory`): one agent at a time, both pauses, the resume.
+    `IAgentClient` (`AgentStubApiFactory`): one agent at a time, both pauses, the resume,
+    and the reopen (a real completion's `ServiceRecord` read back through the tool router).
     `WorkflowTestData` puts a report's workflow in a state as DATA (ExecuteUpdate, around
     the machine) — every test that raises an order starts from `Strategizing` through it.
   - `WorkOrderEndpointTests` — the work order lifecycle end to end: the approval gate either
@@ -1458,6 +1495,10 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
 - **Components never call `fetch`.** API calls live in a feature's `services/`; a page reads
   data through `useFetch`, or through a feature hook that wraps it (`useWorkflows`). This is
   the lab's separation of UI, hooks and services.
+- **The workflow page compares diagnoses** (`DiagnosisComparison`): `WorkflowDetailDto
+  .Diagnoses` is every diagnostic agent-run step read by `AgentAnalysis.ToDiagnosis` — the
+  approval queue's reader — each rendered by the approval queue's own `DiagnosisPanel`,
+  oldest on the left. Nothing marks which run is right; both are advice.
 - The workflows search filters **client-side** over the page already fetched, because
   `GET /api/workflows` takes only `state`, `page` and `pageSize` — and the UI says so under
   the box rather than implying a server-side search. If a `q` parameter is ever added to the

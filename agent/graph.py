@@ -10,14 +10,19 @@ Two routing rules, both plain Python reading the state — never a judgement mad
 
     START -> clarify -> diagnose -> strategize -> END     a fresh report, nothing to ask
     START -> clarify -> END                               a fresh report, questions asked
-    START -> diagnose -> strategize -> END                the reporter has answered
+    START -> diagnose -> strategize -> END                the reporter has answered, or
+                                                          a repair was reopened
     START -> verify -> END                                a completed repair
 
 `_route_from_start` reads what the request carries. A verification is a different question
 about a different thing, so it never runs in line with the report pipeline: appended after
 `strategize` it would re-clarify and re-diagnose a fault somebody has already repaired.
 Clarification answers mean the clarifier has already asked, so the run resumes at the
-diagnostic — sending it to `clarify` again would ask the same questions and loop.
+diagnostic — sending it to `clarify` again would ask the same questions and loop. A reopened
+repair resumes there too: the fault was clarified and repaired once already, and what is new
+since — the repair's service record, the reports filed after it — the diagnostic reads
+through its tools, fresh on this run. Its earlier diagnosis is not in the state: nothing
+persists between runs, so the second opinion is formed from the evidence, not from the first.
 
 `_route_after_clarify` is the first human pause. A clarifier that asked anything, or that
 could not produce questions at all, ends the run: a diagnosis made before the answers would
@@ -63,7 +68,7 @@ def _route_from_start(state: GraphState) -> str:
     request = state["request"]
     if request.verification is not None:
         return "verify"
-    if request.clarification_answers:
+    if request.clarification_answers or request.reopened:
         return "diagnose"
     return "clarify"
 

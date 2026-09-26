@@ -36,6 +36,26 @@ internal static class WorkflowTestData
             .ExecuteUpdateAsync(set => set.SetProperty(w => w.CurrentState, state));
     }
 
+    /// <summary>
+    /// Where a reporter's "no" leaves the report's latest workflow: Diagnosing, remembering
+    /// the order that did not hold. Test setup standing in for the confirm, like the rest.
+    /// </summary>
+    public static async Task ReopenedAsync(IServiceProvider services, int reportId, int workOrderId)
+    {
+        using var scope = services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var workflowId = await db.AgentWorkflows
+            .Where(w => w.ReportId == reportId)
+            .MaxAsync(w => w.Id);
+
+        await db.AgentWorkflows
+            .Where(w => w.Id == workflowId)
+            .ExecuteUpdateAsync(set => set
+                .SetProperty(w => w.CurrentState, WorkflowState.Diagnosing)
+                .SetProperty(w => w.ReopenedWorkOrderId, workOrderId));
+    }
+
     public static async Task<WorkflowState> StateAsync(IServiceProvider services, int reportId)
     {
         using var scope = services.CreateScope();

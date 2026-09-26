@@ -11,12 +11,10 @@ public class WorkflowService : IWorkflowService
     private const int MaxPageSize = 100;
 
     private readonly AppDbContext _db;
-    private readonly IWorkflowQueue _workflowQueue;
 
-    public WorkflowService(AppDbContext db, IWorkflowQueue workflowQueue)
+    public WorkflowService(AppDbContext db)
     {
         _db = db;
-        _workflowQueue = workflowQueue;
     }
 
     public async Task<WorkflowSummaryDto?> StartAsync(
@@ -217,47 +215,6 @@ public class WorkflowService : IWorkflowService
             : "The strategist produced no proposal. Waiting for a facilities manager to raise the work order.";
 
         await _db.SaveChangesAsync(cancellationToken);
-        return true;
-    }
-
-    public async Task<bool> ReopenForDiagnosisAsync(int workOrderId, CancellationToken cancellationToken = default)
-    {
-        var order = await _db.WorkOrders
-            .AsNoTracking()
-            .FirstOrDefaultAsync(w => w.Id == workOrderId, cancellationToken);
-
-        // A repair that never finished cannot have failed to hold.
-        if (order is null || order.Status != WorkOrderStatus.Completed)
-        {
-            return false;
-        }
-
-        // The latest run raised for the report, the same one WorkOrderService moved when the
-        // order was raised and completed.
-        var workflow = await _db.AgentWorkflows
-            .Where(w => w.ReportId == order.ReportId)
-            .OrderByDescending(w => w.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if (workflow is null)
-        {
-            return false;
-        }
-
-        // Throws before anything is written unless the workflow is AwaitingVerification.
-        WorkflowTransitions.Move(workflow, WorkflowTrigger.RepairReopened);
-        workflow.ReopenedWorkOrderId = order.Id;
-        workflow.Outcome =
-            $"The repair on work order {order.Id} did not hold. The diagnostic is running again "
-            + "against the service history and reports since.";
-
-        await _db.SaveChangesAsync(cancellationToken);
-
-        // AFTER the save, so the runner never dequeues an id whose state is not written yet;
-        // CancellationToken.None so a caller's cancelled token cannot abort the hand-off.
-        // Same reasoning as ClarificationService.
-        await _workflowQueue.EnqueueAsync(workflow.Id, CancellationToken.None);
-
         return true;
     }
 

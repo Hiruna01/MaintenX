@@ -44,7 +44,7 @@ public interface IWorkflowService
     /// <summary>
     /// Called by the background runner once it dequeues a workflow. Returns the state the
     /// run starts FROM — Submitted for a fresh report, Diagnosing for one whose reporter has
-    /// answered the clarifier's questions or whose repair verification reopened — and stamps
+    /// answered the clarifier's questions or said a repair did not hold — and stamps
     /// StartedAt the first time.
     ///
     /// Not a transition: the clarifier runs while the workflow is still Submitted, because
@@ -91,23 +91,4 @@ public interface IWorkflowService
         int workflowId,
         bool proposed,
         CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// The repair on <paramref name="workOrderId"/> did not hold: its workflow moves
-    /// AwaitingVerification -> Diagnosing (RepairReopened), remembers the order in
-    /// ReopenedWorkOrderId, and is re-queued. The runner then runs the diagnostic AGAIN —
-    /// not the clarifier — and its tools read the ServiceRecord the completion appended and
-    /// any report filed since, because every tool call reads the database as it is now.
-    ///
-    /// The first diagnosis is not touched: the second is appended as its own AgentStep, so
-    /// the two can be read side by side.
-    ///
-    /// False when the order does not exist, is not Completed, or its report has no workflow —
-    /// there is no repair to reopen. Throws InvalidWorkflowTransitionException, writing
-    /// nothing, when the workflow is not AwaitingVerification.
-    ///
-    /// NOTHING CALLS THIS YET. It is the entry point the VerificationAgent's C# runner is
-    /// meant to call, and that runner does not exist; see CLAUDE.md, VERIFICATION.
-    /// </summary>
-    Task<bool> ReopenForDiagnosisAsync(int workOrderId, CancellationToken cancellationToken = default);
 }

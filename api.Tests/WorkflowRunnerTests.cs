@@ -58,7 +58,7 @@ public class AgentStubApiFactory : StateMachineApiFactory
 ///     raising the order is what moves it on;
 ///   * an agent service that is down ends the run in Failed with the reason, and a manager
 ///     can still raise the order by hand;
-///   * a repair verification REOPENS runs the diagnostic again — not the clarifier — on the
+///   * a repair the reporter says did not hold runs the diagnostic again — not the clarifier — on the
 ///     asset the failed order names, with the ServiceRecord that repair appended visible to
 ///     its tool, and the second diagnosis is appended beside the first, never over it.
 /// </summary>
@@ -273,11 +273,9 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         var scene = await _factory.SceneAsync();
         var (reportId, workflowId, orderId) = await CompletedRepairAsync(scene);
 
-        // The sweep's own move to AwaitingVerification is VerificationSweepTests'; here the
-        // workflow is simply where the sweep would have left it.
-        await WorkflowTestData.PutInStateAsync(_factory.Services, reportId, WorkflowState.AwaitingVerification);
-
-        Assert.True(await ReopenAsync(orderId));
+        // Where the reporter's "no" leaves it. The sweep and the confirm that get it there
+        // through the endpoints are WorkflowEndToEndTests'; this pins what the runner does next.
+        await WorkflowTestData.ReopenedAsync(_factory.Services, reportId, orderId);
 
         var reopened = await PollAsync(scene, workflowId);
         Assert.Equal(WorkflowState.Diagnosing, reopened.CurrentState);
@@ -327,28 +325,6 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
     }
 
     [Fact]
-    public async Task AReopenIsRefused_UnlessTheRepairIsAwaitingVerification_AndARefusalWritesNothing()
-    {
-        var scene = await _factory.SceneAsync();
-        var (_, workflowId, orderId) = await CompletedRepairAsync(scene);
-
-        // Completed, but the delay has not passed — there is nothing to have "not held" yet.
-        await Assert.ThrowsAsync<InvalidWorkflowTransitionException>(() => ReopenAsync(orderId));
-
-        var detail = await PollAsync(scene, workflowId);
-        Assert.Equal(WorkflowState.Completed, detail.CurrentState);
-        Assert.Null(detail.ReopenedWorkOrderId);
-
-        // No such order, or one that never finished: no repair to reopen.
-        Assert.False(await ReopenAsync(999_999));
-
-        var openReport = await scene.FileReportAsync();
-        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, openReport);
-        var open = await (await RaiseAsync(scene, openReport, 500m)).Content.ReadFromJsonAsync<WorkOrderDto>(JsonOptions);
-        Assert.False(await ReopenAsync(open!.Id));
-    }
-
-    [Fact]
     public void TheReopenFlagIsSnakeCaseOnTheWire_AndLeftOffWhenFalse()
     {
         var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
@@ -393,14 +369,6 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Equal(WorkflowState.Completed, (await PollAsync(scene, workflowId)).CurrentState);
 
         return (reportId, workflowId, orderId);
-    }
-
-    /// <summary>What the VerificationAgent's runner will call once it exists.</summary>
-    private async Task<bool> ReopenAsync(int orderId)
-    {
-        using var scope = _factory.Services.CreateScope();
-        return await scope.ServiceProvider.GetRequiredService<IWorkflowService>()
-            .ReopenForDiagnosisAsync(orderId, CancellationToken.None);
     }
 
     /// <summary>A tool call exactly as the agent service makes it: the shared secret, no JWT.</summary>

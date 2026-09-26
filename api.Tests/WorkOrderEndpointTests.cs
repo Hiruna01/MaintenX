@@ -340,10 +340,17 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal(WorkflowState.Completed, workflow.CurrentState);
         Assert.Equal(stored.CompletedAt, workflow.CompletedAt);
 
-        // Completed is the end of the order's life as live work.
+        // EXACTLY one row on the asset, not just one carrying this order's id: the asset is
+        // fresh, so a second row written without a WorkOrderId would show up here and nowhere
+        // else. A repeat failure is read off this count, so a doubled visit is a false pattern.
+        Assert.Equal(1, await db.ServiceRecords.CountAsync(s => s.AssetId == fault.AssetId));
+
+        // Completed is the end of the order's life as live work, and a refused retry appends
+        // nothing.
         var again = await technician.PostAsJsonAsync($"/api/workorders/{order.Id}/complete",
             new CompleteWorkOrderDto(1_250.50m, ServiceOutcome.TemporaryFix, Note, null), JsonOptions);
         Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        Assert.Equal(1, await db.ServiceRecords.CountAsync(s => s.AssetId == fault.AssetId));
     }
 
     [Fact]

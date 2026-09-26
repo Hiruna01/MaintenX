@@ -291,7 +291,7 @@ and 14 service records.
     history, which is the whole point of running again. Diagnostic and strategist steps are
     **appended**, so the first diagnosis stays beside the second. Pinned by
     `AReopenedRepair_RunsTheDiagnosticAgain_OnTheOrdersAsset_AndKeepsBothDiagnoses`,
-    verified to fail with the asset fallback removed and with `ReopenedWorkOrderId` unset.
+    verified to fail with the asset fallback removed.
   - **It never reaches `AwaitingManagerApproval` itself.** It leaves the workflow in
     `Strategizing` with the proposal, and a manager raising the order moves it on through
     the approval gate. A diagnostic or strategist that safe-failed still moves the workflow
@@ -431,15 +431,17 @@ that edge and read as an approval nobody gave. It is a viva question.
 - **`VerificationDue`, and nothing else, moves `Completed → AwaitingVerification`** — the
   sweep, `VerificationSettings.DelayDays` after the workflow's `CompletedAt`, which
   `complete` stamps with the order's own `CompletedAt` so the workflow and its check fall due
-  in the same pass. **Verified / reopened / escalated are in the table and fired by
-  nothing yet** — they belong to the VerificationAgent's C# runner, which does not exist.
-  `RepairReopened` has its entry point ready: **`IWorkflowService.ReopenForDiagnosisAsync
-  (workOrderId)`** — the order must be `Completed` (false otherwise) and its report's latest
-  workflow `AwaitingVerification` (`InvalidWorkflowTransitionException` otherwise, nothing
-  written); it stamps `ReopenedWorkOrderId` (a `Restrict` FK, `AddWorkflowReopenedWorkOrder`)
-  and re-queues. **Nothing calls it yet.** Whether the agent's `reopen` label may fire it on
-  its own, or only the reporter's "no", is for that runner to settle — `AgentOutcome` is
-  deliberately a string the system does not act on (see VERIFICATION).
+  in the same pass.
+- **The REPORTER's answer fires Verified and Reopened — never the agent's label.**
+  `POST /api/verifications/{id}/confirm` moves the report's latest workflow, if it is
+  `AwaitingVerification`, in the same `SaveChanges` as the answer: yes → `RepairVerified`
+  (`Closed`), no → `RepairReopened` (`Diagnosing`, `ReopenedWorkOrderId` stamped — a
+  `Restrict` FK, `AddWorkflowReopenedWorkOrder`) and re-queued after the save for the runner
+  to diagnose again. A workflow anywhere else is left alone and logged; the answer still
+  stands. `AgentOutcome` stays a string nothing acts on. **`RepairEscalated` is still fired
+  by nothing** — escalation is a judgement about a pattern, and whether a C# rule or a
+  manager fires it is undecided. Pinned by `WorkflowEndToEndTests`, verified to fail with the
+  move removed and with `ReopenedWorkOrderId` unset.
 - Pinned by `WorkflowStateMachineTests`: the table literally (a changed table must change
   the test), every other (state, trigger) pair throws, the save-time check, and **every
   illegal move through every endpoint that moves a workflow is a 409 that writes nothing**.
@@ -984,7 +986,8 @@ free tier sleeps idle services and a demo cannot wait an hour for a timer. A sta
   `AwaitingReporterResponse` (a `Pending` check is still in its delay, and a same-afternoon
   answer is what the delay exists to avoid). Answered is checked first only because an
   answered check is `Confirmed`/`Reopened` and "already answered" is the truer message.
-  Success writes the answer, the status it implies **and `AgentQueuedAt`** in one
+  Success writes the answer, the status it implies, **`AgentQueuedAt`** and the workflow's
+  move (Verified / Reopened — see THE WORKFLOW STATE MACHINE) in one
   `SaveChanges` — the sweep queues only rows with no stamp, so it never queues it twice. A
   check already queued as silent and answered late is stamped again. **Open question for
   the VerificationAgent:** its runner is meant to read "`AgentQueuedAt` set and
@@ -1437,6 +1440,10 @@ flakiness to retry away.
     API a 409 that writes nothing. `WorkflowRunnerTests` — the runner with a scripted
     `IAgentClient` (`AgentStubApiFactory`): one agent at a time, both pauses, the resume,
     and the reopen (a real completion's `ServiceRecord` read back through the tool router).
+    `WorkflowEndToEndTests` — both loops through the real endpoints on a movable clock, a
+    fresh factory per test: clarified → under threshold → sweep → "yes" → `Closed`, and the
+    same asset over threshold → approved → sweep → "no" → `Diagnosing` → `Strategizing`,
+    with every state and the final `AgentStep` count asserted.
     `WorkflowTestData` puts a report's workflow in a state as DATA (ExecuteUpdate, around
     the machine) — every test that raises an order starts from `Strategizing` through it.
   - `WorkOrderEndpointTests` — the work order lifecycle end to end: the approval gate either

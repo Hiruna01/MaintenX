@@ -36,17 +36,20 @@ public class VerificationService : IVerificationService
     private readonly AppDbContext _db;
     private readonly VerificationSettings _settings;
     private readonly TimeProvider _time;
+    private readonly IWorkflowQueue _workflowQueue;
     private readonly ILogger<VerificationService> _logger;
 
     public VerificationService(
         AppDbContext db,
         VerificationSettings settings,
         TimeProvider time,
+        IWorkflowQueue workflowQueue,
         ILogger<VerificationService> logger)
     {
         _db = db;
         _settings = settings;
         _time = time;
+        _workflowQueue = workflowQueue;
         _logger = logger;
     }
 
@@ -659,9 +662,69 @@ public class VerificationService : IVerificationService
         // answer, and the stamp says when.
         check.AgentQueuedAt = now;
 
+        // THE ANSWER MOVES THE WORKFLOW TOO — the reporter's answer, never the agent's
+        // label. Yes is RepairVerified (-> Closed); no is RepairReopened (-> Diagnosing), which
+        // remembers the order that did not hold so the runner diagnoses again against the
+        // history it left. Same SaveChanges as the answer, so a check is never Reopened with
+        // its workflow still waiting to be verified. The VerificationAgent's opinion stays in
+        // AgentOutcome and moves nothing, like every other agent's.
+        var reopened = await MoveWorkflowForAnswerAsync(check, dto.Confirmed.Value, cancellationToken);
+
         await _db.SaveChangesAsync(cancellationToken);
 
+        if (reopened is not null)
+        {
+            // AFTER the save, so the runner never dequeues a workflow whose move is not
+            // written yet; CancellationToken.None, because the request's token is cancelled
+            // the moment the 204 is written. Same reasoning as ClarificationService.
+            await _workflowQueue.EnqueueAsync(reopened.Value, CancellationToken.None);
+        }
+
         return ConfirmVerificationOutcome.Success;
+    }
+
+    /// <summary>
+    /// Moves the latest workflow raised for the check's report, if it is AwaitingVerification,
+    /// and returns its id when it was REOPENED (so the caller can re-queue it). Not saved here.
+    ///
+    /// A workflow anywhere else is left alone and logged, and the answer still stands: it is a
+    /// fact about the room, and refusing it over the state of an agent run — a report with no
+    /// workflow, a seeded check — would lose it. The check's own status is the record.
+    /// </summary>
+    private async Task<int?> MoveWorkflowForAnswerAsync(
+        VerificationCheck check,
+        bool confirmed,
+        CancellationToken cancellationToken)
+    {
+        var reportId = check.WorkOrder!.ReportId;
+
+        var workflow = await _db.AgentWorkflows
+            .Where(w => w.ReportId == reportId)
+            .OrderByDescending(w => w.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (workflow is null || workflow.CurrentState != WorkflowState.AwaitingVerification)
+        {
+            _logger.LogInformation(
+                "Verification check {CheckId} was answered, but report {ReportId} has no workflow "
+                + "awaiting verification ({State}); the workflow is left where it is.",
+                check.Id, reportId, workflow?.CurrentState.ToString() ?? "none");
+            return null;
+        }
+
+        if (confirmed)
+        {
+            WorkflowTransitions.Move(workflow, WorkflowTrigger.RepairVerified);
+            workflow.Outcome = $"The reporter confirmed the repair on work order {check.WorkOrderId} held.";
+            return null;
+        }
+
+        WorkflowTransitions.Move(workflow, WorkflowTrigger.RepairReopened);
+        workflow.ReopenedWorkOrderId = check.WorkOrderId;
+        workflow.Outcome =
+            $"The reporter says the repair on work order {check.WorkOrderId} did not hold. The "
+            + "diagnostic is running again against the service history and reports since.";
+        return workflow.Id;
     }
 
     public async Task<VerificationMetricsDto> GetMetricsAsync(CancellationToken cancellationToken = default)

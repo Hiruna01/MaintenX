@@ -331,8 +331,8 @@ public class WorkflowRunner : BackgroundService
     ///
     ///   * the reporter answered, and ClarificationService moved it here — the answers go out
     ///     as clarification_answers;
-    ///   * verification reopened a repair that did not hold, and
-    ///     IWorkflowService.ReopenForDiagnosisAsync moved it here — the request says reopened.
+    ///   * the reporter said a repair did not hold, and VerificationService moved it here
+    ///     (RepairReopened) — the request says reopened.
     ///     The diagnostic's tools then read the service history as it is NOW, with the record
     ///     the repair appended, and any report filed since.
     ///

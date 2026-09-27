@@ -429,6 +429,7 @@ class StrategistInput(BaseModel):
     asset_id: int | None = None
     diagnosis: DiagnosticOutput | None = None
     revision_note: str | None = Field(default=None, min_length=1, max_length=MAX_REVISION_NOTE)
+    revision_work_order_id: int | None = Field(default=None, gt=0)
 
     @classmethod
     def from_run(
@@ -441,6 +442,7 @@ class StrategistInput(BaseModel):
             asset_id=request.asset_id,
             diagnosis=diagnosis.output if diagnosis is not None else None,
             revision_note=request.revision_note,
+            revision_work_order_id=request.revision_work_order_id,
         )
 
 
@@ -889,8 +891,15 @@ class RunRequest(BaseModel):
     reopened: bool = False
 
     # The manager's note when a proposal was sent back for revision; null on every first
-    # run. Typed by a manager, and still treated as data by the strategist's prompt.
+    # run. Typed by a manager, and still treated as data by the strategist's prompt. Its
+    # presence routes the run straight to the strategist (graph.py): the fault is diagnosed
+    # already, and what the manager sent back is the plan for the work.
     revision_note: str | None = Field(default=None, min_length=1, max_length=MAX_REVISION_NOTE)
+
+    # The work order that was sent back — a Draft now, still open in its room. Sent beside
+    # the note so the strategist can tell it apart from the OTHER open orders: it is the job
+    # being re-planned, never a job to consolidate with.
+    revision_work_order_id: int | None = Field(default=None, gt=0)
 
     # Set only when the API is asking whether a completed repair held. Its presence sends
     # the run to the verification agent and NOTHING else — see graph.py. `description` is

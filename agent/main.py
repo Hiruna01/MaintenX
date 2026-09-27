@@ -124,6 +124,9 @@ async def run(request: RunRequest) -> RunResponse:
     verification reopened — starts at the diagnostic, so again the clarifier did not run and the top-level fields are the first
     agent that did: the diagnostic's name, status and error, with an empty question list.
 
+    A REVISION run — a manager sent the proposal back with a note — runs the strategist and
+    nothing else, so the top-level fields are the strategist's, the same way.
+
     A run the clarifier PAUSED carries its questions and no diagnosis or proposal: graph.py
     stopped there, and the API waits for the reporter.
 
@@ -156,17 +159,18 @@ async def run(request: RunRequest) -> RunResponse:
         )
 
     if final_state["response"] is None:
-        diagnosis = final_state["diagnosis"]
+        # The first agent that ran: the diagnostic, or on a revision the strategist alone.
+        first = final_state["diagnosis"] if final_state["diagnosis"] is not None else final_state["strategy"]
         return RunResponse(
             workflow_id=request.workflow_id,
-            agent=diagnosis.agent,
-            status=diagnosis.status,
+            agent=first.agent,
+            status=first.status,
             output=ClarifierOutput(),
-            error=diagnosis.error,
-            attempts=diagnosis.attempts,
-            duration_ms=diagnosis.duration_ms,
+            error=first.error,
+            attempts=first.attempts,
+            duration_ms=first.duration_ms,
             plan=final_state.get("plan"),
-            diagnosis=diagnosis,
+            diagnosis=final_state["diagnosis"],
             strategy=final_state["strategy"],
         )
 

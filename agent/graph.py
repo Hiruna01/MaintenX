@@ -13,6 +13,8 @@ instead of four people editing the same function.
     START -> plan -> diagnose -> strategize -> END             planned without the clarifier
     START -> diagnose -> strategize -> END                     the reporter has answered, or
                                                                a repair was reopened
+    START -> strategize -> END                                 a manager sent the proposal
+                                                               back for revision
     START -> verify -> END                                     a completed repair
 
 `_route_from_start` reads what the request carries. A verification is a different question
@@ -20,7 +22,9 @@ about a different thing, so it never runs in line with the report pipeline and i
 planned. Clarification answers mean the clarifier has already asked, so the run resumes at the
 diagnostic under the plan the API already stored — sending it to `clarify` again would ask
 the same questions and loop. A reopened repair resumes there too: the fault was clarified and
-repaired once already, and what is new since the diagnostic reads through its tools.
+repaired once already, and what is new since the diagnostic reads through its tools. A
+revision note means a manager sent the proposal back: the fault is diagnosed already, so only
+the strategist runs again, with the note.
 
 `_route_after_plan` is where the plan DELEGATES. It reads the planner's plan — which
 PlannerOutput has already checked is a legal one — and follows it: to the clarifier when the
@@ -78,6 +82,8 @@ def _route_from_start(state: GraphState) -> str:
     request = state["request"]
     if request.verification is not None:
         return "verify"
+    if request.revision_note is not None:
+        return "strategize"
     if request.clarification_answers or request.reopened:
         return "diagnose"
     return "plan"
@@ -141,7 +147,7 @@ def build_graph(
     builder.add_node("diagnose", diagnose)
     builder.add_node("strategize", strategize)
     builder.add_node("verify", verify)
-    builder.add_conditional_edges(START, _route_from_start, ["plan", "diagnose", "verify"])
+    builder.add_conditional_edges(START, _route_from_start, ["plan", "diagnose", "strategize", "verify"])
     builder.add_conditional_edges("plan", _route_after_plan, ["clarify", "diagnose"])
     builder.add_conditional_edges("clarify", _route_after_clarify, ["diagnose", END])
     builder.add_edge("diagnose", "strategize")

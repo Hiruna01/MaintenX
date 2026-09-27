@@ -207,7 +207,15 @@ class ResolutionStrategist:
         calls.append(orders)
 
         if orders.found and isinstance(orders.result, list):
-            context["open_work_orders"] = [_order_facts(o) for o in orders.result]
+            facts = [_order_facts(o) for o in orders.result]
+            revised_id = strategist_input.revision_work_order_id
+            # The order a manager sent back is still open (a Draft) and so comes back from
+            # the lookup — but it is the job being re-planned, not another job in the room.
+            # Kept out of open_work_orders, so consolidating with it is refused like any id
+            # the agent was not shown.
+            context["open_work_orders"] = [o for o in facts if revised_id is None or o.get("id") != revised_id]
+            if revised_id is not None:
+                context["order_under_revision"] = next((o for o in facts if o.get("id") == revised_id), None)
         else:
             # Not the same as "nothing open": the model must not propose consolidation on
             # the strength of a lookup that failed.

@@ -196,10 +196,12 @@ public class WorkflowService : IWorkflowService
         var workflow = await _db.AgentWorkflows
             .FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
 
-        // The only two states an agent run starts from. Anything else is waiting on a
-        // person or already past the agents, and a stray queue entry must not rewind it.
+        // The only states an agent run starts from. Anything else is waiting on a person or
+        // already past the agents, and a stray queue entry must not rewind it. Strategizing is
+        // one only for a revision — the runner checks that a revision is actually pending
+        // (IWorkOrderService.GetPendingRevisionAsync) and skips it otherwise.
         if (workflow is null
-            || workflow.CurrentState is not (WorkflowState.Submitted or WorkflowState.Diagnosing))
+            || workflow.CurrentState is not (WorkflowState.Submitted or WorkflowState.Diagnosing or WorkflowState.Strategizing))
         {
             return null;
         }
@@ -250,6 +252,34 @@ public class WorkflowService : IWorkflowService
         int reopenedWorkOrderId,
         CancellationToken cancellationToken = default) =>
         ChangePlanAsync(workflowId, plan => PlanRules.AppendRediagnosis(plan, reopenedWorkOrderId), cancellationToken);
+
+    public Task<bool> AppendRevisionToPlanAsync(
+        int workflowId,
+        int workOrderId,
+        CancellationToken cancellationToken = default) =>
+        ChangePlanAsync(workflowId, plan => PlanRules.AppendRevision(plan, workOrderId), cancellationToken);
+
+    public async Task<bool> RecordRevisionWaitingAsync(
+        int workflowId,
+        int workOrderId,
+        string why,
+        CancellationToken cancellationToken = default)
+    {
+        var workflow = await _db.AgentWorkflows.FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
+
+        if (workflow is null)
+        {
+            return false;
+        }
+
+        // Not a transition: the workflow stays in Strategizing with the Draft, and the manager
+        // resubmits it by hand. Missing advice is not a reason to stop a manager acting.
+        workflow.Outcome = Truncate(
+            $"{why} Waiting for a facilities manager to resubmit work order {workOrderId}.", MaxOutcomeLength);
+
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
 
     public Task<bool> ProceedWithoutClarificationAsync(int workflowId, CancellationToken cancellationToken = default) =>
         MoveAsync(

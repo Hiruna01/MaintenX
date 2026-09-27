@@ -142,7 +142,7 @@ public class WorkOrdersController : ControllerBase
         CreateWorkOrderDto dto,
         CancellationToken cancellationToken)
     {
-        var result = await _workOrderService.CreateAsync(dto, cancellationToken);
+        var result = await _workOrderService.CreateAsync(dto, cancellationToken: cancellationToken);
 
         switch (result.Outcome)
         {
@@ -164,6 +164,15 @@ public class WorkOrdersController : ControllerBase
                     Title = "Report is closed",
                     Detail = $"Report {dto.ReportId} is Closed, and a closed report stays closed. "
                            + "A fault that has come back is a new report."
+                });
+
+            case CreateWorkOrderOutcome.RevisionPending:
+                return Conflict(new ProblemDetails
+                {
+                    Status = StatusCodes.Status409Conflict,
+                    Title = "An order is waiting to be resubmitted",
+                    Detail = $"Report {dto.ReportId} already has a work order that was sent back for revision. "
+                           + "Resubmit that order instead of raising a second one."
                 });
 
             default:
@@ -411,6 +420,43 @@ public class WorkOrdersController : ControllerBase
     }
 
     /// <summary>
+    /// Puts a Draft that was sent back for revision through the approval gate again, with a
+    /// new strategy and estimate. FacilitiesManager only, 204 — an update to the same order,
+    /// whose Status then says which side of the gate it landed on. The gate is the one
+    /// POST /api/workorders uses; there is no Status on the body. Anything but a Draft is a
+    /// 409, as is a Closed report.
+    ///
+    /// The runner does this itself when the strategist's revised proposal is usable; this is
+    /// for when it was not, or for a manager who will not wait for it.
+    /// </summary>
+    [HttpPost("{id:int}/resubmit")]
+    [Authorize(Policy = nameof(Role.FacilitiesManager))]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Resubmit(
+        int id,
+        ResubmitWorkOrderDto dto,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetCaller(out var callerId, out _))
+        {
+            return Unauthorized();
+        }
+
+        var outcome = await _workOrderService.ResubmitAsync(
+            id, dto.Strategy!.Value, dto.EstimatedCost!.Value, dto.PartsRequired,
+            auditNote: $"Resubmitted after revision by user {callerId}.",
+            cancellationToken: cancellationToken);
+
+        return ToActionResult(id, outcome, field: null,
+            "Only a Draft order that was sent back for revision can be resubmitted.");
+    }
+
+    /// <summary>
     /// Free blocks of time for work on an asset, earliest first, at most twenty.
     /// FacilitiesManager only — whoever books the work.
     ///
@@ -585,6 +631,14 @@ public class WorkOrdersController : ControllerBase
                     Title = "No workflow to revise",
                     Detail = $"Work order {id}'s report has no agent workflow, so there is no "
                            + "planning run to send it back to. Reject it instead."
+                });
+
+            case WorkOrderActionOutcome.ReportClosed:
+                return Conflict(new ProblemDetails
+                {
+                    Status = StatusCodes.Status409Conflict,
+                    Title = "Report is closed",
+                    Detail = $"Work order {id}'s report is Closed, and a closed report stays closed."
                 });
 
             default:

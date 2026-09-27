@@ -46,4 +46,8 @@ public record ReportDetailDto(
 
     // The stage the reporter is shown — the same ReportProgress.StageFor reading as the
     // list row, so the two cannot disagree.
-    ReportStage Stage);
+    ReportStage Stage,
+
+    // The order a manager sent back for revision, while it waits in Draft to be resubmitted;
+    // null otherwise. While it is set, LatestWorkflow.CanRaiseWorkOrder is false.
+    RevisionDraftDto? RevisionDraft = null);

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
@@ -23,9 +24,17 @@ namespace CampusFacilities.Api.Services;
 /// It STOPS at the two human pauses and never waits in them. AwaitingClarification ends the
 /// run; the reporter's answers re-queue the id and the run resumes from Diagnosing. A repair
 /// that verification reopens resumes from Diagnosing too, and the diagnostic runs again.
-/// AwaitingManagerApproval is never reached by the runner at all — the workflow waits in
-/// Strategizing with the proposal until a manager raises the order, and the order's gate
-/// decides. Nothing here blocks on a person; the queue simply has nothing for it.
+///
+/// The strategist's proposal is RAISED as a work order when it can be — a usable strategy and
+/// estimate, and an asset to raise it against — through IWorkOrderService.CreateAsync, the
+/// same approval gate a manager's order goes through. The gate, not the runner, decides
+/// whether it waits in AwaitingManagerApproval (human pause 2) or is approved at once. When it
+/// cannot be raised, the workflow waits in Strategizing for a manager to raise one by hand.
+///
+/// A manager who sends an order back for revision re-queues the workflow in Strategizing:
+/// the strategist alone runs again with the note, and the SAME order is resubmitted through
+/// the same gate with the new proposal (IWorkOrderService.ResubmitAsync). Nothing here blocks
+/// on a person; the queue simply has nothing for it.
 ///
 /// One /run call per segment between pauses, not per agent: the agent service runs the
 /// graph's agents in order inside one call and returns every result (graph.py routes it).
@@ -84,20 +93,27 @@ public class WorkflowRunner : BackgroundService
     /// <summary>
     /// The queue is an in-process channel, so a restart empties it — and a host that sleeps
     /// when idle restarts often. The rows are durable, so at startup every workflow an agent
-    /// run was meant to be working on (Submitted or Diagnosing) is queued again rather than
-    /// left looking busy forever. Safe to repeat: the runner only starts from those two
-    /// states, so an id that has already moved on is skipped when it comes round.
+    /// run was meant to be working on (Submitted, Diagnosing, or Strategizing with a revision
+    /// pending) is queued again rather than left looking busy forever. Safe to repeat: the
+    /// runner only starts from those, so an id that has already moved on is skipped when it
+    /// comes round.
     /// </summary>
     internal async Task RequeueUnfinishedRunsAsync(CancellationToken cancellationToken)
     {
         try
         {
-            IReadOnlyList<int> ids;
+            List<int> ids;
 
             using (var scope = _scopeFactory.CreateScope())
             {
-                ids = await scope.ServiceProvider.GetRequiredService<IWorkflowService>()
-                    .GetUnfinishedRunIdsAsync(cancellationToken);
+                ids = (await scope.ServiceProvider.GetRequiredService<IWorkflowService>()
+                        .GetUnfinishedRunIdsAsync(cancellationToken))
+                    // A revision the strategist has not answered yet is unfinished too. Only
+                    // those: every other Strategizing workflow is waiting on a person.
+                    .Concat(await scope.ServiceProvider.GetRequiredService<IWorkOrderService>()
+                        .GetPendingRevisionWorkflowIdsAsync(cancellationToken))
+                    .Order()
+                    .ToList();
             }
 
             foreach (var id in ids)
@@ -363,11 +379,21 @@ public class WorkflowRunner : BackgroundService
 
             if (from is null)
             {
-                // Gone, waiting on a person, or past the agents. A revision re-queues its
-                // workflow in Strategizing and lands here too: re-running the strategist on
-                // its own is not wired yet (see WorkOrderService.RequestRevisionAsync).
+                // Gone, waiting on a person, or past the agents.
                 _logger.LogWarning(
                     "Workflow {WorkflowId} was not in a state the runner starts from; skipping.", workflowId);
+                return;
+            }
+
+            // Strategizing is a place to start ONLY for a revision the strategist has not
+            // answered. Anything else there is waiting on a manager.
+            PendingRevision? revision = null;
+
+            if (from == WorkflowState.Strategizing
+                && (revision = await workOrders.GetPendingRevisionAsync(workflowId, cancellationToken)) is null)
+            {
+                _logger.LogWarning(
+                    "Workflow {WorkflowId} is in Strategizing with no revision pending; skipping.", workflowId);
                 return;
             }
 
@@ -387,9 +413,13 @@ public class WorkflowRunner : BackgroundService
                 ? null
                 : await reports.GetByIdAsync(workflow.ReportId.Value, cancellationToken);
 
-            if (from == WorkflowState.Submitted)
+            if (revision is not null)
             {
-                await RunFromSubmittedAsync(workflows, clarifications, agent, workflow, report, cancellationToken);
+                await ReviseAsync(workflows, workOrders, agent, workflow, report, revision, cancellationToken);
+            }
+            else if (from == WorkflowState.Submitted)
+            {
+                await RunFromSubmittedAsync(workflows, clarifications, workOrders, agent, workflow, report, cancellationToken);
             }
             else
             {
@@ -424,6 +454,7 @@ public class WorkflowRunner : BackgroundService
     private async Task RunFromSubmittedAsync(
         IWorkflowService workflows,
         IClarificationService clarifications,
+        IWorkOrderService workOrders,
         IAgentClient agent,
         WorkflowDetailDto workflow,
         ReportDto? report,
@@ -474,7 +505,7 @@ public class WorkflowRunner : BackgroundService
             }
 
             await workflows.ProceedWithoutClarificationAsync(workflow.Id, cancellationToken);
-            await AdvanceThroughDownstreamAsync(workflows, workflow.Id, response, timing, cancellationToken);
+            await AdvanceThroughDownstreamAsync(workflows, workOrders, workflow, report?.AssetId, response, timing, cancellationToken);
             return;
         }
 
@@ -528,7 +559,7 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        await AdvanceThroughDownstreamAsync(workflows, workflow.Id, response, timing, cancellationToken);
+        await AdvanceThroughDownstreamAsync(workflows, workOrders, workflow, report?.AssetId, response, timing, cancellationToken);
     }
 
     /// <summary>
@@ -616,26 +647,210 @@ public class WorkflowRunner : BackgroundService
         }
 
         await AdvanceThroughDownstreamAsync(
-            workflows, workflow.Id, call.Response, new CallTiming(call.DurationMs), cancellationToken);
+            workflows, workOrders, workflow, assetId, call.Response, new CallTiming(call.DurationMs), cancellationToken);
+    }
+
+    /// <summary>
+    /// A manager sent the order back for revision. Only the strategist runs again — graph.py
+    /// routes a request carrying revision_note straight to it — with the note, on the ORDER's
+    /// asset, which a work order always names. Its step is APPENDED, like a re-diagnosis, and
+    /// so is its plan step, so the first proposal stays beside the revised one.
+    ///
+    /// A usable revised proposal resubmits the SAME order through the approval gate. When
+    /// there is none — the call failed, the strategist safe-failed, or its proposal cannot be
+    /// raised — the workflow stays in Strategizing with the Draft, and the Outcome says a
+    /// manager must resubmit it: missing advice costs advice, never the ability to act. A
+    /// failed call still records a strategist step, which is what marks the revision answered
+    /// (GetPendingRevisionAsync), so a restart does not re-run it.
+    /// </summary>
+    private async Task ReviseAsync(
+        IWorkflowService workflows,
+        IWorkOrderService workOrders,
+        IAgentClient agent,
+        WorkflowDetailDto workflow,
+        ReportDto? report,
+        PendingRevision revision,
+        CancellationToken cancellationToken)
+    {
+        // Delegated in the plan before it runs, so a poll sees the new step pending.
+        await workflows.AppendRevisionToPlanAsync(workflow.Id, revision.WorkOrderId, cancellationToken);
+
+        var call = await agent.RunAsync(
+            RequestFor(workflow, report, answers: null, revision.AssetId, reopened: false,
+                revision.Note, revision.WorkOrderId),
+            cancellationToken);
+
+        var proposal = call is { Ok: true, Response: not null }
+            ? call.Response.DownstreamResults().FirstOrDefault(r => r.AgentName == AgentRunResponse.StrategistAgentName)
+            : null;
+
+        if (proposal is null)
+        {
+            var reason = call.Ok
+                ? "The agent service returned no revised proposal."
+                : call.Error ?? "The agent service call failed for an unknown reason.";
+
+            await workflows.RecordStepAsync(
+                workflow.Id, AgentRunResponse.StrategistAgentName, toolCallsJson: "[]", payloadJson: null,
+                durationMs: call.DurationMs, validationResult: "CallFailed", errorMessage: reason,
+                cancellationToken: cancellationToken);
+            await workflows.MarkPlanStepAsync(
+                workflow.Id, AgentRunResponse.StrategistAgentName, PlanStepStatus.Failed, cancellationToken);
+            await workflows.RecordRevisionWaitingAsync(
+                workflow.Id, revision.WorkOrderId, $"The strategist could not be re-run: {reason}", cancellationToken);
+            return;
+        }
+
+        await RecordDownstreamStepAsync(workflows, workflow.Id, proposal, new CallTiming(call.DurationMs), cancellationToken);
+        await workflows.MarkPlanStepAsync(
+            workflow.Id, AgentRunResponse.StrategistAgentName,
+            proposal.Succeeded ? PlanStepStatus.Completed : PlanStepStatus.Failed, cancellationToken);
+
+        if (RaisableProposal(workflow.Id, proposal) is not { } raisable)
+        {
+            await workflows.RecordRevisionWaitingAsync(
+                workflow.Id, revision.WorkOrderId,
+                "The strategist produced no revised proposal that can be resubmitted.", cancellationToken);
+            return;
+        }
+
+        try
+        {
+            var outcome = await workOrders.ResubmitAsync(
+                revision.WorkOrderId, raisable.Strategy, raisable.EstimatedCost, revision.PartsRequired,
+                auditNote: "Resubmitted by the workflow runner from the strategist's revised proposal.",
+                cancellationToken: cancellationToken);
+
+            if (outcome != WorkOrderActionOutcome.Success)
+            {
+                // Most often a manager resubmitted it by hand while the strategist was working.
+                _logger.LogWarning(
+                    "Workflow {WorkflowId}: work order {WorkOrderId} could not be resubmitted ({Outcome}).",
+                    workflow.Id, revision.WorkOrderId, outcome);
+            }
+        }
+        catch (InvalidWorkflowTransitionException ex)
+        {
+            // The workflow moved on under the runner. Not a failed run: the proposal is on its
+            // step, and whatever moved the workflow is the truer state.
+            _logger.LogWarning(ex,
+                "Workflow {WorkflowId}: work order {WorkOrderId} was not resubmitted.", workflow.Id, revision.WorkOrderId);
+        }
+    }
+
+    /// <summary>
+    /// Raises the strategist's proposal as a work order, through CreateAsync and so through
+    /// the approval gate — when it can be. It cannot without a report, without an asset (a
+    /// work order must name one, and a fresh report usually does not), or without a usable
+    /// proposal; the workflow then waits in Strategizing for a manager to raise one by hand.
+    /// </summary>
+    private async Task RaiseFromProposalAsync(
+        IWorkOrderService workOrders,
+        WorkflowDetailDto workflow,
+        int? assetId,
+        DownstreamAgentResult proposal,
+        CancellationToken cancellationToken)
+    {
+        if (workflow.ReportId is null || assetId is null)
+        {
+            _logger.LogInformation(
+                "Workflow {WorkflowId}: no report or no asset, so the proposal waits for a manager to raise it.",
+                workflow.Id);
+            return;
+        }
+
+        if (RaisableProposal(workflow.Id, proposal) is not { } raisable)
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await workOrders.CreateAsync(
+                new CreateWorkOrderDto(workflow.ReportId.Value, assetId.Value, raisable.Strategy, raisable.EstimatedCost, null),
+                auditNote: "Raised by the workflow runner from the strategist's proposal.",
+                cancellationToken);
+
+            if (result.Outcome != CreateWorkOrderOutcome.Success)
+            {
+                _logger.LogWarning(
+                    "Workflow {WorkflowId}: the proposal was not raised ({Outcome}); a manager can raise one.",
+                    workflow.Id, result.Outcome);
+            }
+        }
+        catch (InvalidWorkflowTransitionException ex)
+        {
+            // A manager raised one first. Their order stands; the run is not a failure.
+            _logger.LogWarning(ex, "Workflow {WorkflowId}: the proposal was not raised.", workflow.Id);
+        }
+    }
+
+    /// <summary>What a proposal may be raised as — its strategy and estimate — or null when it cannot be.</summary>
+    private sealed record RaisableOrder(WorkOrderStrategy Strategy, decimal EstimatedCost);
+
+    /// <summary>
+    /// A proposal the runner may raise or resubmit: the strategist succeeded, AgentAnalysis —
+    /// the approval queue's own reader — maps its strategy to a WorkOrderStrategy and reads its
+    /// estimate as a decimal, and that estimate passes the same DataAnnotations bound a
+    /// manager's CreateWorkOrderDto does, at no more than two decimal places (the column is
+    /// numeric(18,2), and rounding money silently is not a decision the runner gets to make).
+    /// The agent's schema checks all of this first; this is the check on THIS side of the
+    /// network, as with the plan. Whether the order then needs a manager is the gate's, not this.
+    /// </summary>
+    private RaisableOrder? RaisableProposal(int workflowId, DownstreamAgentResult proposal)
+    {
+        if (!proposal.Succeeded)
+        {
+            return null;
+        }
+
+        var read = AgentAnalysis.ToProposal(new AgentStep
+        {
+            WorkflowId = workflowId,
+            AgentName = AgentRunResponse.StrategistAgentName,
+            ToolCallsJson = "[]",
+            PayloadJson = proposal.OutputJson
+        });
+
+        if (read.Strategy is not { } strategy || read.EstimatedCost is not { } cost)
+        {
+            _logger.LogWarning("Workflow {WorkflowId}: the proposal has no strategy or estimate the API can read.", workflowId);
+            return null;
+        }
+
+        var dto = new CreateWorkOrderDto(1, 1, strategy, cost, null);
+
+        if (!Validator.TryValidateObject(dto, new ValidationContext(dto), null, validateAllProperties: true)
+            || decimal.Round(cost, 2) != cost)
+        {
+            _logger.LogWarning("Workflow {WorkflowId}: the proposed estimate {Cost} is out of bounds.", workflowId, cost);
+            return null;
+        }
+
+        return new RaisableOrder(strategy, cost);
     }
 
     /// <summary>
     /// The diagnostic, then the strategist: each one's step written, its plan step marked, then
     /// its transition made, in graph order. The workflow is in Diagnosing on the way in and in
-    /// Strategizing on the way out, waiting for a manager to raise the order.
+    /// Strategizing on the way out — and then the proposal is raised through the approval gate
+    /// when it can be (RaiseFromProposalAsync), or waits there for a manager to raise one.
     ///
     /// An agent that safe-failed still moves the workflow on — the failure is on its step and
     /// its plan step, and a missing diagnosis or proposal costs advice, not the ability to
     /// raise an order. An agent that is ABSENT from the reply is different: the graph did not
     /// do what this runner was promised, so the run is Failed with that said.
     /// </summary>
-    private static async Task AdvanceThroughDownstreamAsync(
+    private async Task AdvanceThroughDownstreamAsync(
         IWorkflowService workflows,
-        int workflowId,
+        IWorkOrderService workOrders,
+        WorkflowDetailDto workflow,
+        int? assetId,
         AgentRunResponse response,
         CallTiming timing,
         CancellationToken cancellationToken)
     {
+        var workflowId = workflow.Id;
         var results = response.DownstreamResults();
 
         var diagnosis = results.FirstOrDefault(r => r.AgentName == AgentRunResponse.DiagnosticAgentName);
@@ -665,6 +880,8 @@ public class WorkflowRunner : BackgroundService
             workflowId, AgentRunResponse.StrategistAgentName,
             proposal.Succeeded ? PlanStepStatus.Completed : PlanStepStatus.Failed, cancellationToken);
         await workflows.RecordProposalAsync(workflowId, proposal.Succeeded, cancellationToken);
+
+        await RaiseFromProposalAsync(workOrders, workflow, assetId, proposal, cancellationToken);
     }
 
     private static AgentRunRequest RequestFor(
@@ -672,7 +889,9 @@ public class WorkflowRunner : BackgroundService
         ReportDto? report,
         IReadOnlyList<AgentClarificationAnswer>? answers,
         int? assetId,
-        bool reopened) =>
+        bool reopened,
+        string? revisionNote = null,
+        int? revisionWorkOrderId = null) =>
         new(
             WorkflowId: workflow.Id,
             Description: workflow.Objective,
@@ -687,5 +906,8 @@ public class WorkflowRunner : BackgroundService
             // the machine's service history.
             AssetId: assetId,
             ClarificationAnswers: answers,
-            Reopened: reopened);
+            Reopened: reopened,
+            // Only on a revision: routes graph.py straight to the strategist.
+            RevisionNote: revisionNote,
+            RevisionWorkOrderId: revisionWorkOrderId);
 }

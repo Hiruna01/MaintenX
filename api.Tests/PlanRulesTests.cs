@@ -135,6 +135,31 @@ public class PlanRulesTests
         Assert.Equal(once.Steps, twice.Steps);
     }
 
+    /// <summary>
+    /// A revision re-runs the strategist and nothing else, so one step is appended — the first
+    /// proposal's kept beside it — and only once while it is pending. A LATER revision, after
+    /// that step was settled, appends another.
+    /// </summary>
+    [Fact]
+    public void AppendRevision_AddsOneStrategistStep_OncePerRevision()
+    {
+        var settled = PlanRules.MarkStep(PlanRules.MarkStep(PlanRules.Fallback("n"),
+            "diagnostic", PlanStepStatus.Completed), "strategist", PlanStepStatus.Completed);
+
+        var once = PlanRules.AppendRevision(settled, workOrderId: 57);
+        var twice = PlanRules.AppendRevision(once, workOrderId: 57);
+
+        Assert.Equal(4, once.Steps.Count);
+        var added = once.Steps[3];
+        Assert.Equal((4, "strategist", PlanStepStatus.Pending, PlanRules.AddedByApi), (added.Order, added.Agent, added.Status, added.AddedBy));
+        Assert.Contains("#57", added.Purpose);
+        Assert.Equal(once.Steps, twice.Steps);
+
+        var nextRevision = PlanRules.AppendRevision(
+            PlanRules.MarkStep(once, "strategist", PlanStepStatus.Completed), workOrderId: 57);
+        Assert.Equal(5, nextRevision.Steps.Count);
+    }
+
     [Fact]
     public void AStoredPlan_RoundTrips_AndAnUnreadableOneIsNull_NeverThrown()
     {

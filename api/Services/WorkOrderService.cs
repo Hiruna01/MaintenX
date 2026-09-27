@@ -421,6 +421,7 @@ public class WorkOrderService : IWorkOrderService
 
     public async Task<CreateWorkOrderResult> CreateAsync(
         CreateWorkOrderDto dto,
+        string? auditNote = null,
         CancellationToken cancellationToken = default)
     {
         // Both checked here rather than left to the foreign keys, so a bad id is a 400
@@ -448,70 +449,29 @@ public class WorkOrderService : IWorkOrderService
             return new CreateWorkOrderResult(CreateWorkOrderOutcome.ReportClosed);
         }
 
+        // An order sent back for revision is still the report's order — a Draft waiting to be
+        // resubmitted (ResubmitAsync). A second one raised beside it would leave the Draft
+        // orphaned, with its manager's note, and nothing would ever read either again.
+        if (await _db.WorkOrders.AnyAsync(
+                o => o.ReportId == dto.ReportId && o.Status == WorkOrderStatus.Draft, cancellationToken))
+        {
+            return new CreateWorkOrderResult(CreateWorkOrderOutcome.RevisionPending);
+        }
+
         // [Required] on the DTO has already refused a missing value with a 400, so these
         // are never null by the time they get here.
-        var estimatedCost = dto.EstimatedCost!.Value;
-        var strategy = dto.Strategy!.Value;
-
-        var basis = ApprovalBasisFor(estimatedCost, strategy);
-        var needsApproval = basis.RequiresApproval;
-
-        // Raised as Draft in principle (see CreateWorkOrderDto), and routed out of it in
-        // the same breath: the gate is decided before the row is ever written, so no
-        // reader can catch an order sitting in Draft waiting to be routed.
-        //
-        // An order that did not need a decision has no ApprovedBy and no ApprovedAt. Null
-        // there means "nobody had to decide", and Status is what says it is approved.
         var order = new WorkOrder
         {
             ReportId = dto.ReportId,
             AssetId = dto.AssetId,
-            Strategy = strategy,
-            EstimatedCost = estimatedCost,
-            PartsRequired = dto.PartsRequired,
-            Status = needsApproval ? WorkOrderStatus.AwaitingApproval : WorkOrderStatus.Approved
+            Strategy = dto.Strategy!.Value,
+            EstimatedCost = dto.EstimatedCost!.Value,
+            PartsRequired = dto.PartsRequired
         };
 
         _db.WorkOrders.Add(order);
 
-        // The workflow moves in the SAME SaveChanges as the order, so the two cannot
-        // disagree — a workflow never says AwaitingManagerApproval with no order waiting,
-        // nor WorkOrderRaised with none raised. Same rule as ClarificationService moving a
-        // report alongside its questions.
-        //
-        // Legal only from Strategizing (or Failed — a manager may act when the agent could
-        // not). A report still waiting on its reporter or still being diagnosed, or one that
-        // already has an order raised, is a 409 — a second order must not be able to move
-        // a workflow that is waiting on a manager as if the manager had approved.
-        var workflow = await LatestWorkflowForReportAsync(dto.ReportId, cancellationToken);
-
-        if (workflow is null)
-        {
-            await _db.SaveChangesAsync(cancellationToken);
-        }
-        else
-        {
-            var trigger = WorkflowTransitions.ForRaisedWorkOrder(needsApproval);
-            WorkflowTransitions.Move(workflow, trigger);
-
-            // The report goes to WorkOrderRaised in the same transaction (ReportProgress).
-            await ReportProgress.AdvanceAsync(_db, workflow, trigger, _logger, cancellationToken);
-
-            // Where the gate routed the order goes on the run's audit trail (ApprovalAudit),
-            // and the step needs the order's id, which exists only after the first save — so
-            // the order, the move and the step are one transaction: all three or none.
-            await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
-
-            await _db.SaveChangesAsync(cancellationToken);
-
-            _db.AgentSteps.Add(ApprovalAudit.Step(
-                workflow, order,
-                needsApproval ? ApprovalAudit.ApprovalRequired : ApprovalAudit.AutoApproved,
-                basis, decidedByUserId: null));
-
-            await _db.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-        }
+        await RouteThroughGateAsync(order, auditNote, cancellationToken);
 
         return new CreateWorkOrderResult(
             CreateWorkOrderOutcome.Success,
@@ -520,6 +480,184 @@ public class WorkOrderService : IWorkOrderService
                 order.AssignedTechnicianId, null, order.Status, order.Strategy,
                 order.EstimatedCost, order.ActualCost, order.CompletedAt,
                 order.CreatedAt, order.UpdatedAt));
+    }
+
+    public async Task<WorkOrderActionOutcome> ResubmitAsync(
+        int id,
+        WorkOrderStrategy strategy,
+        decimal estimatedCost,
+        string? partsRequired,
+        string? auditNote = null,
+        CancellationToken cancellationToken = default)
+    {
+        var order = await _db.WorkOrders
+            .Include(w => w.Report)
+            .FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
+
+        if (order is null)
+        {
+            return WorkOrderActionOutcome.NotFound;
+        }
+
+        // Only a Draft: the one status an order is in when a manager has sent it back. An
+        // order already routed has had its gate; resubmitting it would route it twice.
+        if (order.Status != WorkOrderStatus.Draft)
+        {
+            return WorkOrderActionOutcome.InvalidState;
+        }
+
+        if (order.Report!.Status == ReportStatus.Closed)
+        {
+            return WorkOrderActionOutcome.ReportClosed;
+        }
+
+        // The same order, re-planned: its id, report and asset stay, and its service history
+        // and audit trail with them. RevisionNote stays too — it is what this revision answered.
+        order.Strategy = strategy;
+        order.EstimatedCost = estimatedCost;
+        order.PartsRequired = partsRequired;
+
+        await RouteThroughGateAsync(order, auditNote, cancellationToken);
+        return WorkOrderActionOutcome.Success;
+    }
+
+    /// <summary>
+    /// THE APPROVAL GATE, for a new order and a resubmitted Draft alike — one place, so the two
+    /// cannot route an order differently.
+    ///
+    /// Decided in C# before anything is written (ApprovalBasisFor): over the threshold, or a
+    /// replacement, is AwaitingApproval and the workflow to AwaitingManagerApproval; otherwise
+    /// Approved and WorkOrderRaised. No reader can catch the order sitting in Draft waiting to
+    /// be routed. An order that did not need a decision has no ApprovedBy and no ApprovedAt:
+    /// null there means "nobody had to decide", and Status is what says it is approved.
+    ///
+    /// The workflow moves in the SAME transaction as the order, so the two cannot disagree —
+    /// a workflow never says AwaitingManagerApproval with no order waiting, nor
+    /// WorkOrderRaised with none raised. Legal only from Strategizing (or Failed — a manager may
+    /// act when the agent could not); anywhere else WorkflowTransitions throws and the
+    /// middleware makes it a 409 that wrote nothing. Where the gate routed the order goes on
+    /// the run's audit trail (ApprovalAudit), and the step needs the order's id, which a new
+    /// order has only after the first save — so the order, the move and the step are one
+    /// transaction: all three or none.
+    /// </summary>
+    private async Task RouteThroughGateAsync(
+        WorkOrder order,
+        string? auditNote,
+        CancellationToken cancellationToken)
+    {
+        var basis = ApprovalBasisFor(order.EstimatedCost, order.Strategy);
+        var needsApproval = basis.RequiresApproval;
+
+        order.Status = needsApproval ? WorkOrderStatus.AwaitingApproval : WorkOrderStatus.Approved;
+
+        var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
+
+        if (workflow is null)
+        {
+            // The seeded history: an order with no run to move alongside it.
+            await _db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        var trigger = WorkflowTransitions.ForRaisedWorkOrder(needsApproval);
+        WorkflowTransitions.Move(workflow, trigger);
+
+        // The report goes to WorkOrderRaised in the same transaction (ReportProgress).
+        await ReportProgress.AdvanceAsync(_db, workflow, trigger, _logger, cancellationToken);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        _db.AgentSteps.Add(ApprovalAudit.Step(
+            workflow, order,
+            needsApproval ? ApprovalAudit.ApprovalRequired : ApprovalAudit.AutoApproved,
+            basis, decidedByUserId: null, note: auditNote));
+
+        workflow.Outcome = needsApproval
+            ? $"Work order {order.Id} is waiting for a facilities manager's approval."
+            : $"Work order {order.Id} was approved without a decision: it is within the approval threshold.";
+
+        await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<PendingRevision?> GetPendingRevisionAsync(
+        int workflowId,
+        CancellationToken cancellationToken = default)
+    {
+        var reportId = await _db.AgentWorkflows
+            .Where(w => w.Id == workflowId)
+            .Select(w => w.ReportId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Only the report's LATEST run is the one a revision moved (LatestWorkflowForReportAsync).
+        if (reportId is null
+            || (await LatestWorkflowForReportAsync(reportId.Value, cancellationToken))?.Id != workflowId)
+        {
+            return null;
+        }
+
+        var order = await _db.WorkOrders
+            .AsNoTracking()
+            .Where(o => o.ReportId == reportId && o.Status == WorkOrderStatus.Draft && o.RevisionNote != null)
+            .OrderByDescending(o => o.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (order is null)
+        {
+            return null;
+        }
+
+        // ANSWERED ALREADY when the strategist has run since the manager sent it back: a
+        // strategist agent-run step after the latest RevisionRequested step. That is what
+        // makes the runner idempotent — a restart re-queues this workflow, and a second
+        // re-run would put a second revised proposal on the trail for one revision. A failed
+        // call is recorded as a strategist step too, so it counts as answered, and the manager
+        // resubmits by hand.
+        var revisionStepId = await _db.AgentSteps
+            .Where(s => s.WorkflowId == workflowId
+                        && s.AgentName == ApprovalAudit.StepName
+                        && s.ValidationResult == ApprovalAudit.RevisionRequested)
+            .MaxAsync(s => (int?)s.Id, cancellationToken) ?? 0;
+
+        // Filtered in memory: a strategist TOOL CALL carries the same name, and the difference
+        // is inside a jsonb column (AgentAnalysis.IsAgentRunStep).
+        var strategistSince = await _db.AgentSteps
+            .AsNoTracking()
+            .Where(s => s.WorkflowId == workflowId
+                        && s.Id > revisionStepId
+                        && s.AgentName == AgentRunResponse.StrategistAgentName)
+            .Select(s => s.ToolCallsJson)
+            .ToListAsync(cancellationToken);
+
+        return strategistSince.Any(AgentAnalysis.IsAgentRunStep)
+            ? null
+            : new PendingRevision(order.Id, order.AssetId, order.RevisionNote!, order.PartsRequired);
+    }
+
+    public async Task<IReadOnlyList<int>> GetPendingRevisionWorkflowIdsAsync(CancellationToken cancellationToken = default)
+    {
+        var candidates = await _db.AgentWorkflows
+            .AsNoTracking()
+            .Where(w => w.CurrentState == WorkflowState.Strategizing)
+            .OrderBy(w => w.Id)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken);
+
+        var pending = new List<int>();
+
+        // One check per workflow, by the same rule the runner applies — a campus has a handful
+        // of runs waiting on a manager, not thousands.
+        foreach (var id in candidates)
+        {
+            if (await GetPendingRevisionAsync(id, cancellationToken) is not null)
+            {
+                pending.Add(id);
+            }
+        }
+
+        return pending;
     }
 
     public async Task<WorkOrderActionOutcome> AssignAsync(
@@ -857,10 +995,9 @@ public class WorkOrderService : IWorkOrderService
         // not been written yet. CancellationToken.None, not the request's: that token is
         // cancelled as soon as the response is written, which would abort the hand-off.
         //
-        // NOTE: the runner starts only from Submitted and Diagnosing, so it logs a warning
-        // and skips this item. Re-running the strategist alone needs a route in graph.py
-        // that reads revision_note, and nothing sends revision_note yet. The hand-off is
-        // made anyway, so the resume point already sits where it belongs.
+        // The runner finds this revision pending (GetPendingRevisionAsync), sends the note to
+        // the strategist alone, and resubmits THIS order through the gate with the new
+        // proposal — or leaves it in Draft for the manager to resubmit if it cannot.
         await _workflowQueue.EnqueueAsync(workflow.Id, CancellationToken.None);
 
         return WorkOrderActionOutcome.Success;

@@ -115,10 +115,47 @@ public interface IWorkOrderService
     ///
     /// The comparison is decimal against decimal, in C#, before anything is written — never
     /// in SQL (SQLite compares these as text) and never in a prompt.
+    ///
+    /// Called by a manager (POST /api/workorders) and by the WorkflowRunner from a usable
+    /// strategist proposal — the same gate either way. <paramref name="auditNote"/> says on
+    /// the gate's ApprovalAudit step which of the two raised it. Refused while the report has
+    /// a Draft sent back for revision: that one is resubmitted, not joined by a second.
     /// </summary>
     Task<CreateWorkOrderResult> CreateAsync(
         CreateWorkOrderDto dto,
+        string? auditNote = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Puts a Draft that was sent back for revision through THE SAME APPROVAL GATE as
+    /// <see cref="CreateAsync"/>, with its new strategy, estimate and parts: the same
+    /// ApprovalBasisFor, the same workflow move, the same ApprovalAudit step. The order keeps
+    /// its id — it is the same job, re-planned. Only from Draft (409 otherwise), and not on a
+    /// Closed report. Called by a manager (POST {id}/resubmit) and by the WorkflowRunner from
+    /// the strategist's revised proposal.
+    /// </summary>
+    Task<WorkOrderActionOutcome> ResubmitAsync(
+        int id,
+        WorkOrderStrategy strategy,
+        decimal estimatedCost,
+        string? partsRequired,
+        string? auditNote = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The revision the runner should act on for this workflow, or null when there is none:
+    /// the workflow is its report's latest, the report's order is a Draft with a
+    /// RevisionNote, and no strategist agent run has been recorded on the workflow since the
+    /// manager sent it back. The last part is what makes a re-queue harmless.
+    /// </summary>
+    Task<PendingRevision?> GetPendingRevisionAsync(int workflowId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every Strategizing workflow with a revision pending, oldest first — what the runner
+    /// re-queues at startup beside the Submitted and Diagnosing runs, since the queue is in
+    /// memory and a restart empties it.
+    /// </summary>
+    Task<IReadOnlyList<int>> GetPendingRevisionWorkflowIdsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Hands the order to a technician. Only an order that has cleared approval can be
@@ -253,15 +290,21 @@ public enum CreateWorkOrderOutcome
     /// also drag its finished workflow back into the lifecycle. A fault that has come back
     /// is a new report.
     /// </summary>
-    ReportClosed
+    ReportClosed,
+
+    /// <summary>
+    /// The report already has an order sent back for revision, in Draft. A 409: that order
+    /// is resubmitted (POST {id}/resubmit), and a second one raised beside it would orphan it.
+    /// </summary>
+    RevisionPending
 }
 
 /// <summary><see cref="WorkOrder"/> is set only on <see cref="CreateWorkOrderOutcome.Success"/>.</summary>
 public record CreateWorkOrderResult(CreateWorkOrderOutcome Outcome, WorkOrderDto? WorkOrder = null);
 
 /// <summary>
-/// Why one of the work order ACTIONS (assign, complete, approve, reject, request-revision)
-/// ended as it did. One enum for all five rather than one each, because they fail in the
+/// Why one of the work order ACTIONS (assign, complete, approve, reject, request-revision,
+/// resubmit) ended as it did. One enum for all of them rather than one each, because they fail in the
 /// same few ways and the controller maps each to the same status code every time.
 /// </summary>
 public enum WorkOrderActionOutcome
@@ -292,8 +335,17 @@ public enum WorkOrderActionOutcome
     /// Request-revision only: the report has no agent workflow to send back, so there is no
     /// Strategist run that could ever read the note. A 409.
     /// </summary>
-    NoWorkflow
+    NoWorkflow,
+
+    /// <summary>Resubmit only: the report is Closed, and a closed report stays closed. A 409.</summary>
+    ReportClosed
 }
+
+/// <summary>
+/// A Draft sent back for revision that the strategist has not answered yet — what the runner
+/// sends out as revision_note and revision_work_order_id, and resubmits with the answer.
+/// </summary>
+public record PendingRevision(int WorkOrderId, int AssetId, string Note, string? PartsRequired);
 
 /// <summary>
 /// Why an <see cref="IWorkOrderService.AttachCompletionPhotoAsync"/> call ended as it did.

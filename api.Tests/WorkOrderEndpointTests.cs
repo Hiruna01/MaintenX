@@ -11,6 +11,7 @@ using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace api.Tests;
@@ -269,6 +270,68 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
 
         var detail = await manager.GetFromJsonAsync<WorkOrderDetailDto>($"/api/workorders/{order.Id}", JsonOptions);
         Assert.Equal(WorkOrderStatus.AwaitingApproval, detail!.Status);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Resubmit — the Draft a revision left behind, back through the gate
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// While an order sent back for revision waits in Draft, the report does not take a second
+    /// order: that is what orphaned the Draft before. A 409 naming the resubmit instead, and
+    /// the Draft is still the report's only order. Verified to fail with the Draft check
+    /// removed from CreateAsync.
+    /// </summary>
+    [Fact]
+    public async Task WhileADraftWaitsToBeResubmitted_ASecondOrderIsRefused()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        var order = await RaiseAsync(manager, fault, 42_000m);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/request-revision",
+            new RequestRevisionDto("Quote a fan swap first."), JsonOptions)).StatusCode);
+        Assert.Equal(WorkflowState.Strategizing, await WorkflowStateAsync(fault.ReportId));
+
+        var second = await manager.PostAsJsonAsync("/api/workorders",
+            new CreateWorkOrderDto(fault.ReportId, fault.AssetId, WorkOrderStrategy.KnownFix, 900m, null), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Contains("Resubmit", (await second.Content.ReadFromJsonAsync<ProblemDetails>(JsonOptions))!.Detail);
+        Assert.Equal(1, await CountOrdersForReportAsync(fault.ReportId));
+    }
+
+    /// <summary>
+    /// Resubmit is a manager's, for a Draft only: an order still waiting on a manager has had
+    /// its gate (409), a Technician is refused (403), a missing estimate is a 400 — never a 0
+    /// that would sail under the threshold — and an unknown order is a 404.
+    /// </summary>
+    [Fact]
+    public async Task Resubmit_IsForADraft_AndForAManager_WithAnEstimate()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var (technician, _) = await ClientAsync(Role.Technician);
+        var order = await RaiseAsync(manager, await NewFaultAsync(), 42_000m);
+        var body = new ResubmitWorkOrderDto(WorkOrderStrategy.KnownFix, 900m, null);
+
+        var notADraft = await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/resubmit", body, JsonOptions);
+        Assert.Equal(HttpStatusCode.Conflict, notADraft.StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/request-revision",
+            new RequestRevisionDto("Quote a fan swap first."), JsonOptions)).StatusCode);
+
+        var asTechnician = await technician.PostAsJsonAsync($"/api/workorders/{order.Id}/resubmit", body, JsonOptions);
+        var noEstimate = await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/resubmit",
+            new { strategy = "KnownFix" }, JsonOptions);
+        var unknown = await manager.PostAsJsonAsync("/api/workorders/999999/resubmit", body, JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Forbidden, asTechnician.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, noEstimate.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+
+        var detail = await manager.GetFromJsonAsync<WorkOrderDetailDto>($"/api/workorders/{order.Id}", JsonOptions);
+        Assert.Equal(WorkOrderStatus.Draft, detail!.Status);
+        Assert.Equal(42_000m, detail.EstimatedCost);
     }
 
     // ---------------------------------------------------------------------------------

@@ -62,6 +62,10 @@ public interface IWorkflowService
     /// what it says decides whether the next state is AwaitingClarification or Diagnosing.
     /// Null when the workflow has vanished or sits anywhere else — waiting on a person, or
     /// already past the agents — so a stray queue entry can never rewind it.
+    ///
+    /// Strategizing is returned too, for a REVISION: a manager sent the order back and the
+    /// strategist runs again. Only the runner can tell whether a revision is pending there —
+    /// it asks IWorkOrderService — and it skips any other Strategizing.
     /// </summary>
     Task<WorkflowState?> BeginProcessingAsync(int workflowId, CancellationToken cancellationToken = default);
 
@@ -98,6 +102,26 @@ public interface IWorkflowService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Appends a strategist step to the plan when a manager sent the order back for revision,
+    /// so the second proposal is delegated in the plan as well as recorded in the steps.
+    /// </summary>
+    Task<bool> AppendRevisionToPlanAsync(
+        int workflowId,
+        int workOrderId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// A revision the runner could not turn into a resubmitted order — the strategist call
+    /// failed, or its proposal was unusable. NOT a transition: the workflow stays in
+    /// Strategizing with the Draft, and the Outcome says a manager must resubmit it.
+    /// </summary>
+    Task<bool> RecordRevisionWaitingAsync(
+        int workflowId,
+        int workOrderId,
+        string why,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The planner left the clarifier out of the plan: Submitted to Diagnosing, through its
     /// own trigger (PlannedWithoutClarification), not the clarifier's.
     /// </summary>
@@ -131,9 +155,10 @@ public interface IWorkflowService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// The strategist has run. NOT a transition: the workflow stays in Strategizing until a
-    /// manager raises the work order, and the order's approval gate decides whether that
-    /// lands in WorkOrderRaised or AwaitingManagerApproval. The proposal is advice, so it
+    /// The strategist has run. NOT a transition: the workflow stays in Strategizing until the
+    /// order is raised — by the runner from a usable proposal, or by a manager — and the
+    /// order's approval gate decides whether that lands in WorkOrderRaised or
+    /// AwaitingManagerApproval. The proposal is advice, so it
     /// moves nothing; only the Outcome line says what the workflow is waiting for.
     /// </summary>
     Task<bool> RecordProposalAsync(

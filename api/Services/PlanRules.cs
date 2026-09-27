@@ -230,6 +230,29 @@ public static class PlanRules
         return plan with { Steps = steps };
     }
 
+    /// <summary>
+    /// A manager sent the order back for revision, so the strategist runs again — and only the
+    /// strategist: the fault is diagnosed already. Its new step is APPENDED, like a
+    /// re-diagnosis, so the first proposal stays in the plan beside the revised one.
+    /// </summary>
+    public static WorkflowPlanDto AppendRevision(WorkflowPlanDto plan, int workOrderId)
+    {
+        // Idempotent for the same reason as AppendRediagnosis: a restart re-queues a revision
+        // whose strategist has not answered yet, and its pending step is already there.
+        if (plan.Steps.Any(s => s.Agent == AgentRunResponse.StrategistAgentName && s.Status == PlanStepStatus.Pending))
+        {
+            return plan;
+        }
+
+        var steps = plan.Steps.ToList();
+
+        steps.Add(new WorkflowPlanStepDto(steps.Count + 1, AgentRunResponse.StrategistAgentName,
+            $"Propose again: a facilities manager sent work order #{workOrderId} back for revision.",
+            PlanStepStatus.Pending, AddedByApi));
+
+        return plan with { Steps = steps };
+    }
+
     public static string Serialize(WorkflowPlanDto plan) => JsonSerializer.Serialize(plan, Json);
 
     /// <summary>

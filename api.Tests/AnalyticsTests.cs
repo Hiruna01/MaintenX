@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
+using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -246,6 +247,74 @@ public class AnalyticsTests
         Assert.Equal(33.33m, ranged.NoQuestionRate);
     }
 
+    /// <summary>
+    /// The planner can leave the clarifier out of a clear report's plan. Such a report NEEDED NO
+    /// QUESTIONS — the planner decided so, under the rules PlanRules checked — so it counts as
+    /// clarified with none, and separately as planned without clarification. What decides it is
+    /// the STORED plan: the planner's source, and no clarifier step. A fallback plan never
+    /// counts (it always runs the clarifier), nor does a planner plan that kept the clarifier
+    /// when the clarifier never ran. A report the clarifier DID run on counts once, as the
+    /// clarifier's.
+    /// </summary>
+    [Fact]
+    public async Task Clarification_AReportThePlannerJudgedClear_NeededNoQuestions_AndIsCountedApart()
+    {
+        using var factory = new FixedClockApiFactory();
+        const string Diagnostic = AgentRunResponse.DiagnosticAgentName;
+        const string Strategist = AgentRunResponse.StrategistAgentName;
+        const string Clarifier = AgentRunResponse.ClarifierAgentName;
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var building = new Building { Name = "Block PLN", Code = "PLN" };
+            var room = new Room { Building = building, Name = "Lab", Code = "PLN-1", Floor = 1 };
+            var reporter = new User
+            {
+                Email = "pln@example.com",
+                PasswordHash = "not-a-real-hash",
+                FullName = "Test Reporter",
+                Role = Role.Reporter
+            };
+            db.AddRange(building, room, reporter);
+            await db.SaveChangesAsync();
+
+            var filedOn = Utc(2026, 5, 10);
+
+            // COUNTED: the planner judged it clear and left the clarifier out.
+            var clear = await SeedReportAsync(db, room, reporter, filedOn, PlannerRun());
+            await StorePlanAsync(db, clear, PlanRules.SourcePlanner, Diagnostic, Strategist);
+
+            // NOT counted: the same steps, but not the planner's — the source is the boundary.
+            var fallback = await SeedReportAsync(db, room, reporter, filedOn, PlannerRun());
+            await StorePlanAsync(db, fallback, PlanRules.SourceFallback, Diagnostic, Strategist);
+
+            // NOT counted: the planner KEPT the clarifier, which never ran.
+            var kept = await SeedReportAsync(db, room, reporter, filedOn, PlannerRun());
+            await StorePlanAsync(db, kept, PlanRules.SourcePlanner, Clarifier, Diagnostic, Strategist);
+
+            // Counted ONCE, as the clarifier's: it ran and asked nothing on this report.
+            var both = await SeedReportAsync(db, room, reporter, filedOn, ClarifierRun("Ok"));
+            await StorePlanAsync(db, both, PlanRules.SourcePlanner, Diagnostic, Strategist);
+
+            // Planned clear, filed the day before the range below: counted only without one.
+            var early = await SeedReportAsync(db, room, reporter, Utc(2026, 4, 30, 23, 59), PlannerRun());
+            await StorePlanAsync(db, early, PlanRules.SourcePlanner, Diagnostic, Strategist);
+        }
+
+        var (manager, _) = await ClientForAsync(factory, Role.FacilitiesManager);
+        var all = (await GetMetricsAsync(manager, MetricsUrl)).Clarification;
+
+        Assert.Equal(3, all.ReportsClarified);
+        Assert.Equal(3, all.ReportsWithNoQuestions);
+        Assert.Equal(2, all.ReportsPlannedWithoutClarification);
+        Assert.Equal(100.00m, all.NoQuestionRate);
+
+        var ranged = (await GetMetricsAsync(manager, $"{MetricsUrl}?fromDate=2026-05-01")).Clarification;
+        Assert.Equal(2, ranged.ReportsClarified);
+        Assert.Equal(1, ranged.ReportsPlannedWithoutClarification);
+    }
+
     [Fact]
     public async Task RepeatFailures_ReadTheNinetyDayWindowToTheDay_AndRankByCost()
     {
@@ -366,7 +435,7 @@ public class AnalyticsTests
     /// The timestamps are written with ExecuteUpdate after the insert, because
     /// AppDbContext stamps CreatedAt on every Added row and would overwrite them.
     /// </summary>
-    private static async Task SeedReportAsync(
+    private static async Task<int> SeedReportAsync(
         AppDbContext db,
         Room room,
         User reporter,
@@ -413,7 +482,34 @@ public class AnalyticsTests
             await db.ClarificationQuestions.Where(q => q.Id == question.Id)
                 .ExecuteUpdateAsync(s => s.SetProperty(q => q.CreatedAt, askedAt));
         }
+
+        return report.Id;
     }
+
+    /// <summary>
+    /// The plan a run was delegated from, stored on the report's workflow as PlanJson —
+    /// written the way WorkflowService.SetPlanAsync writes it, through PlanRules.Serialize.
+    /// </summary>
+    private static async Task StorePlanAsync(AppDbContext db, int reportId, string source, params string[] agents)
+    {
+        var plan = new WorkflowPlanDto(
+            source,
+            Rationale: source == PlanRules.SourcePlanner ? "Stated clearly." : null,
+            Note: source == PlanRules.SourceFallback ? "No valid plan." : null,
+            Steps: agents.Select((agent, i) => new WorkflowPlanStepDto(
+                i + 1, agent, "Establish it.", PlanStepStatus.Pending, source)).ToList());
+
+        var json = PlanRules.Serialize(plan);
+        await db.AgentWorkflows.Where(w => w.ReportId == reportId)
+            .ExecuteUpdateAsync(s => s.SetProperty(w => w.PlanJson, json));
+    }
+
+    private static AgentStep PlannerRun() => new()
+    {
+        AgentName = PlanRules.PlannerAgentName,
+        ToolCallsJson = "[]",
+        ValidationResult = "Ok"
+    };
 
     private static void AddVisit(AppDbContext db, int assetId, DateOnly servicedOn, int? workOrderId) =>
         db.ServiceRecords.Add(new ServiceRecord

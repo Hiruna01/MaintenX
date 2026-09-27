@@ -333,6 +333,18 @@ public class AppDbContext : DbContext
             entity.Property(w => w.EstimatedCost).HasPrecision(18, 2);
             entity.Property(w => w.ActualCost).HasPrecision(18, 2);
 
+            // CHECK CONSTRAINTS: money is never negative, at the database. The DTOs' [Range]
+            // and every C# writer already refuse it, but the database is the one place every
+            // writer has to go through — a migration, a seed, a hand-run fix — and a negative
+            // estimate would sail under any approval threshold. ActualCost is null until the
+            // job is completed, and null is allowed: "not recorded" is not a negative cost.
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint("CK_WorkOrders_EstimatedCost_NotNegative", NotNegative("EstimatedCost"));
+                t.HasCheckConstraint("CK_WorkOrders_ActualCost_NotNegative",
+                    $"\"ActualCost\" IS NULL OR {NotNegative("ActualCost")}");
+            });
+
             // Restrict on all four, matching every other key into the registry: a work
             // order is the record of money authorised and work carried out on a specific
             // machine for a specific fault, so deleting the report, the asset or either
@@ -369,6 +381,12 @@ public class AppDbContext : DbContext
                   .WithMany(w => w.ScheduledSlots)
                   .HasForeignKey(s => s.WorkOrderId)
                   .OnDelete(DeleteBehavior.Cascade);
+
+            // A visit ends after it starts. SlotRules refuses a backwards booking as a 400,
+            // and this is the same rule at the database. A zero-length block is refused too:
+            // it overlaps nothing (SlotRules.Overlaps is strict), so it would book time that
+            // blocks nobody.
+            entity.ToTable(t => t.HasCheckConstraint("CK_ScheduledSlots_EndsAfterStart", EndsAfterStart));
         });
 
         modelBuilder.Entity<ClassScheduleSlot>(entity =>
@@ -391,6 +409,11 @@ public class AppDbContext : DbContext
                   .WithMany()
                   .HasForeignKey(c => c.RoomId)
                   .OnDelete(DeleteBehavior.Restrict);
+
+            // A class ends after it starts. The sync already skips an event whose end is not
+            // after its start (GoogleCalendarSyncService.Map); this is the same rule at the
+            // database, so no writer can mirror a class that blocks nothing.
+            entity.ToTable(t => t.HasCheckConstraint("CK_ClassScheduleSlots_EndsAfterStart", EndsAfterStart));
         });
 
         modelBuilder.Entity<VerificationCheck>(entity =>
@@ -449,6 +472,22 @@ public class AppDbContext : DbContext
     /// the two behave identically from C#'s point of view.
     /// </summary>
     private string JsonColumnType => Database.IsNpgsql() ? "jsonb" : "TEXT";
+
+    /// <summary>
+    /// "This money column is not negative", as CHECK constraint SQL — the same on both
+    /// providers. PostgreSQL compares numeric(18,2) as a number. SQLite (integration tests
+    /// only) stores decimal as TEXT, so there it is a TEXT comparison with '0' — which still
+    /// gets the SIGN right, because EF writes every negative with a leading '-' and '-' sorts
+    /// before every digit. A sign test is all this is; nothing may ORDER BY or compare
+    /// thresholds in SQLite SQL (see ApprovalSettings).
+    /// </summary>
+    private static string NotNegative(string column) => $"\"{column}\" >= 0";
+
+    /// <summary>
+    /// "Ends after it starts", as CHECK constraint SQL. The same on both providers: PostgreSQL
+    /// compares timestamptz, and SQLite's fixed-format TEXT timestamps sort in time order.
+    /// </summary>
+    private const string EndsAfterStart = "\"EndsAt\" > \"StartsAt\"";
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

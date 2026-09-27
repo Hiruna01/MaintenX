@@ -140,6 +140,117 @@ public class WorkOrderTests : IClassFixture<ApiFactory>
         Assert.Equal(1, await db.ClassScheduleSlots.CountAsync(c => c.ExternalEventId == "timetable-evt-1"));
     }
 
+    // ---------------------------------------------------------------------------------
+    // CHECK constraints — the rule at the database, for a writer that skipped every DTO.
+    // Written straight through the DbContext, so nothing in C# stands in front of it.
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Money is never negative, at the database. Zero is a real estimate and a real cost, and
+    /// an ActualCost of NULL is "not recorded yet" — both accepted. Verified to fail with each
+    /// constraint removed — on SQLite too, where the column is TEXT.
+    /// </summary>
+    [Theory]
+    [InlineData("-0.01", null, false)]
+    [InlineData("100", "-0.01", false)]
+    [InlineData("-250000", "-1", false)]
+    [InlineData("0", null, true)]
+    [InlineData("100", "0", true)]
+    [InlineData("0.01", "15000.01", true)]
+    public async Task WorkOrderMoney_BelowZero_IsRefusedByTheDatabase(string estimate, string? actual, bool accepted)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var (asset, report, _) = await SeedFaultAsync(db, UniquePrefix());
+
+        db.WorkOrders.Add(new WorkOrder
+        {
+            Report = report,
+            Asset = asset,
+            Strategy = WorkOrderStrategy.KnownFix,
+            // Strings, because an attribute cannot hold a decimal — and never via a double.
+            EstimatedCost = decimal.Parse(estimate, System.Globalization.CultureInfo.InvariantCulture),
+            ActualCost = actual is null ? null : decimal.Parse(actual, System.Globalization.CultureInfo.InvariantCulture)
+        });
+
+        if (accepted)
+        {
+            await db.SaveChangesAsync();
+            return;
+        }
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+
+        db.ChangeTracker.Clear();
+        Assert.False(await db.WorkOrders.AnyAsync(w => w.ReportId == report.Id));
+    }
+
+    /// <summary>
+    /// A booked visit and a mirrored class both end after they start — a backwards or
+    /// zero-length block is refused, one minute is not. Verified to fail with each constraint
+    /// removed.
+    /// </summary>
+    [Theory]
+    [InlineData(-60, false)]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    public async Task SlotsThatDoNotEndAfterTheyStart_AreRefusedByTheDatabase(int minutes, bool accepted)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var (asset, report, room) = await SeedFaultAsync(db, UniquePrefix());
+
+        var order = new WorkOrder
+        {
+            Report = report,
+            Asset = asset,
+            Strategy = WorkOrderStrategy.KnownFix,
+            EstimatedCost = 500m
+        };
+        db.WorkOrders.Add(order);
+        await db.SaveChangesAsync();
+
+        var startsAt = new DateTime(2026, 10, 1, 9, 0, 0, DateTimeKind.Utc);
+
+        db.ScheduledSlots.Add(new ScheduledSlot
+        {
+            WorkOrderId = order.Id,
+            StartsAt = startsAt,
+            EndsAt = startsAt.AddMinutes(minutes)
+        });
+        await AssertSavedOrRefusedAsync(db, accepted);
+
+        // By id, not navigation: a refused save cleared the tracker, and a detached Room
+        // would be inserted a second time.
+        db.ClassScheduleSlots.Add(new ClassScheduleSlot
+        {
+            RoomId = room.Id,
+            StartsAt = startsAt,
+            EndsAt = startsAt.AddMinutes(minutes),
+            Title = "SE3090 Lecture",
+            ExternalEventId = $"evt-{Guid.NewGuid():N}",
+            SyncedAt = DateTime.UtcNow
+        });
+        await AssertSavedOrRefusedAsync(db, accepted);
+
+        Assert.Equal(accepted ? 1 : 0, await db.ScheduledSlots.CountAsync(s => s.WorkOrderId == order.Id));
+        Assert.Equal(accepted ? 1 : 0, await db.ClassScheduleSlots.CountAsync(c => c.RoomId == room.Id));
+    }
+
+    private static async Task AssertSavedOrRefusedAsync(AppDbContext db, bool accepted)
+    {
+        if (accepted)
+        {
+            await db.SaveChangesAsync();
+            return;
+        }
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+        db.ChangeTracker.Clear();
+    }
+
+    private static string UniquePrefix() => "C" + Guid.NewGuid().ToString("N")[..5].ToUpperInvariant();
+
     private static ClassScheduleSlot NewClass(Room room, string externalEventId, DateTime startsAt) => new()
     {
         Room = room,

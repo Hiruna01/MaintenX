@@ -648,6 +648,8 @@ separate DI scope; the note is in `AppDbContext` next to the index as well.
   **Deliberately not a copy of `WorkflowState`.** A workflow state describes one agent run
   and can end in `Failed`, which says nothing about the fault still sitting in the room.
   This says where the *fault* has got to, and it survives a run that never completed.
+  It still MOVES WITH the workflow where an event means something for the fault — see "The
+  report moves with its workflow" under the report endpoints.
 
 ---
 
@@ -749,7 +751,7 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
 - `approve` / `reject` / `request-revision` are legal only from `AwaitingApproval` (409
   otherwise). Approve and reject both record `ApprovedBy` / `ApprovedAt` — who decided,
   whichever way. Reject needs `RejectWorkOrderDto.Reason` (400 if missing or blank) and
-  closes the workflow. **Request-revision puts the order back to `Draft` with the note on
+  closes the workflow — and the report (`ReportProgress`). **Request-revision puts the order back to `Draft` with the note on
   `WorkOrder.RevisionNote`**, moves the workflow to `Strategizing` and re-queues it — the
   runner skips it with a warning today: it starts only from `Submitted` and `Diagnosing`,
   and re-running the strategist alone needs a `graph.py` route reading `revision_note`.
@@ -773,7 +775,8 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
 - **`POST /api/workorders/{id}/photo` is the completion photo** — the report photo's path, not
   a second one: `ImageUploadRules`, then `IFileStorageService.UploadAsync` under
   `workorders/{id}`, only the URL stored (`CompletionPhotoUrl`), 201 with
-  `CompletionPhotoDto`, a storage failure a 503 that writes nothing. Technician policy, then
+  `CompletionPhotoDto`, a storage failure a 503 that writes nothing (a Supabase 429 too, with
+  its `Retry-After`), metadata stripped first like the report photo's. Technician policy, then
   the ASSIGNED technician (403), then live work only — `Approved` / `Scheduled` /
   `InProgress` (409). **It is called BEFORE `complete`**, because completing cannot be undone:
   a failed upload leaves the job open to retry or finish without it. So `CompleteAsync` keeps
@@ -1083,6 +1086,11 @@ filters, held above them, survive.
   still not this report reopened. Pinned by
   `ReportList_CarriesTheLatestCheck_SoAReopenedRepairShowsOnTheReport`, verified to fail
   with `MinBy`.
+- **`ReportListItemDto.Stage` and `ReportDetailDto.Stage`** (`ReportStage`, by NAME:
+  `BeingReviewed` / `WaitingOnYou` / `AwaitingApproval` / `RepairPlanned` / `Repaired` /
+  `NotGoingAhead` / `Closed`) are the stage the REPORTER is shown, from
+  `ReportProgress.StageFor` — see the report endpoints. Filled like `Verification`: two more
+  queries per page (latest workflow, latest order), the newest picked in C#.
 - **`IsOverdue` is on both DTOs, decided by `VerificationService.IsOverdue`** on the sweep's
   own clocks: `Pending` with `DueAt` passed (what `OverdueUnprocessed` counts), or
   `AwaitingReporterResponse` longer than `ResponseWindowDays` since `ProcessedAt ?? DueAt`
@@ -1619,7 +1627,8 @@ flakiness to retry away.
     `WorkflowEndToEndTests` — both loops through the real endpoints on a movable clock, a
     fresh factory per test: clarified → under threshold → sweep → "yes" → `Closed`, and the
     same asset over threshold → approved → sweep → "no" → `Diagnosing` → `Strategizing`,
-    with every state and the final `AgentStep` count asserted.
+    with every state and the final `AgentStep` count asserted — the REPORT's status and the
+    reporter's stage too, after every step, plus a rejection and an already-Closed report.
     `WorkflowTestData` puts a report's workflow in a state as DATA (ExecuteUpdate, around
     the machine) — every test that raises an order starts from `Strategizing` through it.
   - `WorkOrderEndpointTests` — the work order lifecycle end to end: the approval gate either
@@ -1628,7 +1637,8 @@ flakiness to retry away.
     (including a slot taken between offer and booking).
   - `ApprovalQueueTests` also pins the report detail's raise offer: `LatestWorkflow
     .CanRaiseWorkOrder` in every state against what `POST /api/workorders` then answers, and
-    `Proposal` read like the queue's. `ReportTests` pins `CreateReportDto.AssetId`.
+    `Proposal` read like the queue's. `ReportTests` pins `CreateReportDto.AssetId`, the
+    filing transaction, and `ReportProgress` as pure functions (the trigger map, `StageFor`).
   - `ApprovalTests` — the gate's edge cases: cost == threshold for every strategy,
     `EscalateReplacement` at any cost, no token → 401 on every decision, a decision not
     reversed by the opposite one, and every approval event on the workflow's audit trail
@@ -1639,7 +1649,8 @@ flakiness to retry away.
     names, the unique `ExternalEventId`. Not endpoint tests.
   - `TimetableSyncTests` — the Google sync, including Google down → degraded with the cache
     kept, and the slot finder still reading that cache.
-  - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
+  - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub,
+    metadata stripping and the 429 included; `TestImages` builds the JPEGs and PNGs.
   - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
     of the three figures on its boundaries.
   - `AuthTests` — registration (who may create which role), the fallback policy and the
@@ -1941,8 +1952,13 @@ never the first thing a reader has to parse, and never hidden either.
   2 possible causes; most likely: …" and "Proposed escalate replacement at Rs 45,000 —
   advice; approval is decided by the API." The full rendering of both is the approval
   queue's (`features/workorders/`); here they are audit rows like any other.
-- There is **no status control** on the detail page yet: `PATCH /api/reports/{id}/status`
-  exists and nothing on the client calls it.
+- **The status control** (`ReportStatusControl`, in the aside, `DISPATCH_ROLES` only — the
+  PATCH's policy refuses an Admin too) offers every status but the current one; choose, then
+  confirm. **The client keeps no copy of the lifecycle**, not even "Closed is terminal": the
+  API's 409 is shown as sent. Success remounts the page. `validateStatusChange` in
+  `reportsApi.js`.
+- The header shows **"Reporter sees: …"** — `ReportDetailDto.Stage`, the phone's progress line
+  (`REPORT_STAGES` in `reportsApi.js`, tones in `tones.js`). Display only.
 - **The detail page is where a FacilitiesManager raises the work order** (`RaiseWorkOrderPanel`,
   in `features/workorders/`). `Strategizing` is a human pause: the runner never raises one.
   The panel shows only when `ReportDetailDto.LatestWorkflow.CanRaiseWorkOrder` is true —
@@ -2302,6 +2318,11 @@ done rather than replaying what was said.
   row) opens `ConfirmFixScreen` — pushed, so back returns to the list. The check's status
   sits under the report's own, with the agent's flag beside it when it said `reopen` /
   `escalate` — see Verification below.
+- **Each card shows the report's `stage`** (`report_stage.dart`: `ReportStages` by NAME, a
+  pill and one sentence in `ReportStageLine`) — what the diagnosis, a manager's decision and
+  the repair did since it was filed. Derived by the API (`ReportProgress.StageFor`); an
+  unknown stage renders by its name and a missing one renders no line. No cost, estimate or
+  technician. Pinned in `test/reports_test.dart`, verified to fail with the line removed.
 
 **A photo is attached to a report that already exists**, so submitting with one is two
 requests: file the report, then `POST /api/reports/{id}/photo` (`ApiClient.postFile`,
@@ -2381,6 +2402,14 @@ manager's list would be every reporter's checks, none of them theirs to answer.
 It returns **201** with the created report and raises the agent workflow as a side effect
 (`ReportService`), so the client is not waiting on an agent run — the non-blocking property
 comes from `IWorkflowQueue`, not from a 202. The room picker reads `GET /api/rooms`.
+
+**The report and its workflow are ONE transaction.** They are two `SaveChanges` (the workflow
+needs the report's id, and `StartAsync` saves on its own), so `CreateAsync` wraps both in
+`BeginTransactionAsync` — `WorkflowService` shares the scoped `DbContext` — and enqueues only
+after the commit. Without it a failure between the two left a report no agent would ever
+process, and nothing for the startup re-queue to find. Pinned by
+`CreateReport_WhenItsWorkflowCannotBeSaved_FilesNothing_SoNoReportIsLeftWithoutARun`
+(an interceptor fails the workflow's insert), verified to fail without the transaction.
 
 The reporter is taken from the JWT `sub` claim and **`CreateReportDto` has no `ReporterId`
 field** (an optional `AssetId` is sent only after a sticker scan), so a client cannot file a report as someone else. The description is capped at
@@ -2499,6 +2528,47 @@ what the agent asks for when it needs more detail and a clear report does not ne
   rewrite the description, room or asset would be an edit wearing a workflow action's name;
   those are the reporter's account of the fault.
 
+#### The report moves with its workflow — `ReportProgress`, and nowhere else
+
+Before this, only clarification and the PATCH ever moved a report, so a reporter's report sat
+at `Clarified` (or `Submitted`) for its whole life. `Services/ReportProgress.cs` is the ONE
+rule for what a workflow move means for its report, **keyed by `WorkflowTrigger`**, not by the
+workflow's new state — `Closed` is reached by a rejection and by a verified repair, and only
+the event says which:
+
+| Trigger | Report → | Called from |
+|---|---|---|
+| `Diagnosed` | `Diagnosed` | `WorkflowService.MoveAsync` (every runner move; the rest are no-ops) |
+| `WorkOrderAutoApproved` / `WorkOrderNeedsApproval` | `WorkOrderRaised` | `WorkOrderService.CreateAsync` |
+| `ManagerRejected` | `Closed` | `WorkOrderService.RejectAsync` |
+| `RepairVerified` | `Closed` | `VerificationService.MoveWorkflowForAnswerAsync` |
+
+- **`AdvanceAsync` runs right after `WorkflowTransitions.Move`, before the caller's own save**,
+  so the report and the workflow are written together or not at all (inside `CreateAsync`'s
+  transaction for a raise). It loads the report tracked and does not save.
+- **Every move goes through `ReportService.CanMove`. One the lifecycle refuses is SKIPPED AND
+  LOGGED, never forced**, and the workflow still moves: a report a manager Closed stays Closed
+  when its run diagnoses it; a reopened repair's second diagnosis leaves the report
+  `WorkOrderRaised` (there is no way back to `Diagnosed`); an order raised from a `Failed` run
+  on a `Clarified` report leaves it `Clarified` rather than claim a diagnosis that never ran.
+- **Approval moves no report** — the order was already raised. **Rejection closes it**: the
+  workflow is `Closed`, no order can be raised from it, and a fault that still matters is a
+  new report. An order raised on a report with NO workflow (seeded history) moves nothing,
+  because there is no workflow move to go with.
+- **The clarification moves are not here, on purpose.** `AwaitingClarification` is written with
+  the questions and REFUSES them when the lifecycle refuses it (stronger than skip-and-log), and
+  `Clarified` is written with the answers whether or not a workflow is found.
+- **`StageFor(status, latestWorkflowState, latestOrderRejected)`** is the reporter's stage, a
+  pure function: a `Closed` report is `NotGoingAhead` if its latest order was rejected, else
+  `Closed`; otherwise the latest workflow decides (`Failed`, `Diagnosing`, `Strategizing` →
+  `BeingReviewed` — a reporter is not told a run failed); with no workflow, the report's own
+  status. **No cost, estimate or technician** reaches a reporter through it; `AwaitingApproval`
+  says a manager must sign off, never why.
+- Pinned by `ReportTests` (the trigger map literally, `StageFor` as a table, no cost fields on
+  the row) and `WorkflowEndToEndTests` (status AND stage, on the detail and the list row, after
+  every step of both loops, plus the rejection and the already-Closed report). Each call site,
+  the `CanMove` check and the rejected stage verified to fail its test when removed.
+
 **A report can name its equipment when filed.** `CreateReportDto.AssetId` is optional (a
 default-null trailing parameter) and must be an asset registered in `RoomId` —
 `IReportService.AssetIsInRoomAsync`, asked by the controller first so the 400 names
@@ -2522,9 +2592,30 @@ live in `ImageUploadRules`, shared by any future photo upload.
   from the validated content type; the uploaded name is never read. A client-chosen name is
   the classic path-traversal vector, and the surest way never to use it is for there to be
   nowhere to pass it. Keep the interface generic — completion photos use it as it is.
-- **Storage failure is a 503 and writes nothing.** `UploadAsync` returns null — never throws —
-  for unreachable, timed out, not configured or refused, and the report keeps whatever photo
-  it had. A URL pointing at nothing is worse than no photo.
+- **Storage failure is a 503 and writes nothing.** `UploadAsync` returns a
+  `StorageUploadResult` — never throws — `Unavailable` for unreachable, timed out, not
+  configured or refused, and the report keeps whatever photo it had. A URL pointing at nothing
+  is worse than no photo.
+- **A Supabase 429 is `RateLimited`, told apart from an outage**: logged as rate-limited, still
+  a 503 ("Photo storage is busy") that writes nothing, carrying Supabase's `Retry-After` when
+  it sent one and none invented when it did not. A 503 rather than a 429, because it was not
+  THIS caller who sent too many. Both uploads (`StorageBusy` in each controller).
+- **Metadata is stripped before upload — the bucket is public.** `ImageMetadata` walks the
+  file by its own structure, no dependency and no re-encode: JPEG APP1 (EXIF/XMP), APP13
+  (IPTC), every other vendor APPn and COM are removed — APP0 (JFIF), APP2 (ICC) and APP14
+  (Adobe) kept, since decoding needs them — including segments after the first scan (a
+  progressive JPEG has several); PNG `tEXt` / `zTXt` / `iTXt` / `eXIf` chunks are removed.
+  Anything after EOI / IEND is dropped (phones append data there). **It runs AFTER the
+  magic-byte check** (`ImageUploadRules.WithoutMetadataAsync`), and **it fails closed**: a file
+  whose structure cannot be walked to its end is a 400 like a wrong signature, because nothing
+  could promise its GPS was gone. Known cost: EXIF orientation goes too, so a photo that
+  relied on the flag rather than its pixels may display rotated.
+- Pinned by `ReportPhotoTests` (a phone-shaped JPEG and PNG — `TestImages` — must reach the
+  stub as EXACTLY the clean image; an unwalkable file is a 400; 429 with and without
+  `Retry-After`) and `WorkOrderPhotoTests` (strip and 429 on the completion photo). Verified to
+  fail with the strip passing bytes through, with fail-open, with the post-scan walk dropped
+  and with the 429 branch removed. Test images must be real structures now: a signature plus
+  zeros is refused.
 - `AddScoped`, with a named `HttpClient` from `IHttpClientFactory` (30s timeout).
   `Supabase:Url` / `Supabase:ServiceKey` / `Supabase:StorageBucket` (or the `SUPABASE_*`
   names); unset boots with a warning, like the agent settings. The bucket must be **public** —

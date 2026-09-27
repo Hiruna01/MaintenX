@@ -1,5 +1,7 @@
 /** Every call the reports feature makes to the API lives here — components never fetch. */
 
+import { request } from '../../../services/apiClient';
+
 /**
  * Mirrors the API's `ReportStatus` enum, by NAME. The API sends and binds enums by name
  * (JsonStringEnumConverter), which is also what Postgres stores — so no ordinal is ever
@@ -14,6 +16,21 @@ export const REPORT_STATUSES = [
   'Clarified',
   'Diagnosed',
   'WorkOrderRaised',
+  'Closed',
+];
+
+/**
+ * Mirrors the API's `ReportStage` enum, by NAME — where a report has got to in its REPORTER's
+ * words. DERIVED IN C# (`ReportProgress.StageFor`) from the report's status, its latest
+ * workflow and whether its order was rejected; the client only labels and colours it.
+ */
+export const REPORT_STAGES = [
+  'BeingReviewed',
+  'WaitingOnYou',
+  'AwaitingApproval',
+  'RepairPlanned',
+  'Repaired',
+  'NotGoingAhead',
   'Closed',
 ];
 
@@ -108,4 +125,20 @@ export function buildReportsPath({
  */
 export function buildReportPath(id) {
   return `/api/reports/${encodeURIComponent(id)}`;
+}
+
+/**
+ * PATCH /api/reports/{id}/status — FacilitiesManager only, 204. WHICH moves are legal is the
+ * API's report lifecycle (ReportService), not something this client keeps a copy of: an
+ * illegal move comes back as a 409 whose message is shown as sent.
+ */
+export function updateReportStatus(id, status) {
+  return request(`${buildReportPath(id)}/status`, { method: 'PATCH', body: { status } });
+}
+
+/** The status control's validate(): a status must be chosen, and be one the API knows. */
+export function validateStatusChange(status) {
+  if (!status) return { status: 'Choose the status to move this report to.' };
+  if (!REPORT_STATUSES.includes(status)) return { status: 'That is not a report status.' };
+  return {};
 }

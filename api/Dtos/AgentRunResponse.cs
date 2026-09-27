@@ -42,7 +42,11 @@ public record AgentRunResponse(
     // took (1, or 2 with the one retry) and how long it ran. Null when it did not say — an
     // older agent service — in which case the runner falls back to the whole call's time.
     [property: JsonPropertyName("attempts")] int? Attempts = null,
-    [property: JsonPropertyName("duration_ms")] int? DurationMs = null)
+    [property: JsonPropertyName("duration_ms")] int? DurationMs = null,
+
+    // The verification agent's envelope — the only field a verification run fills. Absent on
+    // every report run. Read only through VerificationResult().
+    [property: JsonPropertyName("verification")] JsonElement Verification = default)
 {
     /// <summary>The status string the agent sends when it could not produce real output.</summary>
     public const string SafeFailureStatus = "safe_failure";
@@ -63,6 +67,13 @@ public record AgentRunResponse(
 
     /// <summary>The AgentStep.AgentName the strategist's proposal is recorded under.</summary>
     public const string StrategistAgentName = "strategist";
+
+    /// <summary>
+    /// The AgentStep.AgentName a verification run is recorded under, and the name the agent
+    /// sends on its tool calls — which is what the tool router's one exception for an ended
+    /// workflow looks for (see VerificationAgentService.IsJudgingOnWorkflowAsync).
+    /// </summary>
+    public const string VerificationAgentName = "verification";
 
     /// <summary>
     /// True when the clarifier ran in this call — its fields are the top-level ones. False
@@ -234,6 +245,49 @@ public record AgentRunResponse(
             DurationMs: IntProperty(Plan, "duration_ms"));
     }
 
+    /// <summary>
+    /// The verification agent's verdict, or null when the reply carries no verification
+    /// envelope at all — which, on a verification run, is the graph breaking its promise and is
+    /// treated by the caller like a call that failed.
+    ///
+    /// Read defensively and kept verbatim, like the other envelopes. It SUCCEEDED only when the
+    /// status is not a safe failure AND the output is an object whose `outcome` is a string:
+    /// the outcome is what the check's AgentOutcome is written from, and there is no such thing
+    /// as a verdict without one. Reason and evidence are carried as they came; evidence as the
+    /// raw JSON of its array, for AgentEvidenceJson.
+    /// </summary>
+    public VerificationAgentResult? VerificationResult()
+    {
+        if (Verification.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var status = StringProperty(Verification, "status");
+        var hasOutput = Verification.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Object;
+        var outcome = hasOutput ? StringProperty(output, "outcome") : null;
+
+        string? evidenceJson = hasOutput
+                               && output.TryGetProperty("evidence", out var evidence)
+                               && evidence.ValueKind == JsonValueKind.Array
+            ? evidence.GetRawText()
+            : null;
+
+        var succeeded = !string.IsNullOrWhiteSpace(outcome)
+                        && !string.Equals(status, SafeFailureStatus, StringComparison.Ordinal);
+
+        return new VerificationAgentResult(
+            Succeeded: succeeded,
+            OutputJson: hasOutput ? output.GetRawText() : null,
+            Outcome: succeeded ? outcome : null,
+            Reason: succeeded ? StringProperty(output, "reason") : null,
+            EvidenceJson: succeeded ? evidenceJson : null,
+            Error: StringProperty(Verification, "error")
+                   ?? (succeeded || !hasOutput ? null : "The verification agent's output carried no outcome."),
+            Attempts: IntProperty(Verification, "attempts"),
+            DurationMs: IntProperty(Verification, "duration_ms"));
+    }
+
     private static int? IntProperty(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value)
         && value.ValueKind == JsonValueKind.Number
@@ -295,6 +349,21 @@ public record PlannerAgentResult(
     bool Succeeded,
     JsonElement Output,
     string? OutputJson,
+    string? Error,
+    int? Attempts,
+    int? DurationMs);
+
+/// <summary>
+/// The verification agent's result out of a /run reply. <see cref="OutputJson"/> is its output
+/// verbatim, for the AgentStep; the other fields are what the check's columns are written from,
+/// and are null unless <see cref="Succeeded"/>.
+/// </summary>
+public record VerificationAgentResult(
+    bool Succeeded,
+    string? OutputJson,
+    string? Outcome,
+    string? Reason,
+    string? EvidenceJson,
     string? Error,
     int? Attempts,
     int? DurationMs);

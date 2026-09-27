@@ -37,6 +37,7 @@ public class VerificationService : IVerificationService
     private readonly VerificationSettings _settings;
     private readonly TimeProvider _time;
     private readonly IWorkflowQueue _workflowQueue;
+    private readonly IVerificationAgentSignal _agentSignal;
     private readonly ILogger<VerificationService> _logger;
 
     public VerificationService(
@@ -44,12 +45,14 @@ public class VerificationService : IVerificationService
         VerificationSettings settings,
         TimeProvider time,
         IWorkflowQueue workflowQueue,
+        IVerificationAgentSignal agentSignal,
         ILogger<VerificationService> logger)
     {
         _db = db;
         _settings = settings;
         _time = time;
         _workflowQueue = workflowQueue;
+        _agentSignal = agentSignal;
         _logger = logger;
     }
 
@@ -296,6 +299,9 @@ public class VerificationService : IVerificationService
             check.AgentOutcome,
             check.AgentReason,
             ReadEvidence(check.AgentEvidenceJson),
+            VerificationAgentRules.StateOf(check),
+            check.AgentJudgedAt,
+            check.AgentError,
             newReports,
             followUps,
             check.ProcessedAt,
@@ -427,6 +433,11 @@ public class VerificationService : IVerificationService
         }
 
         var processed = movedWorkflows + asked + queued + failed;
+
+        // Rung on every pass, not only one that queued something: a check whose agent call
+        // failed is waiting too, and "Run sweep now" is how a demo retries it at once. The
+        // runner does the work in the background; the sweep never waits on the agent.
+        _agentSignal.Wake();
 
         if (processed > 0)
         {
@@ -659,8 +670,19 @@ public class VerificationService : IVerificationService
         // Queued for the agent now, with the answer, rather than on the next sweep. A
         // check already queued as SILENT (asked, no reply past the window, then answered
         // late) is stamped again: what the agent is handed has changed from silence to an
-        // answer, and the stamp says when.
+        // answer, and the stamp says when. Stamped after any judgement, it is waiting on the
+        // agent again (VerificationAgentRules.AwaitingJudgement) — THE LATE-ANSWER RULE.
+        //
+        // A verdict on the silence is no verdict on the answer, so the check's copy of it is
+        // cleared — it stays verbatim on its AgentStep — and the retry count starts over,
+        // because this is a new question for the agent, not another try at the old one.
+        // AgentJudgedAt is left: it is when the last review ended, and the stamp above is later.
         check.AgentQueuedAt = now;
+        check.AgentOutcome = null;
+        check.AgentReason = null;
+        check.AgentEvidenceJson = null;
+        check.AgentError = null;
+        check.AgentAttempts = 0;
 
         // THE ANSWER MOVES THE WORKFLOW TOO — the reporter's answer, never the agent's
         // label. Yes is RepairVerified (-> Closed); no is RepairReopened (-> Diagnosing), which
@@ -679,6 +701,10 @@ public class VerificationService : IVerificationService
             // the moment the 204 is written. Same reasoning as ClarificationService.
             await _workflowQueue.EnqueueAsync(reopened.Value, CancellationToken.None);
         }
+
+        // After the save too: the verdict on this answer is worked out in the background, and
+        // the reporter's request returns now.
+        _agentSignal.Wake();
 
         return ConfirmVerificationOutcome.Success;
     }

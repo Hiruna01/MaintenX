@@ -1,4 +1,5 @@
 using CampusFacilities.Api.Data;
+using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Identity;
@@ -79,6 +80,34 @@ public class DbSeederVerificationTests : IClassFixture<ApiFactory>
         // Evidence travels with the verdict: the detail page renders one line per item.
         Assert.NotEmpty(System.Text.Json.JsonSerializer.Deserialize<string[]>(reopened.AgentEvidenceJson!)!);
 
+        // ...and it was queued and judged, like a real one: not waiting on the agent, so the
+        // sweep does not queue it again and the runner does not overwrite the seeded verdict.
+        Assert.NotNull(reopened.AgentQueuedAt);
+        Assert.True(reopened.AgentJudgedAt > reopened.AgentQueuedAt);
+        Assert.Equal(VerificationAgentState.Judged, VerificationAgentRules.StateOf(reopened));
+
+        // EVERY CHECK STILL TO BE JUDGED HAS A WORKFLOW — the verification agent's run and its
+        // tool calls belong to the report's latest one, so without it the agent could never
+        // judge the checks a demo answers. A confirmed repair's run is Closed; one still to be
+        // verified is Completed at the order's own CompletedAt, for the sweep's step 0.
+        foreach (var check in checks.Where(c => c.AgentOutcome is null))
+        {
+            var workflow = Assert.Single(await db.AgentWorkflows
+                .Where(w => w.ReportId == check.WorkOrder!.ReportId).ToListAsync());
+
+            if (check.Status == VerificationStatus.Confirmed)
+            {
+                Assert.Equal(WorkflowState.Closed, workflow.CurrentState);
+            }
+            else
+            {
+                Assert.Equal(WorkflowState.Completed, workflow.CurrentState);
+                Assert.Equal(check.WorkOrder!.CompletedAt, workflow.CompletedAt);
+            }
+        }
+
+        Assert.False(await db.AgentWorkflows.AnyAsync(w => w.ReportId == reopened.WorkOrder!.ReportId));
+
         // bool? earns its nullability: three distinct answers across the set.
         Assert.Equal(2, checks.Count(c => c.ReporterConfirmed == true));
         Assert.Equal(1, checks.Count(c => c.ReporterConfirmed == false));
@@ -95,8 +124,10 @@ public class DbSeederVerificationTests : IClassFixture<ApiFactory>
         Assert.Equal(6, await db.VerificationChecks.CountAsync());
         Assert.Equal(9, await db.WorkOrders.CountAsync());
         Assert.Equal(9, await db.Reports.CountAsync());
-        Assert.Equal(2, await db.AgentWorkflows.CountAsync());
-        // Two workflows, each clarifier + diagnostic + strategist + the approval gate's step.
+        // Two live-order runs, plus the five seeded repairs still to be judged.
+        Assert.Equal(7, await db.AgentWorkflows.CountAsync());
+        // The two live-order runs, each clarifier + diagnostic + strategist + the approval
+        // gate's step. The seeded repairs' runs carry none: they predate this history.
         Assert.Equal(8, await db.AgentSteps.CountAsync());
         Assert.Equal(2, await db.AgentSteps.CountAsync(st => st.AgentName == ApprovalAudit.StepName
                                                              && st.ValidationResult == ApprovalAudit.ApprovalRequired));

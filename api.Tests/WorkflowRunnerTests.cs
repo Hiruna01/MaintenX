@@ -22,10 +22,19 @@ public class ScriptedAgentClient : IAgentClient
 
     public List<AgentRunRequest> Requests { get; } = new();
 
-    public Task<AgentCallResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
+    /// <summary>Runs while the "agent" is working, before it replies — what happens mid-call.</summary>
+    public Func<AgentRunRequest, Task>? DuringCall { get; set; }
+
+    public async Task<AgentCallResult> RunAsync(AgentRunRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(request);
-        return Task.FromResult(Replies.Dequeue());
+
+        if (DuringCall is not null)
+        {
+            await DuringCall(request);
+        }
+
+        return Replies.Dequeue();
     }
 }
 

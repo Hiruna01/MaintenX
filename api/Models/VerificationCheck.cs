@@ -91,6 +91,34 @@ public class VerificationCheck
     public string? AgentEvidenceJson { get; set; }
 
     /// <summary>
+    /// When the verification agent's run on this check ENDED for the last time — with a
+    /// verdict, or given up on (<see cref="AgentError"/> says why). Null until then.
+    ///
+    /// The runner's queue test is this against <see cref="AgentQueuedAt"/>: a check is waiting
+    /// on the agent while it is queued and not judged SINCE it was queued. That is what makes a
+    /// late answer work — a check judged as silent and then answered is stamped queued again,
+    /// later than it was judged, so it is judged again with the answer. See
+    /// VerificationAgentRules.
+    /// </summary>
+    public DateTime? AgentJudgedAt { get; set; }
+
+    /// <summary>
+    /// Agent calls made for the CURRENT queue stamp, counted before each call is made so a
+    /// process that dies mid-call still spends one. Reset to 0 when the check is queued again.
+    /// The bound on retries — VerificationAgentRules.MaxAttempts — reads it.
+    /// </summary>
+    public int AgentAttempts { get; set; }
+
+    /// <summary>
+    /// Why the agent's last run on this check produced no verdict: the agent service could not
+    /// be reached (retried), or the agent failed safely (not retried). Cleared by a verdict and
+    /// by the check being queued again. The system's words, never the model's — the model's
+    /// are <see cref="AgentReason"/>.
+    /// </summary>
+    [MaxLength(500)]
+    public string? AgentError { get; set; }
+
+    /// <summary>
     /// When the sweep last acted on this row. Distinct from <see cref="UpdatedAt"/>, which
     /// AppDbContext stamps on every write: this one says the SWEEP touched it, so a check
     /// that is sitting still can be told apart from one the sweep keeps picking up and
@@ -103,12 +131,11 @@ public class VerificationCheck
     /// answered, or because they were asked and stayed silent past
     /// VerificationSettings.ResponseWindowDays. Null until then.
     ///
-    /// THE ROW IS THE QUEUE, not an in-process Channel like IWorkflowQueue. Nothing drains
-    /// it yet, and a bounded channel nobody reads would fill and block the sweep; an
-    /// unbounded one would be emptied by every restart — and Render's free tier restarts
-    /// the service whenever it sleeps. A column survives both, and stamping it once is what
-    /// stops the next sweep queueing the same check again. The agent's runner reads
-    /// "queued, and no AgentOutcome yet".
+    /// THE ROW IS THE QUEUE, not an in-process Channel like IWorkflowQueue. An in-process
+    /// queue would be emptied by every restart — and Render's free tier restarts the service
+    /// whenever it sleeps. A column survives that, and stamping it once is what stops the next
+    /// sweep queueing the same check again. VerificationAgentRunner drains it: "queued, and
+    /// not judged since" (<see cref="AgentJudgedAt"/>).
     /// </summary>
     public DateTime? AgentQueuedAt { get; set; }
 

@@ -131,6 +131,7 @@ public class VerificationSweepTests
             scope.ServiceProvider.GetRequiredService<VerificationSettings>(),
             factory.Clock,
             scope.ServiceProvider.GetRequiredService<IWorkflowQueue>(),
+            scope.ServiceProvider.GetRequiredService<IVerificationAgentSignal>(),
             scope.ServiceProvider.GetRequiredService<ILogger<VerificationService>>());
 
         var first = await service.ProcessDueChecksAsync();
@@ -221,6 +222,7 @@ public class VerificationSweepTests
             scope.ServiceProvider.GetRequiredService<VerificationSettings>(),
             factory.Clock,
             scope.ServiceProvider.GetRequiredService<IWorkflowQueue>(),
+            scope.ServiceProvider.GetRequiredService<IVerificationAgentSignal>(),
             scope.ServiceProvider.GetRequiredService<ILogger<VerificationService>>());
 
         var result = await service.ProcessDueChecksAsync();
@@ -261,6 +263,7 @@ public class VerificationSweepTests
             scope.ServiceProvider.GetRequiredService<VerificationSettings>(),
             factory.Clock,
             scope.ServiceProvider.GetRequiredService<IWorkflowQueue>(),
+            scope.ServiceProvider.GetRequiredService<IVerificationAgentSignal>(),
             scope.ServiceProvider.GetRequiredService<ILogger<VerificationService>>());
 
         var result = await service.ProcessDueChecksAsync();

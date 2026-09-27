@@ -422,6 +422,14 @@ builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
 // IVerificationService there. POST /api/workflows/verification-sweep runs the same pass on demand.
 builder.Services.AddHostedService<VerificationSweepService>();
 
+// The VerificationAgent's C# side: the scoped pass (VerificationAgentService), a doorbell a
+// reporter's answer and the sweep ring so a verdict does not wait a sweep interval (a
+// singleton holding a Channel and nothing else), and the runner that drains the queue.
+// No request ever calls the agent: they ring the signal and return.
+builder.Services.AddScoped<IVerificationAgentService, VerificationAgentService>();
+builder.Services.AddSingleton<IVerificationAgentSignal, VerificationAgentSignal>();
+builder.Services.AddHostedService<VerificationAgentRunner>();
+
 // Work orders — the approval gate, assignment and completion. Completion raises the
 // verification check above inside its own transaction.
 builder.Services.AddScoped<IWorkOrderService, WorkOrderService>();

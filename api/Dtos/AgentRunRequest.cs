@@ -56,7 +56,30 @@ public record AgentRunRequest(
     // job it could consolidate with.
     [property: JsonPropertyName("revision_work_order_id"),
               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    int? RevisionWorkOrderId = null);
+    int? RevisionWorkOrderId = null,
+
+    // Set only when the API asks whether a completed repair held (VerificationAgentService).
+    // Its presence routes graph.py START -> verify -> END and nothing else; Description is
+    // then the original report's. Left off the wire when null, so every report run's body is
+    // unchanged.
+    [property: JsonPropertyName("verification"),
+              JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    AgentVerificationRequest? Verification = null);
+
+/// <summary>
+/// Which repair to judge and what the reporter said — the agent's VerificationRequest,
+/// `extra="forbid"`. Everything else the agent weighs it looks up through its own tools, so
+/// the API cannot hand it a different account of the repair than the one on the record.
+///
+/// ReporterConfirmed is null for a check nobody answered: the sweep queues silent checks too,
+/// and silence is not a yes. It is written as JSON null, which the agent's `bool | None`
+/// accepts. ReporterComment is null or 1–300 characters, the agent's bound and
+/// ReporterConfirmationDto's.
+/// </summary>
+public record AgentVerificationRequest(
+    [property: JsonPropertyName("work_order_id")] int WorkOrderId,
+    [property: JsonPropertyName("reporter_confirmed")] bool? ReporterConfirmed,
+    [property: JsonPropertyName("reporter_comment")] string? ReporterComment);
 
 /// <summary>
 /// One answered question, in the shape of the agent's ClarificationAnswer: the question with

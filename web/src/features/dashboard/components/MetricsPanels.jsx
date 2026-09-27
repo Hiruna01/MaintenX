@@ -6,7 +6,7 @@ import Skeleton from '../../../components/ui/Skeleton';
 import { EmptyState, ErrorState } from '../../../components/ui/States';
 import TagChip from '../../assets/components/TagChip';
 import { formatDateOnly } from '../../assets/services/assetsApi';
-import { formatPercent } from '../../verification/services/verificationApi';
+import { describeNoQuestionCount, formatPercent } from '../../verification/services/verificationApi';
 import { formatMoney } from '../../workorders/services/workOrdersApi';
 import styles from '../dashboard.module.css';
 import { LinkRow, ListSkeleton } from './parts';
@@ -50,7 +50,7 @@ export function KeyMetricsPanel({ metrics }) {
             <Stat
               label="Needed no questions"
               value={formatPercent(data.clarification.noQuestionRate)}
-              detail={`${data.clarification.reportsWithNoQuestions} of ${data.clarification.reportsClarified} reports`}
+              detail={describeNoQuestionCount(data.clarification, 'reports')}
             />
             <Stat
               label="Questions answered"

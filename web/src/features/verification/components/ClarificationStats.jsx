@@ -1,5 +1,5 @@
 import { Well } from '../../../components/ui/Panel';
-import { formatPercent } from '../services/verificationApi';
+import { describeNoQuestionCount, formatPercent } from '../services/verificationApi';
 import styles from '../verification.module.css';
 
 function Stat({ label, value, detail }) {
@@ -26,7 +26,7 @@ export function ClarificationStats({ clarification }) {
         <Stat
           label="Needed no questions"
           value={formatPercent(clarification.noQuestionRate)}
-          detail={`${clarification.reportsWithNoQuestions} of ${clarification.reportsClarified} clarified reports`}
+          detail={describeNoQuestionCount(clarification)}
         />
         <Stat
           label="Questions per report"

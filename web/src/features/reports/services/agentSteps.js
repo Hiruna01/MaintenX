@@ -57,6 +57,12 @@ const OUTCOMES = {
 export const APPROVAL_STEP_NAME = 'approval';
 
 /**
+ * The AgentName the API records the VerificationAgent's run under
+ * (`AgentRunResponse.VerificationAgentName`), on the report's workflow beside the repair.
+ */
+export const VERIFICATION_STEP_NAME = 'verification';
+
+/**
  * The approval steps' outcomes. None of them is a failure: a manager saying no, or sending an
  * order back, is the control working, and painting it red would say the system broke.
  */
@@ -181,6 +187,15 @@ function describeAdvice(payload) {
     const primary = hypotheses[field(payload, 'primary_hypothesis_index')] ?? hypotheses[0];
     const count = hypotheses.length === 1 ? '1 possible cause' : `${hypotheses.length} possible causes`;
     return `Diagnosed ${count}; most likely: ${field(primary, 'cause') ?? 'not named'}.`;
+  }
+
+  // The VerificationAgent's verdict on a completed repair. Its label is advice: the check's
+  // status is the reporter's answer, set by the API.
+  const verdict = field(payload, 'outcome');
+  if (typeof verdict === 'string') {
+    const confidence = field(payload, 'confidence');
+    const how = typeof confidence === 'string' ? ` (${confidence} confidence)` : '';
+    return `Judged the repair: ${verdict}${how} — advice; the check's status is the reporter's answer.`;
   }
 
   const strategy = field(payload, 'strategy');
@@ -334,10 +349,13 @@ export function groupByWorkflow(steps) {
  * The planner's own step does not count as the run having happened: a plan says what WILL
  * run. Only a planner that failed or was rejected is treated as the latest outcome, because
  * then the run followed the default plan and the next steps say how that went.
+ *
+ * Nor does the verification agent's: it judges a finished repair, weeks after the questions,
+ * and a verdict it could not give says nothing about whether the clarifier ran.
  */
 export function latestAgentRunState(steps) {
   const runs = steps
-    .filter((step) => step.agentName !== 'planner')
+    .filter((step) => step.agentName !== 'planner' && step.agentName !== VERIFICATION_STEP_NAME)
     .map(describeStep)
     .filter((step) => step.kind === 'agent');
   if (runs.length === 0) return 'none';

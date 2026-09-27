@@ -1,0 +1,288 @@
+.shell {
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--mx-canvas);
+}
+
+/* ---------- Sidebar ---------- */
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.25rem 0.9rem 1rem;
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.25rem 0.55rem;
+  text-decoration: none;
+  color: var(--mx-ink);
+  border-radius: var(--mx-r-sm);
+}
+
+.brand:focus-visible {
+  outline: none;
+  box-shadow: var(--mx-focus);
+}
+
+.brandMark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--mx-ink);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 2px rgba(21, 23, 28, 0.25);
+}
+
+.brandMark svg {
+  width: 17px;
+  height: 17px;
+}
+
+.brandName {
+  font-size: 1.125rem;
+  font-weight: 620;
+  letter-spacing: -0.03em;
+}
+
+.brandSub {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--mx-graphite);
+  font-weight: 450;
+  letter-spacing: 0;
+  margin-top: 1px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.groupLabel {
+  margin: 0 0 0.3rem;
+  padding: 0 0.7rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mx-mute);
+}
+
+.link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  height: 38px;
+  padding: 0 0.7rem;
+  border-radius: 11px;
+  color: var(--mx-ink-2);
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 480;
+  transition: background-color 160ms var(--mx-ease), color 160ms var(--mx-ease);
+}
+
+.link svg {
+  width: 18px;
+  height: 18px;
+  color: var(--mx-graphite);
+  flex: none;
+  transition: color 160ms var(--mx-ease);
+}
+
+.link:hover {
+  background: rgba(21, 23, 28, 0.045);
+}
+
+.link:focus-visible {
+  outline: none;
+  box-shadow: var(--mx-focus);
+}
+
+.linkActive {
+  background: var(--mx-surface);
+  color: var(--mx-ink);
+  font-weight: 580;
+  box-shadow: 0 1px 2px rgba(21, 23, 28, 0.06), 0 0 0 1px rgba(21, 23, 28, 0.05);
+}
+
+.linkActive:hover {
+  background: var(--mx-surface);
+}
+
+.linkActive svg {
+  color: var(--mx-iris);
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ---------- Account card ---------- */
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.6rem;
+  border-radius: var(--mx-r);
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-card);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(140deg, #e9e7fd, #d9d5fb);
+  color: var(--mx-violet);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.accountText {
+  min-width: 0;
+  flex: 1;
+}
+
+.accountName {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.accountRole {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--mx-graphite);
+}
+
+/* ---------- Main ---------- */
+
+.main {
+  min-width: 0;
+  padding: 12px 12px 12px 0;
+}
+
+.stage {
+  min-height: calc(100vh - 24px);
+  background: var(--mx-surface);
+  border-radius: var(--mx-r-xl);
+  box-shadow: var(--mx-shadow-card);
+  padding: 2.25rem clamp(1rem, 3vw, 2.75rem) 3rem;
+}
+
+/* The redesigned screens paint their own panels on the canvas instead of one white stage. */
+.stageCanvas {
+  background: transparent;
+  box-shadow: none;
+  padding-top: 1.5rem;
+}
+
+.stageInner {
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+/* ---------- Mobile top bar ---------- */
+
+.topbar {
+  display: none;
+}
+
+.scrim {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.65rem 1rem;
+    background: rgba(238, 240, 243, 0.86);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--mx-hairline);
+  }
+
+  .sidebar {
+    position: fixed;
+    z-index: 50;
+    top: 0;
+    left: 0;
+    width: min(290px, 86vw);
+    background: var(--mx-canvas);
+    box-shadow: var(--mx-shadow-float);
+    transform: translateX(-105%);
+    transition: transform 300ms var(--mx-ease);
+  }
+
+  .sidebarOpen {
+    transform: none;
+  }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(21, 23, 28, 0.25);
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 240ms var(--mx-ease);
+  }
+
+  .scrimOpen {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .main {
+    padding: 0;
+  }
+
+  .stage {
+    min-height: calc(100vh - 58px);
+    border-radius: 0;
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .stageCanvas {
+    padding-top: 1.25rem;
+  }
+}

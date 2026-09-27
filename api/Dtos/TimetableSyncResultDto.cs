@@ -22,6 +22,10 @@ namespace CampusFacilities.Api.Dtos;
 /// <param name="CacheAgeMinutes">Whole minutes since <paramref name="LastSyncedAt"/>; null when it is null.</param>
 /// <param name="IsStale">True when the cache is older than 24 hours, or empty.</param>
 /// <param name="StalenessWarning">A sentence saying what staleness means for scheduling, when stale; null otherwise.</param>
+/// <param name="RetryAfterSeconds">
+/// Only on <see cref="TimetableSyncFailure.RateLimited"/>: how long Google asked us to wait, in
+/// whole seconds rounded up — null when it did not say. Reported, never invented.
+/// </param>
 public record TimetableSyncResultDto(
     bool Degraded,
     TimetableSyncFailure? FailureReason,
@@ -31,7 +35,8 @@ public record TimetableSyncResultDto(
     DateTime? LastSyncedAt,
     int? CacheAgeMinutes,
     bool IsStale,
-    string? StalenessWarning);
+    string? StalenessWarning,
+    int? RetryAfterSeconds = null);
 
 /// <summary>
 /// Why a sync did not read Google. Sent as its NAME, like every enum in this API.
@@ -49,7 +54,8 @@ public enum TimetableSyncFailure
 
     /// <summary>
     /// The service account's token was refused, or Google answered 401/403 — a deleted or
-    /// revoked key, or the Calendar API not enabled on the Google Cloud project.
+    /// revoked key, or the Calendar API not enabled on the Google Cloud project. A 403 that is
+    /// a usage limit is <see cref="RateLimited"/> instead.
     /// </summary>
     AuthenticationFailed,
 
@@ -60,5 +66,12 @@ public enum TimetableSyncFailure
     Rejected,
 
     /// <summary>No HTTP answer at all — DNS, a refused connection, no network.</summary>
-    Unreachable
+    Unreachable,
+
+    /// <summary>
+    /// Google answered 429, or a 403 whose reason is a usage limit (rateLimitExceeded,
+    /// userRateLimitExceeded, quotaExceeded, dailyLimitExceeded) — too many requests, not a
+    /// refused credential. RetryAfterSeconds carries Google's Retry-After when it sent one.
+    /// </summary>
+    RateLimited
 }

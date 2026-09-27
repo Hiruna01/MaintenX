@@ -82,7 +82,7 @@ public class GoogleCalendarSyncService : ITimetableSyncService
 
         if (fetched.Failure is { } failure)
         {
-            return await DegradedAsync(failure, cancellationToken);
+            return await DegradedAsync(failure, cancellationToken, fetched.RetryAfter);
         }
 
         var (synced, removed, skipped) = await ApplyAsync(fetched.Events!, now, cancellationToken);
@@ -100,8 +100,10 @@ public class GoogleCalendarSyncService : ITimetableSyncService
     ///
     /// The timeout covers the whole fetch — token exchange and every page — not each
     /// request separately, so "ten seconds" means ten seconds of the caller's time.
+    ///
+    /// A rate limit also returns how long Google asked us to wait, when it said.
     /// </summary>
-    private async Task<(IReadOnlyList<Event>? Events, TimetableSyncFailure? Failure)> FetchAsync(
+    private async Task<(IReadOnlyList<Event>? Events, TimetableSyncFailure? Failure, TimeSpan? RetryAfter)> FetchAsync(
         DateTime now,
         CancellationToken cancellationToken)
     {
@@ -112,7 +114,7 @@ public class GoogleCalendarSyncService : ITimetableSyncService
         {
             var events = await _calendar.ListEventsAsync(
                 now, now.AddDays(GoogleCalendarSettings.SyncDaysAhead), timeout.Token);
-            return (events, null);
+            return (events, null, null);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -121,7 +123,7 @@ public class GoogleCalendarSyncService : ITimetableSyncService
             _logger.LogWarning(
                 "Timetable sync: Google Calendar did not answer within {TimeoutSeconds}s. "
                 + "Serving the existing timetable.", _settings.TimeoutSeconds);
-            return (null, TimetableSyncFailure.Timeout);
+            return (null, TimetableSyncFailure.Timeout, null);
         }
         catch (TokenResponseException ex)
         {
@@ -129,15 +131,28 @@ public class GoogleCalendarSyncService : ITimetableSyncService
             _logger.LogWarning(
                 "Timetable sync: Google refused the service account credential ({Error}). "
                 + "Serving the existing timetable.", ex.Error?.Error);
-            return (null, TimetableSyncFailure.AuthenticationFailed);
+            return (null, TimetableSyncFailure.AuthenticationFailed, null);
         }
         catch (GoogleApiException ex)
         {
-            var failure = Classify(ex.HttpStatusCode);
+            var failure = Classify(ex);
+
+            // Only a rate limit carries a wait, and only one Google actually sent.
+            var retryAfter = failure == TimetableSyncFailure.RateLimited
+                             && ex.Data[GoogleCalendarClient.RetryAfterDataKey] is TimeSpan wait
+                ? wait
+                : (TimeSpan?)null;
 
             _logger.LogWarning(
                 "Timetable sync: Google Calendar answered HTTP {StatusCode} ({Failure}): {Message}. "
                 + "Serving the existing timetable.", (int)ex.HttpStatusCode, failure, ex.Message);
+
+            if (failure == TimetableSyncFailure.RateLimited)
+            {
+                _logger.LogWarning(
+                    "Timetable sync: Google rate-limited the request; it asked to wait {RetryAfter}.",
+                    retryAfter?.ToString() ?? "(no Retry-After sent)");
+            }
 
             if (ex.HttpStatusCode == HttpStatusCode.NotFound)
             {
@@ -146,27 +161,40 @@ public class GoogleCalendarSyncService : ITimetableSyncService
                     + "with the service account's email address.", _settings.CalendarId);
             }
 
-            return (null, failure);
+            return (null, failure, retryAfter);
         }
         catch (HttpRequestException ex)
         {
             _logger.LogWarning(ex,
                 "Timetable sync: could not reach Google Calendar. Serving the existing timetable.");
-            return (null, TimetableSyncFailure.Unreachable);
+            return (null, TimetableSyncFailure.Unreachable, null);
         }
     }
 
     /// <summary>
-    /// A status code Google answered with, as a failure. 401 and 403 are credentials or
-    /// permissions; 5xx is Google's own outage; any other 4xx is a request Google will not
-    /// serve, most often an unknown or unshared calendar.
+    /// The reasons Google gives on a 403 that is a QUOTA, not a permission: the Calendar API
+    /// answers a usage limit with 403 as often as with 429, and tells the two apart only here.
     /// </summary>
-    private static TimetableSyncFailure Classify(HttpStatusCode status) => (int)status switch
+    private static readonly string[] RateLimitReasons =
+        { "rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "dailyLimitExceeded" };
+
+    /// <summary>
+    /// What Google answered, as a failure. 429, and a 403 whose reason is a usage limit, are a
+    /// RATE LIMIT — too many requests, which the next sync may well not be. Any other 401 or
+    /// 403 is credentials or permissions; 5xx is Google's own outage; any other 4xx is a
+    /// request Google will not serve, most often an unknown or unshared calendar.
+    /// </summary>
+    private static TimetableSyncFailure Classify(GoogleApiException ex) => (int)ex.HttpStatusCode switch
     {
+        429 => TimetableSyncFailure.RateLimited,
+        403 when IsUsageLimit(ex) => TimetableSyncFailure.RateLimited,
         401 or 403 => TimetableSyncFailure.AuthenticationFailed,
         >= 500 => TimetableSyncFailure.GoogleServerError,
         _ => TimetableSyncFailure.Rejected
     };
+
+    private static bool IsUsageLimit(GoogleApiException ex) =>
+        ex.Error?.Errors?.Any(e => RateLimitReasons.Contains(e.Reason, StringComparer.Ordinal)) == true;
 
     /// <summary>
     /// Upserts every event that places a class in a room, and removes a row only on
@@ -303,8 +331,9 @@ public class GoogleCalendarSyncService : ITimetableSyncService
 
     private Task<TimetableSyncResultDto> DegradedAsync(
         TimetableSyncFailure failure,
-        CancellationToken cancellationToken) =>
-        ResultAsync(degraded: true, failure, synced: 0, removed: 0, skipped: 0, cancellationToken);
+        CancellationToken cancellationToken,
+        TimeSpan? retryAfter = null) =>
+        ResultAsync(degraded: true, failure, synced: 0, removed: 0, skipped: 0, cancellationToken, retryAfter);
 
     /// <summary>
     /// The sync's counts plus how fresh the cache is now, read from the rows themselves:
@@ -317,8 +346,12 @@ public class GoogleCalendarSyncService : ITimetableSyncService
         int synced,
         int removed,
         int skipped,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? retryAfter = null)
     {
+        // Whole seconds, rounded UP: waiting 0 seconds when Google said 0.4 would be early.
+        int? retryAfterSeconds = retryAfter is { } wait ? (int)Math.Ceiling(wait.TotalSeconds) : null;
+
         var lastSyncedAt = await _db.ClassScheduleSlots
             .MaxAsync(c => (DateTime?)c.SyncedAt, cancellationToken);
 
@@ -331,7 +364,8 @@ public class GoogleCalendarSyncService : ITimetableSyncService
                 CacheAgeMinutes: null,
                 IsStale: true,
                 StalenessWarning: "No timetable has ever been synced, so every room looks free to "
-                    + "the slot finder. Offered slots may clash with classes until a sync succeeds.");
+                    + "the slot finder. Offered slots may clash with classes until a sync succeeds.",
+                RetryAfterSeconds: retryAfterSeconds);
         }
 
         // SQLite hands DateTimes back with no Kind; every one stored here is UTC.
@@ -353,6 +387,7 @@ public class GoogleCalendarSyncService : ITimetableSyncService
                 ? $"The timetable was last synced {(int)age.TotalHours} hours ago, more than "
                   + $"{(int)GoogleCalendarSettings.StaleAfter.TotalHours}. Offered slots may clash "
                   + "with classes added or moved since then."
-                : null);
+                : null,
+            RetryAfterSeconds: retryAfterSeconds);
     }
 }

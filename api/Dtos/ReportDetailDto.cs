@@ -34,4 +34,12 @@ public record ReportDetailDto(
     // Flat rather than grouped by workflow because it is read as a timeline — "what has the
     // system done about my fault" — and a report has one run in almost every case. Each step
     // carries its WorkflowId, so a second run is still tellable apart.
-    IReadOnlyList<AgentStepDto> AgentSteps);
+    IReadOnlyList<AgentStepDto> AgentSteps,
+
+    // The latest workflow raised for the report; null when none was (the seeded history).
+    ReportWorkflowDto? LatestWorkflow,
+
+    // The strategist's latest proposal, read by AgentAnalysis exactly as the approval queue
+    // reads it — what a manager raising the order starts from. Advice: null when the
+    // strategist never ran, and nothing in it decides whether the order needs approval.
+    AgentProposalDto? Proposal);

@@ -157,6 +157,63 @@ public class ReportTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    /// <summary>
+    /// A scanned sticker names the machine: the report carries it from the start, so the
+    /// agents can read that asset's history on the first run.
+    /// </summary>
+    [Fact]
+    public async Task CreateReport_WithAnAssetInItsRoom_CarriesTheAsset()
+    {
+        var (client, _) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+        var assetId = await CreateAssetAsync(roomId);
+
+        var response = await client.PostAsJsonAsync(
+            "/api/reports",
+            new CreateReportDto("Projector will not power on at all.", roomId, assetId),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
+        Assert.Equal(assetId, created!.AssetId);
+
+        var detail = await client.GetFromJsonAsync<ReportDetailDto>($"/api/reports/{created.Id}", JsonOptions);
+        Assert.Equal(assetId, detail!.Asset!.Id);
+    }
+
+    [Fact]
+    public async Task CreateReport_WithAnAssetFromAnotherRoom_Returns400_AndFilesNothing()
+    {
+        var (client, _) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+        var elsewhere = await CreateAssetAsync(await CreateRoomAsync());
+
+        var response = await client.PostAsJsonAsync(
+            "/api/reports",
+            new CreateReportDto("Projector will not power on at all.", roomId, elsewhere),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("assetId", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+
+        var mine = await client.GetFromJsonAsync<PagedResult<ReportListItemDto>>("/api/reports", JsonOptions);
+        Assert.Equal(0, mine!.TotalCount);
+    }
+
+    [Fact]
+    public async Task CreateReport_WithAnUnknownAsset_Returns400NotA500()
+    {
+        var (client, _) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/reports",
+            new CreateReportDto("Projector will not power on at all.", roomId, 999_999),
+            JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     [Fact]
     public async Task CreateReport_WithTooShortDescription_Returns400()
     {
@@ -754,7 +811,7 @@ public class ReportTests : IClassFixture<ApiFactory>
         var (admin, _) = await CreateAuthenticatedClientAsync(Role.Admin);
 
         var categoryResponse = await admin.PostAsJsonAsync(
-            "/api/assetcategories", new CreateAssetCategoryDto("Projectors", 24), JsonOptions);
+            "/api/assetcategories", new CreateAssetCategoryDto($"Projectors {UniqueCode()}", 24), JsonOptions);
         var category = await categoryResponse.Content.ReadFromJsonAsync<AssetCategoryDto>(JsonOptions);
 
         var assetResponse = await admin.PostAsJsonAsync(

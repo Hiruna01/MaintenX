@@ -39,6 +39,19 @@ class AgentOutcomes {
   static bool flagsFollowUp(String? outcome) => outcome == reopen || outcome == escalate;
 }
 
+/// Mirrors the API's `VerificationAgentState` — where the automated review of a check has got
+/// to. Decided by the API (`VerificationAgentRules.StateOf`) and matched by NAME here; the phone
+/// never compares the times behind it.
+class AgentReviewStates {
+  const AgentReviewStates._();
+
+  static const String notQueued = 'NotQueued';
+  static const String queued = 'Queued';
+  static const String retrying = 'Retrying';
+  static const String judged = 'Judged';
+  static const String couldNotJudge = 'CouldNotJudge';
+}
+
 /// One sentence, for the reporter, saying where the check on their repair has got to. Read
 /// from the status NAME; the rules that produced the status are the API's.
 String describeForReporter(String status) => switch (status) {
@@ -130,6 +143,8 @@ class VerificationDetail {
     required this.reporterRespondedAt,
     required this.agentOutcome,
     required this.agentReason,
+    required this.agentEvidence,
+    required this.agentState,
     required this.agentQueuedAt,
   });
 
@@ -151,6 +166,18 @@ class VerificationDetail {
 
   final String? agentOutcome;
   final String? agentReason;
+
+  /// What the review cited, verbatim, one item per line. Null when there is no verdict — never
+  /// an empty list standing in for "not judged".
+  final List<String>? agentEvidence;
+
+  /// [AgentReviewStates], by name. Null from an API that predates it.
+  final String? agentState;
+
+  /// Whether to show the review's verdict: the API says it judged, or (an older API that sends
+  /// no state) there is an outcome at all.
+  bool get hasVerdict =>
+      agentOutcome != null && (agentState == null || agentState == AgentReviewStates.judged);
 
   /// When the answer was handed to the automated review. Set together with the answer.
   final String? agentQueuedAt;
@@ -177,6 +204,9 @@ class VerificationDetail {
       reporterRespondedAt: json['reporterRespondedAt'] as String?,
       agentOutcome: json['agentOutcome'] as String?,
       agentReason: json['agentReason'] as String?,
+      // Read defensively — it is what a model produced: a non-string item is skipped.
+      agentEvidence: (json['agentEvidence'] as List<dynamic>?)?.whereType<String>().toList(),
+      agentState: json['agentState'] as String?,
       agentQueuedAt: json['agentQueuedAt'] as String?,
     );
   }

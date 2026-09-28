@@ -450,7 +450,12 @@ when the plan includes one.
   `[AllowAnonymous]` for the fallback policy's sake and nothing else. `ToolCallRequest`'s ids
   are `[Range(1, …)]`. **A workflow that has ended — `Failed` or `Closed` — takes no more
   tool calls: 409, nothing recorded.** That is the run the API gave up on while the agent was
-  still working; its later calls must not keep writing onto it.
+  still working; its later calls must not keep writing onto it. **One exception (owner D):**
+  a call named `"verification"` on the report's LATEST workflow while a check on that report is waiting on
+  the agent (`IVerificationAgentService.IsJudgingOnWorkflowAsync`) — a confirmed repair's
+  workflow is `Closed`, and the agent must still read the repair it judges. The database opens
+  it, never the name alone. Pinned in `WorkflowTests`, verified to fail with the database check
+  removed, with the exception removed, and with "latest" dropped.
 - **The tool allow-list is a hardcoded `Dictionary<string, ...>` in C#**, never sourced from
   configuration or from the caller. A tool name not in the dictionary returns 404 and logs a
   warning. Keep it hardcoded; it's a viva question — the allow-list must not be describable,
@@ -1109,11 +1114,12 @@ filters, held above them, survive.
   the endpoint existed. Keep it: it is what makes those rows reach the agent at all.
 - **Queueing never touches `Status`.** It is not a verdict: an answered check keeps what the
   answer made it, a silent one stays open for a late answer. Nothing expires silence yet.
-- **The row is the queue, not a `Channel`.** The VerificationAgent exists on the Python
-  side, but no C# runner calls it yet, so nothing drains it: a bounded channel nobody reads fills and blocks the sweep, and an in-process one
-  is emptied by every restart, which the free tier does whenever it sleeps. The agent's
-  runner reads `AgentQueuedAt` set and `AgentOutcome` null; stamping once is what stops the
-  next pass queueing the same check again.
+- **The row is the queue, not a `Channel`.** An in-process queue is emptied by every
+  restart, which the free tier does whenever it sleeps. `VerificationAgentRunner` drains it —
+  "queued, and not judged since", see THE VERIFICATION AGENT RUNNER below; stamping once is
+  what stops the next pass queueing the same check again. **Every pass rings
+  `IVerificationAgentSignal`**, so "Run sweep now" also starts the runner (and retries a check
+  whose agent call failed) without the sweep ever waiting on the agent.
 - **One row at a time, each saved on its own.** A row that throws is logged, the change
   tracker is cleared (or the failed change rides along with the next row's save), and — if
   nobody has answered it — the row is `Expired` with the error in `ExpiredReason`. **An
@@ -1173,10 +1179,14 @@ filters, held above them, survive.
   an empty list means nothing has happened since.
 - **`AgentEvidence`** is `VerificationCheck.AgentEvidenceJson` (`jsonb`,
   `AddVerificationAgentEvidence`), the agent's one-to-five evidence strings verbatim, read
-  defensively into a list — null when not judged or unreadable, never thrown on. The seeded
-  Reopened check carries some; **the C# runner that writes it does not exist yet**, like
-  `AgentOutcome` / `AgentReason`. Pinned in `VerificationEndpointTests`, each rule verified to
-  fail with it broken.
+  defensively into a list — null when not judged or unreadable, never thrown on. Written with
+  `AgentOutcome` / `AgentReason` by `VerificationAgentService`; the seeded Reopened check
+  carries some. Pinned in `VerificationEndpointTests`, each rule verified to fail with it broken.
+- **`AgentState`** (`VerificationAgentState`, by NAME: `NotQueued` / `Queued` / `Retrying` /
+  `Judged` / `CouldNotJudge`) with `AgentJudgedAt` and `AgentError` on the detail DTO — where
+  the agent's review has got to, decided by `VerificationAgentRules.StateOf` so no client
+  compares the queue and judgement stamps. `AgentError` is the SYSTEM's reason (unreachable,
+  safe failure, no workflow), never the model's.
 - **`POST /api/verifications/{id}/confirm`** — "Is the problem fixed?", `Confirmed` yes/no and
   an optional `Comment` of at most **300** characters (the column is 500; the DTO is the bound
   on what a reporter may type). `Confirmed` is a **`[Required] bool?`** — a plain `bool` binds
@@ -1189,11 +1199,13 @@ filters, held above them, survive.
   Success writes the answer, the status it implies, **`AgentQueuedAt`** and the workflow's
   move (Verified / Reopened — see THE WORKFLOW STATE MACHINE) in one
   `SaveChanges` — the sweep queues only rows with no stamp, so it never queues it twice. A
-  check already queued as silent and answered late is stamped again. **Open question for
-  the VerificationAgent:** its runner is meant to read "`AgentQueuedAt` set and
-  `AgentOutcome` null", so if it has already judged the silence, the re-stamp alone will
-  not make it read the late answer. Decide that when the C# runner for it lands; nothing
-  drains the queue today.
+  check already queued as silent and answered late is stamped again — **the late-answer
+  rule**: stamped after its judgement, it is waiting on the agent again, so it is judged again
+  WITH the answer. The same save clears the check's copy of the verdict on the silence
+  (`AgentOutcome` / `AgentReason` / `AgentEvidenceJson` / `AgentError`; it stays verbatim on
+  its `AgentStep`) and resets `AgentAttempts` — a new question, not another try at the old
+  one. After the save it rings `IVerificationAgentSignal`. Pinned by
+  `ALateAnswer_IsJudgedAgain_WithTheAnswer`.
 - **The verification numbers are `GET /api/analytics/verification`**
   (`VerificationMetricsDto`, `IVerificationService.GetMetricsAsync`), on `AnalyticsController`
   — they sat here under `/api/analytics/metrics` until the estate-wide metrics took that
@@ -1201,6 +1213,55 @@ filters, held above them, survive.
 - **Verified to fail with the rule broken**: the list's visibility `Where` removed, the
   confirm's reporter check removed, and `Confirmed` made a plain `bool` — each fails
   `VerificationEndpointTests`.
+
+### The verification agent runner — the queue drained, one check at a time
+
+`IVerificationAgentService` / `VerificationAgentService` (`AddScoped`) holds the pass;
+`VerificationAgentRunner`, a `BackgroundService` shaped like the sweep, runs it once at
+startup, then whenever `IVerificationAgentSignal` rings (a singleton `Channel` of one that
+drops a second write — a doorbell, not a queue) or every `SweepIntervalMinutes`. The reporter's
+answer and every sweep pass ring it. **No request calls the agent**: a pass can take minutes a
+check, and the button waiting on one would be the synchronous agent call this file forbids.
+Removed from the container in tests like the other workers; tests call
+`JudgeQueuedChecksAsync`. Pinned by `VerificationAgentRunnerTests` (scripted `IAgentClient`,
+movable clock), each rule verified to fail with it broken.
+
+- **Waiting on the agent means queued and not judged SINCE** —
+  `VerificationAgentRules.AwaitingJudgement`: `AgentQueuedAt` set and `AgentJudgedAt` null or
+  earlier (`AddVerificationAgentRun`, which also backfills judged stamps onto rows that already
+  carried a verdict). "Judged" includes given up on, which is what bounds a failing row; "since"
+  is what makes a late answer work.
+- **Oldest queued first, one check at a time, each saved on its own**; a row that throws is
+  logged and left for the next pass, the tracker cleared. A static lock stops two passes at once.
+- **The run belongs to the report's LATEST workflow** — the one the repair came out of, the
+  one the reporter's answer moves — so the verdict lands on the same audit trail as the repair.
+  **The tool router's one exception** lets the agent read a confirmed repair whose workflow is
+  `Closed`: see the tool router under AGENT WORKFLOWS. A report with no workflow is given up on
+  without a call (there is nowhere to record a step or a tool call).
+- **The request**: `description` the original report's, `verification` { `work_order_id`,
+  `reporter_confirmed` (null for silence), `reporter_comment` (trimmed, null when blank, cut to
+  300) } — `AgentRunRequest.Verification`, off the wire when null. The reply is read only by
+  `AgentRunResponse.VerificationResult()`: succeeded means not a safe failure AND an output
+  whose `outcome` is a string.
+- **What is written, in ONE save**: an `AgentStep` named `"verification"`
+  (`AgentRunResponse.VerificationAgentName`), `"[]"` tool calls, output verbatim, the agent's
+  own `duration_ms` and `attempts`, `Ok` / `SafeFailure` / `CallFailed`; and on `Ok`,
+  `AgentOutcome`, `AgentReason`, `AgentEvidenceJson` and `AgentJudgedAt`. **Never `Status`** —
+  the check's status is the reporter's answer. No new `ValidationResult` string.
+- **The bound (team decision): `VerificationAgentRules.MaxAttempts` = 3 calls per queue
+  stamp**, counted in `AgentAttempts` and saved BEFORE each call, so a process that dies
+  mid-call has still spent one. A `CallFailed` (unreachable, a non-200, or a 200 with no
+  verification envelope) is retried on later passes, then given up; a **`SafeFailure` is final
+  at once** — the agent already retried its model inside the call, and asking again costs two
+  more model calls. Given up = `AgentJudgedAt` stamped, `AgentOutcome` null, `AgentError` says
+  why. A constant, like the tool row caps: a bound on cost, not a policy.
+- **An answer that arrives WHILE the agent judges the silence is not lost**: before saving,
+  the pass re-reads `AgentQueuedAt` from the database; if it moved, the verdict (about the
+  silence) goes on its step only and the check stays waiting. Pinned by
+  `AnAnswerThatArrivesWhileTheAgentIsJudging_IsNotLost`. A millisecond window between that
+  read and the save remains; the next answer-less pass cannot reopen it, so it is accepted.
+- **`AgentOutcome` stays a string nothing acts on.** No rule reads it; `RepairEscalated` is
+  still fired by nothing.
 
 ### The verification seed data is load-bearing too
 
@@ -1223,6 +1284,15 @@ overdue** so the sweep has work the first time it runs.
 - Work order seeding runs **after** user seeding and backs out with a warning if no demo
   reporter exists (`Seed:Passwords:Reporter` unset) — a report needs a reporter, and a
   half-configured machine should still get a usable registry rather than a failed seed.
+- **Every check still to be judged has the workflow its repair came out of** — the verification
+  agent's run and tool calls belong to the report's latest workflow, and these are the checks a
+  demo answers on the phone. CREATED in state, no steps, no plan: the two `Confirmed` repairs'
+  runs `Closed`, the three `Pending` ones `Completed` at the order's own `CompletedAt`, so the
+  first sweep's step 0 moves them to `AwaitingVerification` and the reporter's answer moves them
+  on. **The judged `Reopened` check has no workflow**, and carries `AgentQueuedAt` /
+  `AgentJudgedAt` so it is neither queued nor judged again. **A dev database seeded before this
+  keeps its workflow-less checks** (the seed skips existing reports) — the runner gives them up
+  as "no workflow"; reset the database to demo the loop. Pinned in `DbSeederVerificationTests`.
 
 ---
 
@@ -1276,10 +1346,16 @@ only to learn that it ran.
   with an `Ok` clarifier **agent-run** step (`AgentAnalysis.IsAgentRunStep` — the
   clarifier's tool calls carry the same name and `Ok`) or with questions. A failed run is not
   "needed no questions". `AgentRunResponse.ClarifierAgentName` is the name, used by the
-  runner and the seeder too. **Open question (owner D):** since the planner can leave the
-  clarifier out, a report it judged clear has no clarifier step and currently counts as NOT
-  clarified here. Whether "planned without clarification" should count as "needed no
-  questions" is this metric's decision; `AnalyticsService` has not been changed.
+  runner and the seeder too. **A report the planner judged clear NEEDED NO QUESTIONS** (team
+  decision, owner D): a workflow whose stored `PlanJson` is the planner's (`source` planner)
+  and leaves the clarifier out counts in `ReportsClarified` and `ReportsWithNoQuestions`, and
+  separately in `ReportsPlannedWithoutClarification`, so "asked nothing" and "was not asked"
+  stay tellable apart. Read from the STORED plan through `PlanRules.Read` — what the run was
+  delegated from, never the planner step's say-so. A fallback plan never counts (it always
+  runs the clarifier), nor a planner plan that kept a clarifier which never ran; a report the
+  clarifier DID run on counts once, as the clarifier's. Pinned by
+  `Clarification_AReportThePlannerJudgedClear_NeededNoQuestions_AndIsCountedApart`, verified
+  to fail with the source check removed and with those reports not counted.
 - **Repeat failures read `FailureRules`** — the 90-day window, the 3-visit threshold and
   the warranty rule, **shared with `AssetService.GetFailureSummaryAsync`** so an asset on
   this list is always `isRepeatFailure` on its own page. The window ends on `toDate`, or
@@ -1573,9 +1649,10 @@ nothing else. `agents/verification.py`, prompts `verification.md` +
   not `confirm`. Verified: a raw splice, a dropped date filter, routing everything to
   `clarify` and a `message` field on the output each fail `tests/`. **The evals have not
   been run against a live model.**
-- **No C# runner calls it yet.** `WorkflowRunner` sends report runs only; reading
-  `AgentQueuedAt`, sending `verification` and writing `AgentOutcome` / `AgentReason` back is
-  the next piece — and it has the late-answer question above to settle.
+- **The C# side is `VerificationAgentService`** — see THE VERIFICATION AGENT RUNNER under
+  VERIFICATION. It sends `verification` on the report's latest workflow and writes
+  `AgentOutcome`, `AgentReason` and `AgentEvidenceJson` back, plus a `verification` step.
+  **The evals and the runner have still never met a live model together.**
 
 ### The reopen golden case — `tests/reopen_cases.py`
 
@@ -1684,9 +1761,8 @@ flakiness to retry away.
 - A database **per factory**, not one shared database: xUnit gives each test class its own
   `ApiFactory`, and no class should be able to see another's rows. That is the isolation
   the SQLite mode gets for free, preserved deliberately for PostgreSQL.
-- `WorkflowRunner`, `TimetableSyncWorker` and `VerificationSweepService` are removed from
-  the container in **both**
-  modes, so a background writer never races a test's assertions and a test behaves
+- `WorkflowRunner`, `TimetableSyncWorker`, `VerificationSweepService` and
+  `VerificationAgentRunner` are removed from the container in **both** modes, so a background writer never races a test's assertions and a test behaves
   identically on a laptop and in CI.
 - `ApiFactory` sets `Jwt:*` and `ConnectionStrings:DefaultConnection` via environment
   variables (Program.cs reads them while the builder is still being constructed) and uses
@@ -1744,12 +1820,18 @@ flakiness to retry away.
     exact list of anonymous endpoints. `EstateTests` — buildings and rooms: access and every
     409/400. `PlanRulesTests` — the plan check as pure functions; the runner's use of it is
     in `WorkflowRunnerTests`. `WorkflowTests` also pins who may read and start a workflow,
-    one live run per report, and the tool router refusing a workflow that has ended.
+    one live run per report, and the tool router refusing a workflow that has ended — with
+    its one exception, the verification agent while its check waits.
+  - `AnalyticsTests` also pins a report the planner judged clear as "needed no questions".
   - `VerificationEndpointTests` also pins the list search, `IsOverdue`, the detail's
     manager-only "since the repair" lists and evidence, and the latest check on a report's
     list row.
   - `VerificationTests` — the check's rules through the service (delay, one answer, the
     confirmation rate). `VerificationSweepTests` — the sweep and its button.
+    `VerificationAgentRunnerTests` — the verification agent's pass on a scripted `IAgentClient`
+    and a movable clock: the request, the verdict and step written (never `Status`), queue
+    order, the retry bound, a safe failure final, no workflow, the late answer (after and
+    during a judgement) and the wake. The tool router's exception for it is in `WorkflowTests`.
     `VerificationEndpointTests` — the reporter's list, detail and confirm, and the metrics
     route: status codes, scoping and the bounded answer.
 - **A test for a rule should be checked against the rule broken.** Flip the operator, drop
@@ -1876,7 +1958,7 @@ client may and may not compute are exactly as they were.
   `WORKFLOW_STATES` in the workflows service, `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
   `assetsApi.js`, `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js`,
   `WORK_ORDER_STATUSES` / `STRATEGIES` / `WORK_ORDER_SORTS` in `workOrdersApi.js` and
-  `VERIFICATION_STATUSES` / `VERIFICATION_SORTS` in `verificationApi.js` hold the same strings
+  `VERIFICATION_STATUSES` / `VERIFICATION_SORTS` / `AGENT_REVIEW_STATES` in `verificationApi.js` hold the same strings
   the API sends and accepts, so a member inserted into a C# enum cannot silently shift the
   client's meaning. Colours are keyed by the same names (`components/ui/tones.js`).
 
@@ -2039,6 +2121,13 @@ never the first thing a reader has to parse, and never hidden either.
   2 possible causes; most likely: …" and "Proposed escalate replacement at Rs 45,000 —
   advice; approval is decided by the API." The full rendering of both is the approval
   queue's (`features/workorders/`); here they are audit rows like any other.
+- **The verification step gets one too**: "Judged the repair: escalate (high confidence) —
+  advice; the check's status is the reporter's answer." It is NOT a clarifier run:
+  `latestAgentRunState` skips `VERIFICATION_STEP_NAME` like the planner, or a verdict that
+  failed weeks later would make the report say its clarifier failed.
+- **The clarification figures say how many the planner judged clear**
+  (`describeNoQuestionCount`, on the metrics page, its stats and the dashboard) — words around
+  `reportsPlannedWithoutClarification`, no sum.
 - **The status control** (`ReportStatusControl`, in the aside, `DISPATCH_ROLES` only — the
   PATCH's policy refuses an Admin too) offers every status but the current one; choose, then
   confirm. **The client keeps no copy of the lifecycle**, not even "Closed is terminal": the
@@ -2130,6 +2219,9 @@ two roles `GET /api/analytics/metrics` names** — and a Reporter never sees the
 - **The detail reads as three voices, in order** (`ClaimChain`): the technician's note
   verbatim, the reporter's answer (null is "not answered", never "no"; Pending, waiting and
   Expired each say why), and the agent's outcome, reason and evidence **labelled advice**.
+  Which of those the agent's voice shows is the API's `agentState` by NAME
+  (`AGENT_REVIEW_STATES`) — not handed over, waiting, retrying (with `agentError`), judged, or
+  could not judge — never two stamps compared in the browser.
   The status is stated as set from the reporter's answer. When the repair did not hold
   (`Reopened` / `Escalated`, or the agent said `reopen` / `escalate`) it shows **what it
   looped back to**: the original report and the follow-up work orders, with "none raised
@@ -2225,7 +2317,7 @@ mobile/assets/fonts/   Hanken Grotesk TTFs + OFL.txt
   `WorkOrderStatuses` in `features/workorders/work_order.dart` and `VerificationStatuses` in
   `features/verification/verification.dart` hold the same strings the API sends and accepts.
   `AgentOutcomes` beside it mirrors the stored `AgentOutcome` strings — no C# enum, as on the
-  web.
+  web — and `AgentReviewStates` the API's `VerificationAgentState`.
 
 ### Styling — the web client's tokens, one accent
 
@@ -2487,8 +2579,11 @@ manager's list would be every reporter's checks, none of them theirs to answer.
   verified to fail with `_fixed = false`.
 - **After answering, the screen shows the check, not the form**: the status C# set, "your
   answer: no, still broken", "sent for review" from `agentQueuedAt`, and once the agent has
-  judged, its `AgentOutcomeChip` and reason — labelled as a review, beside the status, never
-  in place of it. **The comment is not replayed**: the status is the record, not a transcript.
+  judged, its `AgentOutcomeChip`, reason and **evidence, one verbatim line each** — labelled as
+  a review, beside the status, never in place of it. The review's other states come from the
+  API's `agentState` by NAME: delayed and retrying, or **could not reach a verdict — "your
+  answer stands"**; the system's error text is not shown to a reporter. Pinned in
+  `test/verification_test.dart`, verified to fail with the evidence and that branch removed. **The comment is not replayed**: the status is the record, not a transcript.
   A 409 (answered elsewhere, or not waiting) is a snackbar and a re-read, so the stale form
   goes away. A 403 is "Not your report", apart from a 404.
 - **Answering invalidates the detail, the pending list and `reportsPageProvider`**, because

@@ -75,6 +75,8 @@ Map<String, dynamic> _detail({
   String? agentOutcome,
   String? agentReason,
   String? agentQueuedAt,
+  List<String>? agentEvidence,
+  String? agentState,
 }) =>
     {
       'id': 7,
@@ -105,7 +107,8 @@ Map<String, dynamic> _detail({
       'reporterRespondedAt': respondedAt,
       'agentOutcome': agentOutcome,
       'agentReason': agentReason,
-      'agentEvidence': null,
+      'agentEvidence': agentEvidence,
+      'agentState': agentState,
       'newReportsSinceCompletion': null,
       'followUpWorkOrders': null,
       'processedAt': '2026-09-20T10:00:00Z',
@@ -358,16 +361,43 @@ void main() {
               agentQueuedAt: '2026-09-22T09:00:00Z',
               agentOutcome: 'reopen',
               agentReason: 'Note admits a temporary fix; a new report was filed since.',
+              agentEvidence: ['Note: "temp fix"', 'Report since: cut out on Monday'],
+              agentState: 'Judged',
             ))),
         initialLocation: '/verifications/7',
       );
 
       // The status is still the reporter's answer ...
       expect(find.text('Confirmed'), findsOneWidget);
-      // ... and the agent's opinion sits beside it, with its reason.
+      // ... and the agent's opinion sits beside it, with its reason and its evidence verbatim.
       expect(find.text('Review: reopen'), findsOneWidget);
       expect(find.textContaining('flagged it to facilities'), findsOneWidget);
       expect(find.text('Note admits a temporary fix; a new report was filed since.'), findsOneWidget);
+      await tester.ensureVisible(find.text('• Report since: cut out on Monday'));
+      expect(find.text('• Note: "temp fix"'), findsOneWidget);
+      expect(find.text('• Report since: cut out on Monday'), findsOneWidget);
+    });
+
+    testWidgets('a review that could not reach a verdict says so, and the answer still stands',
+        (tester) async {
+      await _pumpRouted(
+        tester,
+        client: _client((_) async => _json(_detail(
+              status: 'Reopened',
+              confirmed: false,
+              respondedAt: '2026-09-22T09:00:00Z',
+              agentQueuedAt: '2026-09-22T09:00:00Z',
+              agentState: 'CouldNotJudge',
+            ))),
+        initialLocation: '/verifications/7',
+      );
+
+      expect(find.text('Reopened'), findsOneWidget);
+      expect(find.textContaining('could not reach a verdict'), findsOneWidget);
+      expect(find.textContaining('Your answer stands'), findsOneWidget);
+      // Not "sent for review" as if one were still coming, and no label.
+      expect(find.textContaining('Sent for review'), findsNothing);
+      expect(find.textContaining('Review:'), findsNothing);
     });
 
     testWidgets('a 409 says why and shows the check as it really is now', (tester) async {

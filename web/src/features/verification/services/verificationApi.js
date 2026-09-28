@@ -1,5 +1,7 @@
 /** Every call the verification feature makes to the API lives here — components never fetch. */
 
+import { request } from '../../../services/apiClient';
+
 /**
  * Mirrors the API's `VerificationStatus` enum, by NAME, in the enum's own order. The API sends
  * and binds enums by name (JsonStringEnumConverter), so no ordinal is hardcoded here and a
@@ -155,4 +157,46 @@ export function trendChartRows(monthlyTrend) {
     reopened: month.reopened,
     rate: month.answered > 0 ? Number(month.reopenRate) : null,
   }));
+}
+
+/**
+ * GET /api/analytics/verification — the verification loop's own counts and rates
+ * (VerificationMetricsDto). FacilitiesManager only, so only a manager's page asks for it.
+ */
+export const VERIFICATION_SUMMARY_PATH = '/api/analytics/verification';
+
+/**
+ * POST /api/workflows/verification-sweep — runs the same pass the API's timer runs, now.
+ * FacilitiesManager only (an Admin is refused). 200 with VerificationSweepResultDto: how many
+ * rows it touched and what it did with them. Safe to press twice — a second pass finds
+ * nothing left to move.
+ */
+export function runVerificationSweep() {
+  return request('/api/workflows/verification-sweep', { method: 'POST' });
+}
+
+function plural(count, one, many) {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/**
+ * The sweep's counts in one sentence. Every number is the API's; nothing is added up here
+ * except to say "nothing was due" when all of them are zero.
+ */
+export function describeSweepResult(result) {
+  const parts = [];
+  if (result.workflowsAwaitingVerification > 0) {
+    parts.push(`${plural(result.workflowsAwaitingVerification, 'repair', 'repairs')} now awaiting verification`);
+  }
+  if (result.askedReporter > 0) {
+    parts.push(`${plural(result.askedReporter, 'reporter', 'reporters')} asked whether the fix held`);
+  }
+  if (result.queuedForAgent > 0) {
+    parts.push(`${plural(result.queuedForAgent, 'check', 'checks')} queued for review`);
+  }
+
+  const headline = parts.length === 0 ? 'Sweep finished — nothing was due.' : `Sweep finished: ${parts.join(', ')}.`;
+  return result.failed > 0
+    ? `${headline} ${plural(result.failed, 'row', 'rows')} could not be processed and will be retried on the next pass.`
+    : headline;
 }

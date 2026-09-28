@@ -1,17 +1,26 @@
+import { Boxes, CalendarClock, Layers, MapPin, MessageCircleQuestion, RefreshCw, UserRound } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import ErrorMessage from '../../../components/ErrorMessage';
-import Spinner from '../../../components/Spinner';
+import MxButton from '../../../components/ui/Button';
+import { formatInstant, timeAgo } from '../../../components/ui/format';
+import Notice from '../../../components/ui/Notice';
+import PageHeader from '../../../components/ui/PageHeader';
+import { Panel } from '../../../components/ui/Panel';
+import { Pill, StatusPill } from '../../../components/ui/Pill';
+import Skeleton from '../../../components/ui/Skeleton';
+import { EmptyState, ErrorState } from '../../../components/ui/States';
+import TagChip from '../../assets/components/TagChip';
 import useAuth from '../../auth/hooks/useAuth';
-import { MANAGER_ROLES, hasRole } from '../../auth/services/roles';
-import AgentReasoningPanel from '../components/AgentReasoningPanel';
-import ClarificationAnswers from '../components/ClarificationAnswers';
+import { DISPATCH_ROLES, MANAGER_ROLES, hasRole } from '../../auth/services/roles';
+import RaiseWorkOrderPanel from '../../workorders/components/RaiseWorkOrderPanel';
+import ClarificationList from '../components/ClarificationList';
+import ReasoningPanel from '../components/ReasoningPanel';
 import ReportPhoto from '../components/ReportPhoto';
-import ReportStatusBadge from '../components/ReportStatusBadge';
 import useReport from '../hooks/useReport';
 import { latestAgentRunState } from '../services/agentSteps';
-import { formatDateTime, roomLabel } from '../services/reportsApi';
+import { roomLabel } from '../services/reportsApi';
+import styles from '../reports.module.css';
 
 /** What an empty question list means depends on whether, and how, the clarifier ran. */
 const EMPTY_CLARIFICATION = {
@@ -29,137 +38,201 @@ const EMPTY_CLARIFICATION = {
   },
 };
 
+function DetailSkeleton() {
+  return (
+    <div role="status" aria-label="Loading report">
+      <Skeleton width={160} height={12} style={{ marginBottom: 18 }} />
+      <Skeleton width="38%" height={40} style={{ marginBottom: 28 }} />
+      <Skeleton height={180} radius={20} style={{ marginBottom: 20 }} />
+      <div className={styles.detailGrid}>
+        <div className={styles.column}>
+          <Skeleton height={200} radius={20} />
+          <Skeleton height={320} radius={20} />
+        </div>
+        <Skeleton height={280} radius={20} />
+      </div>
+    </div>
+  );
+}
+
+function crumbsFor(isManager, id) {
+  return isManager
+    ? [{ label: 'Reports', to: '/reports' }, { label: `#${id}` }]
+    : [{ label: 'Dashboard', to: '/dashboard' }, { label: `Report #${id}` }];
+}
+
 /** The error state, with 403 and 404 told apart the way the API tells them apart. */
-function ReportError({ id, error }) {
+function ReportError({ id, error, isManager }) {
+  let title = 'Could not load this report';
+  let message = error.message;
   if (error.status === 404) {
-    return <ErrorMessage title="Report not found" message={`There is no report with id ${id}.`} />;
+    title = 'Report not found';
+    message = `There is no report with id ${id}.`;
+  } else if (error.status === 403) {
+    // The API knows who you are and is refusing: a Reporter reads the reports they filed.
+    title = 'Not your report';
+    message = 'Reporters see the reports they filed. This one was filed by somebody else.';
   }
 
-  if (error.status === 403) {
-    // The API knows who you are and is refusing, not asking: a Reporter reads the reports
-    // they filed and nobody else's.
-    return (
-      <ErrorMessage
-        title="Not your report"
-        message="Reporters see the reports they filed. This one was filed by somebody else."
-      />
-    );
-  }
-
-  return <ErrorMessage title="Could not load this report" message={error.message} />;
+  return (
+    <>
+      <PageHeader crumbs={crumbsFor(isManager, id)} title={`Report #${id}`} />
+      <Panel>
+        <ErrorState title={title} message={message} />
+      </Panel>
+    </>
+  );
 }
 
 /**
  * The report itself. Split out of the page so "Refresh" can remount it with a new key: a
- * fresh mount is a fresh useFetch, which is the whole of the refetch — no extra machinery
- * in the shared hook.
+ * fresh mount is a fresh useFetch, which is the whole of the refetch.
  */
 function ReportDetail({ id, onRefresh }) {
   const { data, isLoading, error } = useReport(id);
   const { role } = useAuth();
   const isManager = hasRole(role, MANAGER_ROLES);
+  // Raising an order is FacilitiesManager only, like POST /api/workorders — an Admin reads
+  // the report but is not offered a control the API would refuse.
+  const canDispatch = hasRole(role, DISPATCH_ROLES);
 
+  if (isLoading) return <DetailSkeleton />;
+  if (error || !data) return <ReportError id={id} error={error ?? { message: 'Nothing came back.' }} isManager={isManager} />;
+  return <ReportBody report={data} isManager={isManager} canDispatch={canDispatch} onRefresh={onRefresh} />;
+}
+
+function Fact({ icon: Icon, label, children }) {
   return (
-    <section className="page report-detail">
-      <p className="page__back">
-        {isManager ? <Link to="/reports">← All reports</Link> : <Link to="/dashboard">← Dashboard</Link>}
-      </p>
-
-      {/* All three request states are rendered explicitly. A blank screen is a bug. */}
-      {isLoading ? <Spinner label="Loading report…" /> : null}
-
-      {!isLoading && error ? <ReportError id={id} error={error} /> : null}
-
-      {!isLoading && !error && data ? (
-        <ReportBody report={data} isManager={isManager} onRefresh={onRefresh} />
-      ) : null}
-    </section>
+    <div className={styles.fact}>
+      <dt>
+        <Icon aria-hidden="true" strokeWidth={1.7} />
+        {label}
+      </dt>
+      <dd>{children}</dd>
+    </div>
   );
 }
 
-function ReportBody({ report, isManager, onRefresh }) {
+/**
+ * Where the order landed, in the API's words: its status says which side of the approval
+ * gate it is on, and nothing here compares the estimate with the threshold.
+ */
+function RaisedNotice({ order }) {
+  const link = <Link to={`/workorders/${order.id}`}>Work order #{order.id}</Link>;
+
+  if (order.status === 'AwaitingApproval') {
+    return (
+      <Notice>
+        {link} raised. It needs a manager&apos;s decision and is waiting in the{' '}
+        <Link to="/approvals">approval queue</Link>.
+      </Notice>
+    );
+  }
+
+  return (
+    <Notice>
+      {link} raised and approved — no decision was needed. Assign a technician and book a visit next.
+    </Notice>
+  );
+}
+
+function ReportBody({ report, isManager, canDispatch, onRefresh }) {
+  // The order just raised from this page. Kept here, not refetched: the panel goes the moment
+  // the order exists, and the notice says where it went.
+  const [raisedOrder, setRaisedOrder] = useState(null);
+  const offerRaise = canDispatch && !raisedOrder && Boolean(report.latestWorkflow?.canRaiseWorkOrder);
+
   const unanswered = report.clarificationQuestions.filter(
     (question) => question.answerText === null || question.answerText === undefined,
   ).length;
-
   const runState = latestAgentRunState(report.agentSteps);
 
   return (
     <>
-      <header className="asset-hero report-hero">
-        <div className="asset-hero__main">
-          <div className="asset-hero__tags">
-            <span className="asset-tag asset-tag--large">Report #{report.id}</span>
-            <ReportStatusBadge status={report.status} />
-            {unanswered > 0 ? (
-              <span className="report-table__waiting">{unanswered} unanswered</span>
-            ) : null}
-          </div>
-
-          <h1>{roomLabel(report.room)}</h1>
-          <p className="asset-hero__subtitle">Reported {formatDateTime(report.createdAt)}</p>
-
-          {/* The reporter's own words, verbatim: no truncation, no tidying. */}
-          <blockquote className="report-hero__description">{report.description}</blockquote>
+      <PageHeader
+        crumbs={crumbsFor(isManager, report.id)}
+        title={roomLabel(report.room)}
+        actions={
+          <MxButton icon={RefreshCw} onClick={onRefresh}>
+            Refresh
+          </MxButton>
+        }
+      >
+        <div className={styles.headerPills}>
+          <span className={styles.reportId}>Report #{report.id}</span>
+          <StatusPill status={report.status} />
+          {unanswered > 0 ? (
+            <Pill tone="amber" icon={MessageCircleQuestion}>
+              {unanswered} unanswered
+            </Pill>
+          ) : null}
+          <span className={styles.headerSub}>Reported {timeAgo(report.createdAt)}</span>
         </div>
+      </PageHeader>
 
+      <section className={styles.hero} aria-label="The fault as reported">
+        <div className={styles.heroText}>
+          <p className={styles.heroLabel}>The fault, in the reporter&apos;s words</p>
+          {/* Verbatim: no truncation, no tidying. */}
+          <blockquote className={styles.heroQuote}>{report.description}</blockquote>
+        </div>
         <ReportPhoto url={report.photoUrl} />
-
-        <dl className="asset-hero__facts">
-          <div>
-            <dt>Floor</dt>
-            <dd>{report.room.floor}</dd>
-          </div>
-          <div>
-            <dt>Asset</dt>
-            <dd>
-              {report.asset ? (
-                <Link to={`/assets/${report.asset.id}`}>
-                  {report.asset.assetTag} · {report.asset.name}
-                </Link>
-              ) : (
-                // Null is the normal case: a reporter is not expected to know the tag.
-                'Not identified yet'
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Reporter</dt>
-            <dd>User #{report.reporterId}</dd>
-          </div>
-          <div>
-            <dt>Last updated</dt>
-            <dd>{formatDateTime(report.updatedAt)}</dd>
-          </div>
-        </dl>
-      </header>
-
-      <section className="report-section" aria-labelledby="clarification-heading">
-        <header className="report-section__head">
-          <div>
-            <h2 id="clarification-heading">Clarification</h2>
-            <p className="report-section__lead">
-              What the clarifier asked, and the reporter&apos;s answers. Each question is one
-              bounded control and takes one answer — there is no conversation.
-            </p>
-          </div>
-        </header>
-
-        {report.clarificationQuestions.length === 0 ? (
-          <div className="empty-state">
-            <p className="empty-state__title">{EMPTY_CLARIFICATION[runState].title}</p>
-            <p className="empty-state__body">{EMPTY_CLARIFICATION[runState].body}</p>
-          </div>
-        ) : (
-          <ClarificationAnswers questions={report.clarificationQuestions} />
-        )}
       </section>
 
-      <AgentReasoningPanel
-        steps={report.agentSteps}
-        canOpenWorkflows={isManager}
-        onRefresh={onRefresh}
-      />
+      {raisedOrder ? <RaisedNotice order={raisedOrder} /> : null}
+
+      <div className={styles.detailGrid}>
+        <div className={styles.column}>
+          {offerRaise ? <RaiseWorkOrderPanel report={report} onRaised={setRaisedOrder} /> : null}
+
+          <Panel eyebrow="Clarification" count={report.clarificationQuestions.length || null}>
+            <p className={styles.sectionLead}>
+              What the clarifier asked, and the reporter&apos;s answers. Each question is one bounded control and takes one
+              answer — there is no conversation.
+            </p>
+            {report.clarificationQuestions.length === 0 ? (
+              <EmptyState compact icon={MessageCircleQuestion} title={EMPTY_CLARIFICATION[runState].title} body={EMPTY_CLARIFICATION[runState].body} />
+            ) : (
+              <ClarificationList questions={report.clarificationQuestions} />
+            )}
+          </Panel>
+
+          <ReasoningPanel steps={report.agentSteps} canOpenWorkflows={isManager} onRefresh={onRefresh} />
+        </div>
+
+        <aside className={styles.aside}>
+          <Panel eyebrow="Details">
+            <dl className={styles.facts}>
+              <Fact icon={MapPin} label="Room">
+                {roomLabel(report.room)}
+              </Fact>
+              <Fact icon={Layers} label="Floor">
+                <span className="mx-mono">{report.room.floor}</span>
+              </Fact>
+              <Fact icon={Boxes} label="Asset">
+                {report.asset ? (
+                  <Link to={`/assets/${report.asset.id}`} className={styles.assetLink}>
+                    <TagChip tag={report.asset.assetTag} />
+                    <span>{report.asset.name}</span>
+                  </Link>
+                ) : (
+                  // Null is the normal case: a reporter is not expected to know the tag.
+                  <span className={styles.muted}>Not identified yet</span>
+                )}
+              </Fact>
+              <Fact icon={UserRound} label="Reporter">
+                User #{report.reporterId}
+              </Fact>
+              <Fact icon={CalendarClock} label="Reported">
+                <span className="mx-mono">{formatInstant(report.createdAt)}</span>
+              </Fact>
+              <Fact icon={CalendarClock} label="Last updated">
+                <span className="mx-mono">{formatInstant(report.updatedAt)}</span>
+              </Fact>
+            </dl>
+          </Panel>
+        </aside>
+      </div>
     </>
   );
 }
@@ -176,7 +249,9 @@ export function ReportDetailPage() {
   const [version, setVersion] = useState(0);
 
   return (
-    <ReportDetail key={version} id={id} onRefresh={() => setVersion((current) => current + 1)} />
+    <section className={styles.page}>
+      <ReportDetail key={`${id}-${version}`} id={id} onRefresh={() => setVersion((current) => current + 1)} />
+    </section>
   );
 }
 

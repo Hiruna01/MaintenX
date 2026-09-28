@@ -1,13 +1,12 @@
+import clsx from 'clsx';
+import { Check, PencilLine, X } from 'lucide-react';
 import { useState } from 'react';
 
-import Button from '../../../components/Button';
-import {
-  approveWorkOrder,
-  formatMoney,
-  rejectWorkOrder,
-  requestRevision,
-} from '../services/workOrdersApi';
+import MxButton from '../../../components/ui/Button';
+import form from '../../../components/ui/form.module.css';
+import { approveWorkOrder, formatMoney, rejectWorkOrder, requestRevision } from '../services/workOrdersApi';
 import { DECISION_NOTE_MAX, validateDecisionNote } from '../services/workOrderValidation';
+import styles from '../workorders.module.css';
 
 const MODES = {
   approve: {
@@ -70,9 +69,7 @@ export function DecisionControls({ orderId, estimatedCost, onDecided }) {
       onDecided(MODES[mode].done(orderId));
     } catch (error) {
       setSubmitError(
-        error.status === 409
-          ? `${error.message} Somebody may have decided it already — refresh the queue.`
-          : error.message,
+        error.status === 409 ? `${error.message} Somebody may have decided it already — refresh the queue.` : error.message,
       );
       setIsSubmitting(false);
     }
@@ -80,16 +77,21 @@ export function DecisionControls({ orderId, estimatedCost, onDecided }) {
 
   if (mode === null) {
     return (
-      <div className="decision">
-        <p className="decision__prompt">Your decision</p>
-        <div className="decision__buttons">
-          <Button onClick={() => choose('approve')}>Approve</Button>
-          <Button variant="danger" onClick={() => choose('reject')}>
-            Reject
-          </Button>
-          <Button variant="secondary" onClick={() => choose('revise')}>
+      <div className={styles.decision}>
+        <p className={styles.decisionPrompt}>
+          Your decision
+          <span>Approve spends the estimate. Reject and revision each need a written reason.</span>
+        </p>
+        <div className={styles.decisionButtons}>
+          <MxButton onClick={() => choose('revise')} icon={PencilLine}>
             Request revision
-          </Button>
+          </MxButton>
+          <MxButton variant="danger" onClick={() => choose('reject')} icon={X}>
+            Reject
+          </MxButton>
+          <MxButton variant="primary" onClick={() => choose('approve')} icon={Check}>
+            Approve
+          </MxButton>
         </div>
       </div>
     );
@@ -99,18 +101,21 @@ export function DecisionControls({ orderId, estimatedCost, onDecided }) {
   const fieldId = `decision-note-${orderId}`;
 
   return (
-    <form className={`decision decision--${mode}`} onSubmit={handleConfirm} noValidate>
+    <form className={clsx(styles.decision, styles.decisionConfirm, styles[`decision-${mode}`])} onSubmit={handleConfirm} noValidate>
       {mode === 'approve' ? (
-        <p className="decision__confirm">
-          Approve work order #{orderId} at an estimated <strong>{formatMoney(estimatedCost)}</strong>?
-          You will be recorded as the manager who approved it.
+        <p className={styles.decisionQuestion}>
+          Approve work order #{orderId} at an estimated <strong>{formatMoney(estimatedCost)}</strong>? You will be
+          recorded as the manager who approved it.
         </p>
       ) : (
-        <div className="decision__field">
-          <label htmlFor={fieldId}>{config.field}</label>
+        <div className={form.field} style={{ flex: 1 }}>
+          <label htmlFor={fieldId} className={form.label}>
+            {config.field}
+          </label>
           <textarea
             id={fieldId}
             rows={3}
+            className={form.textarea}
             value={note}
             maxLength={DECISION_NOTE_MAX}
             onChange={(event) => setNote(event.target.value)}
@@ -118,25 +123,34 @@ export function DecisionControls({ orderId, estimatedCost, onDecided }) {
             aria-describedby={`${fieldId}-hint`}
             autoFocus
           />
-          <p id={`${fieldId}-hint`} className={errors.note ? 'form__error' : 'decision__hint'}>
-            {errors.note ?? `${config.hint} ${note.length}/${DECISION_NOTE_MAX}`}
-          </p>
+          {errors.note ? (
+            <p id={`${fieldId}-hint`} className={form.error}>
+              {errors.note}
+            </p>
+          ) : (
+            <p id={`${fieldId}-hint`} className={form.hint}>
+              <span>{config.hint}</span>
+              <span className={form.counter}>
+                {note.length}/{DECISION_NOTE_MAX}
+              </span>
+            </p>
+          )}
         </div>
       )}
 
       {submitError ? (
-        <p className="form__error" role="alert">
+        <p className={form.submitError} role="alert">
           {submitError}
         </p>
       ) : null}
 
-      <div className="decision__buttons">
-        <Button type="submit" variant={mode === 'reject' ? 'danger' : 'primary'} disabled={isSubmitting}>
-          {isSubmitting ? 'Sending…' : config.confirmLabel}
-        </Button>
-        <Button variant="secondary" onClick={() => choose(null)} disabled={isSubmitting}>
+      <div className={styles.decisionButtons}>
+        <MxButton onClick={() => choose(null)} disabled={isSubmitting}>
           Cancel
-        </Button>
+        </MxButton>
+        <MxButton type="submit" variant={mode === 'reject' ? 'danger' : 'primary'} disabled={isSubmitting}>
+          {isSubmitting ? 'Sending…' : config.confirmLabel}
+        </MxButton>
       </div>
     </form>
   );

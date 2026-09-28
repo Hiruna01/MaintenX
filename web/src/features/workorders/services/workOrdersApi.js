@@ -299,3 +299,28 @@ export function requestRevision(id, note) {
     body: { note: note.trim() },
   });
 }
+
+/**
+ * POST /api/workorders — 201 with the created order. FacilitiesManager only.
+ *
+ * No status is sent, because there is none to send: the API raises every order and routes it
+ * across the approval gate itself, comparing the estimate with its threshold in C#. The
+ * returned `status` — `Approved` or `AwaitingApproval` — is where it landed, and the client
+ * reports that answer rather than predicting it.
+ */
+export function createWorkOrder(reportId, values) {
+  const parts = values.partsRequired.trim();
+
+  return request('/api/workorders', {
+    method: 'POST',
+    body: {
+      reportId: Number(reportId),
+      assetId: Number(values.assetId),
+      strategy: values.strategy,
+      // Held to rupees and cents by validate(); see completeWorkOrder for why Number() is
+      // exact here.
+      estimatedCost: Number(values.estimatedCost),
+      partsRequired: parts === '' ? null : parts,
+    },
+  });
+}

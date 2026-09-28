@@ -1,4 +1,7 @@
+import { ImageOff, ImageIcon, SquareArrowOutUpRight } from 'lucide-react';
 import { useState } from 'react';
+
+import styles from '../reports.module.css';
 
 /**
  * The reporter's photo of the fault, if they attached one.
@@ -11,13 +14,19 @@ export function ReportPhoto({ url }) {
   const [failed, setFailed] = useState(false);
 
   if (!url) {
-    return <div className="report-photo report-photo--none">No photo attached</div>;
+    return (
+      <div className={styles.photoNone}>
+        <ImageIcon aria-hidden="true" />
+        No photo attached
+      </div>
+    );
   }
 
   if (failed) {
     return (
-      <div className="report-photo report-photo--none">
-        The photo could not be loaded.{' '}
+      <div className={styles.photoNone}>
+        <ImageOff aria-hidden="true" />
+        The photo could not be loaded.
         <a href={url} target="_blank" rel="noreferrer">
           Open the link
         </a>
@@ -26,8 +35,11 @@ export function ReportPhoto({ url }) {
   }
 
   return (
-    <a className="report-photo" href={url} target="_blank" rel="noreferrer" title="Open full size">
+    <a className={styles.photo} href={url} target="_blank" rel="noreferrer" title="Open full size">
       <img src={url} alt="Photo of the reported fault" onError={() => setFailed(true)} />
+      <span className={styles.photoOpen}>
+        <SquareArrowOutUpRight aria-hidden="true" /> Full size
+      </span>
     </a>
   );
 }

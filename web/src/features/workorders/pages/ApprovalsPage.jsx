@@ -1,77 +1,101 @@
+import { Stamp } from 'lucide-react';
 import { useState } from 'react';
 
-import ErrorMessage from '../../../components/ErrorMessage';
-import Pagination from '../../../components/Pagination';
-import Spinner from '../../../components/Spinner';
+import MxButton from '../../../components/ui/Button';
+import Notice from '../../../components/ui/Notice';
+import PageHeader from '../../../components/ui/PageHeader';
+import Pager from '../../../components/ui/Pager';
+import { Panel } from '../../../components/ui/Panel';
+import Skeleton from '../../../components/ui/Skeleton';
+import { EmptyState, ErrorState } from '../../../components/ui/States';
 import ApprovalCard from '../components/ApprovalCard';
 import useApprovalQueue from '../hooks/useApprovalQueue';
+import styles from '../workorders.module.css';
+
+function QueueSkeleton() {
+  return (
+    <div className={styles.column} role="status" aria-label="Loading the approval queue">
+      {[0, 1].map((index) => (
+        <div key={index} className={styles.caseCard}>
+          <Skeleton width="40%" height={14} style={{ marginBottom: 12 }} />
+          <Skeleton width="55%" height={28} style={{ marginBottom: 20 }} />
+          <Skeleton height={64} radius={14} style={{ marginBottom: 16 }} />
+          <div className={styles.caseGrid}>
+            <Skeleton height={260} radius={20} />
+            <Skeleton height={260} radius={20} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /**
  * The approval queue — every work order waiting on a facilities manager, oldest first.
  *
- * Each card carries everything the decision needs: the fault as reported, the estimate
- * against the threshold in plain words, the agent's proposal beside the order as raised, the
- * diagnosis with its evidence, and the machine's full service history and failure summary.
- * One request brings all of it (GET /api/workorders/approvals), so a manager decides without
- * opening anything else.
- *
- * Nothing on this page decides anything. Whether an order needs approval is the API's
- * `approvalBasis`; the diagnosis and proposal are advice; and what Approve, Reject and
- * Request revision DO is C# in WorkOrderService. FacilitiesManager only — the route guard
- * and the nav both mirror the API's policy, so a Technician never sees a link to it.
+ * One request (GET /api/workorders/approvals) brings everything each decision needs, so a
+ * manager decides without opening anything else. Nothing on this page decides anything:
+ * whether an order needs approval is the API's `approvalBasis`, the diagnosis and proposal
+ * are advice, and what Approve, Reject and Request revision DO is C# in WorkOrderService.
  */
 function ApprovalQueue({ page, onPageChange, notice, onDecided }) {
   const { data, isLoading, error } = useApprovalQueue(page);
+  const waiting = data?.totalCount;
 
   return (
     <>
-      {notice ? (
-        <p className="notice" role="status">
-          {notice}
-        </p>
-      ) : null}
+      {/* The header lives in the keyed queue so its count is re-read after every decision. */}
+      <PageHeader
+        crumbs={[{ label: 'Operations' }, { label: 'Approvals' }]}
+        title="Approvals"
+        lead="Work orders that need your decision before any work is booked. Everything the decision needs is on each card — longest-waiting first."
+        actions={
+          typeof waiting === 'number' ? (
+            <span className={styles.headerCount}>
+              <strong>{waiting}</strong> {waiting === 1 ? 'order is' : 'orders are'} waiting
+            </span>
+          ) : null
+        }
+      />
 
-      {/* All three request states are rendered explicitly. A blank screen is a bug. */}
-      {isLoading ? <Spinner label="Loading the approval queue…" /> : null}
+      <Notice>{notice}</Notice>
+
+      {isLoading ? <QueueSkeleton /> : null}
 
       {!isLoading && error ? (
-        <ErrorMessage title="Could not load the approval queue" message={error.message} />
+        <Panel>
+          <ErrorState title="Could not load the approval queue" message={error.message} />
+        </Panel>
       ) : null}
 
       {!isLoading && !error && data ? (
-        <>
-          {data.items.length === 0 ? (
-            // An empty queue is good news, not a failure.
-            <div className="empty-state">
-              <p className="empty-state__title">Nothing is waiting for a decision</p>
-              <p className="empty-state__body">
-                Orders estimated above the approval threshold, and every replacement, land here
-                when they are raised.
-              </p>
+        data.items.length === 0 ? (
+          // An empty queue is good news, not a failure.
+          <Panel>
+            <EmptyState
+              icon={Stamp}
+              title="Nothing is waiting for a decision"
+              body="Orders estimated above the approval threshold, and every replacement, land here when they are raised."
+              action={<MxButton to="/workorders">Open the dispatch board</MxButton>}
+            />
+          </Panel>
+        ) : (
+          <>
+            <div className={styles.column}>
+              {data.items.map((item, index) => (
+                <ApprovalCard key={item.workOrder.id} item={item} index={index} onDecided={onDecided} />
+              ))}
             </div>
-          ) : (
-            <>
-              <p className="approval-queue__count">
-                {data.totalCount} {data.totalCount === 1 ? 'order is' : 'orders are'} waiting ·
-                longest-waiting first
-              </p>
-              <div className="approval-queue">
-                {data.items.map((item) => (
-                  <ApprovalCard key={item.workOrder.id} item={item} onDecided={onDecided} />
-                ))}
-              </div>
-            </>
-          )}
-
-          {data.totalCount > 0 ? (
-            <Pagination
+            <Pager
               page={data.page}
+              pageSize={data.pageSize}
               totalPages={data.totalPages}
               totalCount={data.totalCount}
               onPageChange={onPageChange}
+              noun={data.totalCount === 1 ? 'order' : 'orders'}
             />
-          ) : null}
-        </>
+          </>
+        )
       ) : null}
     </>
   );
@@ -89,25 +113,8 @@ export function ApprovalsPage() {
   }
 
   return (
-    <section className="page">
-      <header className="page-header">
-        <div>
-          <p className="page-header__eyebrow">Facilities manager</p>
-          <h1>Approvals</h1>
-          <p className="page__lead">
-            Work orders that need your decision before any work is booked. Everything the
-            decision needs is on each card.
-          </p>
-        </div>
-      </header>
-
-      <ApprovalQueue
-        key={state.version}
-        page={page}
-        onPageChange={setPage}
-        notice={state.notice}
-        onDecided={handleDecided}
-      />
+    <section className={styles.page}>
+      <ApprovalQueue key={state.version} page={page} onPageChange={setPage} notice={state.notice} onDecided={handleDecided} />
     </section>
   );
 }

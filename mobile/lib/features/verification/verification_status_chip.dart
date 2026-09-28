@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../../core/app_theme.dart';
 import '../../widgets/status_pill.dart';
 import 'verification.dart';
 
@@ -41,7 +43,7 @@ class AgentOutcomeChip extends StatelessWidget {
       AgentOutcomes.escalate => ('Review: escalate', PillTone.danger),
       _ => (outcome, PillTone.neutral),
     };
-    return StatusPill(label: label, tone: tone, icon: Icons.fact_check_outlined);
+    return StatusPill(label: label, tone: tone, icon: LucideIcons.fileSearch);
   }
 }
 
@@ -82,17 +84,21 @@ class ReportVerificationLine extends StatelessWidget {
             Expanded(
               child: Text(
                 describeForReporter(verification.status),
+                // Iris: this check is waiting on the person reading it.
                 style: waiting
                     ? theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.primary,
+                        color: MxColors.iris,
                         fontWeight: FontWeight.w600,
                       )
                     : theme.textTheme.bodySmall,
               ),
             ),
             if (waiting) ...[
-              Text('Answer', style: TextStyle(color: theme.colorScheme.primary)),
-              Icon(Icons.chevron_right, color: theme.colorScheme.primary),
+              Text(
+                'Answer',
+                style: theme.textTheme.labelLarge?.copyWith(color: MxColors.iris),
+              ),
+              const Icon(LucideIcons.chevronRight, size: 18, color: MxColors.iris),
             ],
           ],
         ),

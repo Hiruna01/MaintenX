@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../widgets/error_view.dart';
 import '../../widgets/loading_view.dart';
 import 'asset_detail_screen.dart';
@@ -26,11 +29,21 @@ enum _Phase { scanning, lookingUp, notFound, failed }
 ///   * a code that is not one of ours -> "No asset registered for this code"
 ///   * no network, timeout, server error -> ErrorView with a retry
 /// and a typed-tag fallback for a damaged sticker, or a device with no usable camera.
+///
+/// With [pickForReport] it is the report form's scanner instead: a hit POPS with the
+/// [AssetDetail] rather than opening its page, and the form fills in the equipment and its
+/// room. Same lookup, same states — one scanner, not two.
 class ScanAssetScreen extends ConsumerStatefulWidget {
-  const ScanAssetScreen({super.key});
+  const ScanAssetScreen({super.key, this.pickForReport = false});
 
   static const String subPath = 'scan';
   static const String path = '/scan';
+
+  /// Nested under the report form: `/report/scan`.
+  static const String reportSubPath = 'scan';
+  static const String reportPath = '/report/scan';
+
+  final bool pickForReport;
 
   @override
   ConsumerState<ScanAssetScreen> createState() => _ScanAssetScreenState();
@@ -84,6 +97,13 @@ class _ScanAssetScreenState extends ConsumerState<ScanAssetScreen> {
       // cannot see.
       await _controller.stop();
       if (!mounted) return;
+
+      if (widget.pickForReport) {
+        // Back to the report form with the machine the sticker names.
+        Navigator.of(context).pop(asset);
+        return;
+      }
+
       await context.push(AssetDetailScreen.location(asset.id));
       if (!mounted) return;
       _scanAgain();
@@ -129,78 +149,118 @@ class _ScanAssetScreenState extends ConsumerState<ScanAssetScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Scan an asset'),
-        actions: [
-          IconButton(
-            tooltip: 'Type the tag instead',
-            icon: const Icon(Icons.keyboard_outlined),
-            onPressed: _phase == _Phase.lookingUp ? null : _enterTagManually,
-          ),
-        ],
-      ),
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          MobileScanner(
-            controller: _controller,
-            onDetect: _onDetect,
-            // Never a black rectangle while the camera starts.
-            placeholderBuilder: (context) => const ColoredBox(
-              color: Colors.black,
-              child: Center(child: CircularProgressIndicator(color: Colors.white)),
-            ),
-            errorBuilder: (context, error) => _CameraErrorView(
-              error: error,
-              onRetry: _restartCamera,
-              onEnterManually: _enterTagManually,
-            ),
-          ),
-          if (_phase == _Phase.scanning || _phase == _Phase.lookingUp)
-            // The controller is a ValueNotifier of the camera's state. With the camera in
-            // error the frame would sit on top of the error message, so a typed lookup
-            // gets a plain loading panel instead.
-            ValueListenableBuilder<MobileScannerState>(
-              valueListenable: _controller,
-              builder: (context, camera, _) {
-                if (camera.error == null) {
-                  return _ViewfinderOverlay(
-                    lookingUpTag: _phase == _Phase.lookingUp ? _scannedTag : null,
-                  );
-                }
-                return _phase == _Phase.lookingUp
-                    ? _Panel(child: LoadingView(message: 'Looking up $_scannedTag…'))
-                    : const SizedBox.shrink();
-              },
-            ),
-          if (_phase == _Phase.notFound)
-            _Panel(
-              child: _NotFoundView(tag: _scannedTag ?? '', onScanAgain: _scanAgain),
-            ),
-          if (_phase == _Phase.failed)
-            _Panel(
-              child: Column(
-                children: [
-                  Expanded(
-                    child: ErrorView(
-                      title: 'Could not look up this code',
-                      message: _failureMessage ?? 'Could not reach the API.',
-                      onRetry: () => _lookUp(_scannedTag!),
+    // The controller is a ValueNotifier of the camera's state. While the live picture is
+    // what the user is looking at, the chrome is white on black over it; once a result or
+    // an error covers it, the screen is an ordinary white page.
+    return ValueListenableBuilder<MobileScannerState>(
+      valueListenable: _controller,
+      builder: (context, camera, _) {
+        final onCamera = (_phase == _Phase.scanning || _phase == _Phase.lookingUp) &&
+            camera.error == null;
+        final chrome = onCamera ? Colors.white : MxColors.ink;
+        final chromeFill = onCamera ? Colors.black.withValues(alpha: 0.35) : Colors.transparent;
+
+        return Scaffold(
+          backgroundColor: onCamera ? Colors.black : MxColors.surface,
+          extendBodyBehindAppBar: onCamera,
+          appBar: AppBar(
+            foregroundColor: chrome,
+            systemOverlayStyle: onCamera ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
+            leading: Navigator.canPop(context)
+                ? Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: IconButton(
+                      tooltip: 'Back',
+                      style: IconButton.styleFrom(
+                        backgroundColor: chromeFill,
+                        foregroundColor: chrome,
+                      ),
+                      icon: const Icon(LucideIcons.arrowLeft),
+                      onPressed: () => Navigator.maybePop(context),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 24),
-                    child: TextButton(
-                      onPressed: _scanAgain,
-                      child: const Text('Scan a different code'),
-                    ),
-                  ),
-                ],
+                  )
+                : null,
+            title: Text(
+              widget.pickForReport ? 'Scan the equipment' : 'Scan an asset',
+              style: TextStyle(color: chrome),
+            ),
+            actions: [
+              IconButton(
+                tooltip: 'Type the tag instead',
+                style: IconButton.styleFrom(backgroundColor: chromeFill, foregroundColor: chrome),
+                icon: const Icon(LucideIcons.keyboard),
+                onPressed: _phase == _Phase.lookingUp ? null : _enterTagManually,
               ),
-            ),
-        ],
-      ),
+              const SizedBox(width: 8),
+            ],
+          ),
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              MobileScanner(
+                controller: _controller,
+                onDetect: _onDetect,
+                // Never a black rectangle while the camera starts.
+                placeholderBuilder: (context) => const ColoredBox(
+                  color: Colors.black,
+                  child: Center(
+                    child: SizedBox(
+                      width: 26,
+                      height: 26,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        color: Colors.white,
+                        strokeCap: StrokeCap.round,
+                      ),
+                    ),
+                  ),
+                ),
+                errorBuilder: (context, error) => _CameraErrorView(
+                  error: error,
+                  onRetry: _restartCamera,
+                  onEnterManually: _enterTagManually,
+                ),
+              ),
+              if (_phase == _Phase.scanning || _phase == _Phase.lookingUp)
+                // With the camera in error the frame would sit on top of the error message,
+                // so a typed lookup gets a plain loading panel instead.
+                camera.error == null
+                    ? _ViewfinderOverlay(
+                        lookingUpTag: _phase == _Phase.lookingUp ? _scannedTag : null,
+                        onEnterManually: _enterTagManually,
+                      )
+                    : _phase == _Phase.lookingUp
+                        ? _Panel(child: LoadingView(message: 'Looking up $_scannedTag…'))
+                        : const SizedBox.shrink(),
+              if (_phase == _Phase.notFound)
+                _Panel(
+                  child: _NotFoundView(tag: _scannedTag ?? '', onScanAgain: _scanAgain),
+                ),
+              if (_phase == _Phase.failed)
+                _Panel(
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: ErrorView(
+                          title: 'Could not look up this code',
+                          message: _failureMessage ?? 'Could not reach the API.',
+                          onRetry: () => _lookUp(_scannedTag!),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 24),
+                        child: TextButton(
+                          onPressed: _scanAgain,
+                          child: const Text('Scan a different code'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -213,66 +273,83 @@ class _Panel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Theme.of(context).colorScheme.surface,
-      child: SafeArea(child: child),
-    );
+    return ColoredBox(color: MxColors.surface, child: SafeArea(child: child));
   }
 }
 
-/// The framing square and the instruction under it — or, while a lookup is in flight, the
-/// tag that was read, so the user can see the scan landed.
+/// The picture dimmed everywhere but a rounded window, corner marks around the window, and
+/// a floating card under it with the instruction — or, while a lookup is in flight, the tag
+/// that was read, so the user can see the scan landed.
 class _ViewfinderOverlay extends StatelessWidget {
-  const _ViewfinderOverlay({this.lookingUpTag});
+  const _ViewfinderOverlay({required this.lookingUpTag, required this.onEnterManually});
 
   final String? lookingUpTag;
+  final VoidCallback onEnterManually;
+
+  static const double _window = 250;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return IgnorePointer(
-      child: Column(
-        children: [
-          const Spacer(),
-          Container(
-            width: 240,
-            height: 240,
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.white, width: 3),
-              borderRadius: BorderRadius.circular(24),
-            ),
-          ),
-          const Spacer(),
-          SafeArea(
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        const IgnorePointer(child: CustomPaint(painter: _ViewfinderPainter(window: _window))),
+        Align(
+          alignment: Alignment.bottomCenter,
+          child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
                 decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.65),
-                  borderRadius: BorderRadius.circular(12),
+                  color: MxColors.surface,
+                  borderRadius: BorderRadius.circular(MxRadii.xl),
                 ),
                 child: lookingUpTag == null
-                    ? Text(
-                        "Point the camera at an asset's QR sticker",
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white),
+                    ? Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            "Point the camera at an asset's QR sticker",
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Hold still and let the code fill the window.',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 14),
+                          OutlinedButton.icon(
+                            onPressed: onEnterManually,
+                            icon: const Icon(LucideIcons.keyboard, size: 18),
+                            label: const Text('Type the tag'),
+                          ),
+                        ],
                       )
                     : Row(
-                        mainAxisSize: MainAxisSize.min,
                         children: [
                           const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.2,
+                              strokeCap: StrokeCap.round,
+                            ),
                           ),
-                          const SizedBox(width: 12),
-                          Flexible(
+                          const SizedBox(width: 14),
+                          Expanded(
                             child: Text(
                               'Looking up $lookingUpTag…',
-                              style: theme.textTheme.bodyMedium?.copyWith(color: Colors.white),
+                              style: theme.textTheme.titleSmall?.copyWith(
+                                fontFeatures: MxType.tabular,
+                              ),
                             ),
                           ),
                         ],
@@ -280,10 +357,76 @@ class _ViewfinderOverlay extends StatelessWidget {
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
+}
+
+/// Dims the picture outside a rounded square a little above centre, and draws the four
+/// corner marks of a viewfinder around it.
+class _ViewfinderPainter extends CustomPainter {
+  const _ViewfinderPainter({required this.window});
+
+  final double window;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final centre = Offset(size.width / 2, size.height * 0.42);
+    final rect = Rect.fromCenter(center: centre, width: window, height: window);
+    final hole = RRect.fromRectAndRadius(rect, const Radius.circular(28));
+
+    final dim = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(Offset.zero & size)
+      ..addRRect(hole);
+    canvas.drawPath(dim, Paint()..color = Colors.black.withValues(alpha: 0.55));
+
+    final marks = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round;
+    const arm = 34.0;
+    const r = 28.0;
+    final l = rect.left, t = rect.top, rr = rect.right, b = rect.bottom;
+    // Each corner: along one edge, round the corner, along the other.
+    canvas.drawPath(
+      Path()
+        ..moveTo(l, t + arm)
+        ..lineTo(l, t + r)
+        ..arcToPoint(Offset(l + r, t), radius: const Radius.circular(r))
+        ..lineTo(l + arm, t),
+      marks,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(rr - arm, t)
+        ..lineTo(rr - r, t)
+        ..arcToPoint(Offset(rr, t + r), radius: const Radius.circular(r))
+        ..lineTo(rr, t + arm),
+      marks,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(rr, b - arm)
+        ..lineTo(rr, b - r)
+        ..arcToPoint(Offset(rr - r, b), radius: const Radius.circular(r))
+        ..lineTo(rr - arm, b),
+      marks,
+    );
+    canvas.drawPath(
+      Path()
+        ..moveTo(l + arm, b)
+        ..lineTo(l + r, b)
+        ..arcToPoint(Offset(l, b - r), radius: const Radius.circular(r))
+        ..lineTo(l, b - arm),
+      marks,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ViewfinderPainter oldDelegate) => oldDelegate.window != window;
 }
 
 /// A 404 from the QR path. An unknown code is an ordinary answer, not a failure: the
@@ -299,34 +442,50 @@ class _NotFoundView extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.qr_code_2, size: 48, color: theme.colorScheme.outline),
-            const SizedBox(height: 12),
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: MxColors.well,
+                borderRadius: BorderRadius.circular(22),
+              ),
+              child: const Icon(LucideIcons.qrCode, size: 28, color: MxColors.graphite),
+            ),
+            const SizedBox(height: 18),
             Text(
               'No asset registered for this code',
               textAlign: TextAlign.center,
-              style: theme.textTheme.titleMedium,
+              style: theme.textTheme.titleLarge,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text(
-              'The code read as:',
-              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
-            ),
-            const SizedBox(height: 4),
-            // Shown exactly as read, so a mis-scan and a foreign sticker can be told apart.
-            SelectableText(
-              tag,
+              'The sticker may belong to another system. The code read as:',
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
+              style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
+            // Shown exactly as read, so a mis-scan and a foreign sticker can be told apart.
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: MxColors.well,
+                borderRadius: BorderRadius.circular(MxRadii.sm),
+              ),
+              child: SelectableText(
+                tag,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleSmall?.copyWith(fontFeatures: MxType.tabular),
+              ),
+            ),
+            const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: onScanAgain,
-              icon: const Icon(Icons.qr_code_scanner),
+              icon: const Icon(LucideIcons.scanLine, size: 18),
               label: const Text('Scan again'),
             ),
           ],
@@ -354,42 +513,55 @@ class _CameraErrorView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final (IconData icon, String title, String message) = switch (error.errorCode) {
+    final (String title, String message) = switch (error.errorCode) {
       MobileScannerErrorCode.permissionDenied => (
-          Icons.no_photography_outlined,
           'Camera access is off',
           'MaintenX needs the camera to read asset stickers. Allow camera access for '
               'MaintenX in your phone\'s Settings, then try again.',
         ),
       MobileScannerErrorCode.unsupported => (
-          Icons.videocam_off_outlined,
           'No camera available',
           'This device has no camera the scanner can use. You can type the asset tag instead.',
         ),
       _ => (
-          Icons.videocam_off_outlined,
           'The camera could not start',
           error.errorDetails?.message ?? 'Something went wrong starting the camera.',
         ),
     };
 
     return ColoredBox(
-      color: theme.colorScheme.surface,
+      color: MxColors.surface,
       child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 48, color: theme.colorScheme.error),
-              const SizedBox(height: 12),
-              Text(title, style: theme.textTheme.titleMedium, textAlign: TextAlign.center),
+              Container(
+                width: 64,
+                height: 64,
+                decoration: const BoxDecoration(color: MxColors.redBg, shape: BoxShape.circle),
+                child: const Icon(LucideIcons.cameraOff, size: 26, color: MxColors.red),
+              ),
+              const SizedBox(height: 18),
+              Text(title, style: theme.textTheme.titleLarge, textAlign: TextAlign.center),
+              const SizedBox(height: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 320),
+                child: Text(
+                  message,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              const SizedBox(height: 24),
+              FilledButton(onPressed: onRetry, child: const Text('Try again')),
               const SizedBox(height: 8),
-              Text(message, style: theme.textTheme.bodyMedium, textAlign: TextAlign.center),
-              const SizedBox(height: 20),
-              FilledButton.tonal(onPressed: onRetry, child: const Text('Try again')),
-              const SizedBox(height: 8),
-              TextButton(onPressed: onEnterManually, child: const Text('Type the tag instead')),
+              TextButton.icon(
+                onPressed: onEnterManually,
+                icon: const Icon(LucideIcons.keyboard, size: 18),
+                label: const Text('Type the tag instead'),
+              ),
             ],
           ),
         ),
@@ -442,6 +614,7 @@ class _ManualTagDialogState extends State<_ManualTagDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text('Type the asset tag'),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       content: TextField(
         controller: _controller,
         autofocus: true,
@@ -455,7 +628,7 @@ class _ManualTagDialogState extends State<_ManualTagDialog> {
         decoration: InputDecoration(
           hintText: 'e.g. PRJ-MAB101-01',
           errorText: _errors['tag'],
-          border: const OutlineInputBorder(),
+          prefixIcon: const Icon(LucideIcons.qrCode, size: 18),
         ),
       ),
       actions: [

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 /// The API's limits on a photo upload (`ImageUploadRules`): JPEG or PNG, at most 5 MB. One
 /// set of rules on the server for a report photo and a completion photo, so one here too.
@@ -74,14 +75,19 @@ Future<PickedPhoto?> choosePhoto(BuildContext context, ImagePicker picker) async
     builder: (context) => SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: Text('Add a photo', style: Theme.of(context).textTheme.headlineSmall),
+          ),
           ListTile(
-            leading: const Icon(Icons.photo_camera_outlined),
+            leading: const Icon(LucideIcons.camera),
             title: const Text('Take a photo'),
             onTap: () => Navigator.pop(context, ImageSource.camera),
           ),
           ListTile(
-            leading: const Icon(Icons.photo_library_outlined),
+            leading: const Icon(LucideIcons.images),
             title: const Text('Choose from gallery'),
             onTap: () => Navigator.pop(context, ImageSource.gallery),
           ),

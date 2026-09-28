@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../widgets/status_pill.dart';
 import 'asset.dart';
@@ -75,7 +76,7 @@ class WarrantyChip extends StatelessWidget {
       return StatusPill(
         label: 'Under warranty · until ${formatDateOnly(warrantyExpiresOn)}',
         tone: PillTone.success,
-        icon: Icons.verified_user_outlined,
+        icon: LucideIcons.shieldCheck,
       );
     }
     // A null expiry is "no warranty recorded" — the same grey as expired, but a different
@@ -85,7 +86,7 @@ class WarrantyChip extends StatelessWidget {
           ? 'No warranty recorded'
           : 'Warranty expired · ${formatDateOnly(warrantyExpiresOn)}',
       tone: PillTone.neutral,
-      icon: Icons.shield_outlined,
+      icon: LucideIcons.shield,
     );
   }
 }
@@ -99,7 +100,7 @@ class RepeatFailureChip extends StatelessWidget {
     return const StatusPill(
       label: 'Repeat failure',
       tone: PillTone.danger,
-      icon: Icons.warning_amber_rounded,
+      icon: LucideIcons.triangleAlert,
     );
   }
 }

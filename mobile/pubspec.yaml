@@ -30,6 +30,12 @@ dependencies:
   # A report's photo, from the camera or the gallery.
   image_picker: ^1.2.3
 
+  # The drawn asset sticker on the login screen — a real QR code of a seeded tag.
+  qr_flutter: ^4.1.0
+
+  # The web client's icon set (lucide-react), so an icon means the same thing on both.
+  lucide_icons_flutter: ^3.1.20
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -37,3 +43,18 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # Hanken Grotesk, the web client's typeface, bundled as static TTFs (Flutter cannot read
+  # the web's .woff2). Bundled rather than google_fonts, which downloads at runtime — a
+  # test run must never touch the network. Licence: assets/fonts/OFL.txt.
+  fonts:
+    - family: HankenGrotesk
+      fonts:
+        - asset: assets/fonts/HankenGrotesk-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/HankenGrotesk-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/HankenGrotesk-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/HankenGrotesk-Bold.ttf
+          weight: 700

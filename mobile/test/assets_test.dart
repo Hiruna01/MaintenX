@@ -317,6 +317,44 @@ void main() {
       expect(find.text('No asset registered for this code'), findsNothing);
     });
 
+    testWidgets("from the report form, a hit returns the asset instead of opening its page",
+        (tester) async {
+      AssetDetail? returned;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(_client((_) async => _json(_projector()))),
+          ],
+          child: MaterialApp(
+            home: Builder(
+              builder: (context) => TextButton(
+                onPressed: () async {
+                  returned = await Navigator.of(context).push<AssetDetail>(
+                    MaterialPageRoute(builder: (_) => const ScanAssetScreen(pickForReport: true)),
+                  );
+                },
+                child: const Text('OPEN SCANNER'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('OPEN SCANNER'));
+      await tester.pumpAndSettle();
+      expect(find.text('Scan the equipment'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Type the tag instead'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'PRJ-MAB101-01');
+      await tester.tap(find.text('Look up'));
+      await tester.pumpAndSettle();
+
+      expect(returned?.id, 1);
+      expect(returned?.room.id, 1);
+      expect(find.byType(AssetDetailScreen), findsNothing);
+      expect(find.text('OPEN SCANNER'), findsOneWidget);
+    });
+
     testWidgets('an empty typed tag is refused by validate(), not sent', (tester) async {
       var calls = 0;
       await lookUpTyped(tester, (_) async {

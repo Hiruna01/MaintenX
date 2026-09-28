@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../widgets/empty_view.dart';
 import '../../widgets/error_view.dart';
 import '../../widgets/loading_view.dart';
+import '../../widgets/surfaces.dart';
 import 'asset.dart';
 import 'asset_chips.dart';
 import 'assets_api.dart';
@@ -34,9 +37,18 @@ class AssetDetailScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final id = assetId;
+    final appBar = AppBar(
+      leading: Navigator.canPop(context)
+          ? IconButton(
+              tooltip: 'Back',
+              icon: const Icon(LucideIcons.arrowLeft),
+              onPressed: () => Navigator.maybePop(context),
+            )
+          : null,
+    );
     if (id == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Asset')),
+        appBar: appBar,
         body: const ErrorView(
           title: 'Not an asset',
           message: 'This link does not point at an asset.',
@@ -53,8 +65,9 @@ class AssetDetailScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(asset.valueOrNull?.assetTag ?? 'Asset')),
+      appBar: appBar,
       body: SafeArea(
+        top: false,
         // All three states of the asset request are rendered explicitly.
         child: asset.when(
           loading: () => const LoadingView(message: 'Loading asset…'),
@@ -68,6 +81,8 @@ class AssetDetailScreen extends ConsumerWidget {
             onRetry: refresh,
           ),
           data: (data) => RefreshIndicator(
+            color: MxColors.ink,
+            backgroundColor: MxColors.surface,
             onRefresh: () async {
               refresh();
               await ref.read(assetDetailProvider(id).future);
@@ -95,37 +110,46 @@ class _AssetBody extends StatelessWidget {
     return ListView(
       // Always scrollable, so pull-to-refresh works on a short page too.
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
       children: [
-        _HeaderCard(asset: asset, summary: summary),
+        _Header(asset: asset, summary: summary),
+        const SizedBox(height: 18),
+        _FactsCard(asset: asset),
         const SizedBox(height: 12),
         _SummaryCard(summary: summary, onRetry: onRetrySummary),
-        const SizedBox(height: 24),
-        Text('Service history', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 28),
+        Text('Service history', style: theme.textTheme.titleLarge),
         const SizedBox(height: 2),
         Text(
           'Oldest first, each note exactly as the technician wrote it.',
-          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+          style: theme.textTheme.bodySmall,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
         // An empty history is not a failure and must not look like one.
         if (history.isEmpty)
           const SizedBox(
-            height: 180,
-            child: EmptyView(message: 'No service visits on record.', icon: Icons.history),
+            height: 200,
+            child: EmptyView(message: 'No service visits on record.', icon: LucideIcons.history),
           )
         else
           // Rendered in the order the API sent it — oldest first. A repeat failure only
           // reads as one in the order it happened, so nothing here re-sorts.
           for (var i = 0; i < history.length; i++)
-            _ServiceRecordCard(record: history[i], index: i, total: history.length),
+            _ServiceRecordEntry(
+              record: history[i],
+              index: i,
+              total: history.length,
+              isLast: i == history.length - 1,
+            ),
       ],
     );
   }
 }
 
-class _HeaderCard extends StatelessWidget {
-  const _HeaderCard({required this.asset, required this.summary});
+/// What the machine is, and the two answers a reader wants first: is it working, is it
+/// covered.
+class _Header extends StatelessWidget {
+  const _Header({required this.asset, required this.summary});
 
   final AssetDetail asset;
   final AsyncValue<FailureSummary> summary;
@@ -134,83 +158,111 @@ class _HeaderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                AssetStatusChip(status: asset.status),
-                WarrantyChip(
-                  // The API's answer, never a date comparison made here.
-                  isUnderWarranty: summary.valueOrNull?.isUnderWarranty,
-                  warrantyExpiresOn: asset.warrantyExpiresOn,
-                  isLoading: summary.isLoading,
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(asset.name, style: theme.textTheme.headlineSmall),
-            const SizedBox(height: 2),
-            Text(
-              [asset.categoryName, asset.makeAndModel].whereType<String>().join(' · '),
-              style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
-            ),
-            const Divider(height: 28),
-            _Fact(label: 'Asset tag', value: asset.assetTag, monospace: true),
-            _Fact(label: 'Room', value: '${asset.room.label} (floor ${asset.room.floor})'),
-            _Fact(label: 'Installed', value: formatDateOnly(asset.installedOn)),
-            _Fact(
-              label: 'Warranty until',
-              value: asset.warrantyExpiresOn == null
-                  ? 'Not recorded'
-                  : formatDateOnly(asset.warrantyExpiresOn),
+            AssetStatusChip(status: asset.status),
+            WarrantyChip(
+              // The API's answer, never a date comparison made here.
+              isUnderWarranty: summary.valueOrNull?.isUnderWarranty,
+              warrantyExpiresOn: asset.warrantyExpiresOn,
+              isLoading: summary.isLoading,
             ),
           ],
         ),
+        const SizedBox(height: 14),
+        Text(asset.name, style: theme.textTheme.headlineMedium),
+        const SizedBox(height: 4),
+        Text(
+          [asset.categoryName, asset.makeAndModel].whereType<String>().join(', '),
+          style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
+        ),
+      ],
+    );
+  }
+}
+
+/// The registry's facts, two by two.
+class _FactsCard extends StatelessWidget {
+  const _FactsCard({required this.asset});
+
+  final AssetDetail asset;
+
+  @override
+  Widget build(BuildContext context) {
+    return MxCard(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      child: Column(
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _Fact(label: 'Asset tag', value: asset.assetTag, icon: LucideIcons.qrCode),
+              _Fact(
+                label: 'Room',
+                value: '${asset.room.label} (floor ${asset.room.floor})',
+                icon: LucideIcons.mapPin,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          const Divider(),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _Fact(
+                label: 'Installed',
+                value: formatDateOnly(asset.installedOn),
+                icon: LucideIcons.calendar,
+              ),
+              _Fact(
+                label: 'Warranty until',
+                value: asset.warrantyExpiresOn == null
+                    ? 'Not recorded'
+                    : formatDateOnly(asset.warrantyExpiresOn),
+                icon: LucideIcons.shieldCheck,
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
 class _Fact extends StatelessWidget {
-  const _Fact({required this.label, required this.value, this.monospace = false});
+  const _Fact({required this.label, required this.value, required this.icon});
 
   final String label;
   final String value;
-  final bool monospace;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 112,
-            child: Text(
-              label,
-              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
-            ),
-          ),
-          Expanded(
-            child: Text(
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.only(right: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            MxPanelLabel(label, icon: icon),
+            const SizedBox(height: 4),
+            Text(
               value,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                fontWeight: FontWeight.w500,
-                fontFamily: monospace ? 'monospace' : null,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontSize: 15,
+                fontFeatures: MxType.tabular,
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -227,64 +279,91 @@ class _SummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    final meta = theme.textTheme.bodySmall?.copyWith(fontFeatures: MxType.tabular);
 
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: summary.when(
-          loading: () => Row(
-            children: [
-              const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
+    return MxCard(
+      child: summary.when(
+        loading: () => Row(
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, strokeCap: StrokeCap.round),
+            ),
+            const SizedBox(width: 12),
+            Text('Loading failure summary…', style: meta),
+          ],
+        ),
+        error: (error, _) => Row(
+          children: [
+            const Icon(LucideIcons.circleAlert, size: 18, color: MxColors.red),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Failure summary unavailable. ${_messageFor(error)}',
+                style: theme.textTheme.bodyMedium,
               ),
-              const SizedBox(width: 12),
-              Text('Loading failure summary…', style: muted),
-            ],
-          ),
-          error: (error, _) => Row(
-            children: [
-              Icon(Icons.error_outline, size: 18, color: theme.colorScheme.error),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Failure summary unavailable. ${_messageFor(error)}')),
-              TextButton(onPressed: onRetry, child: const Text('Retry')),
-            ],
-          ),
-          data: (data) => Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (data.isRepeatFailure) ...[
-                const RepeatFailureChip(),
-                const SizedBox(height: 8),
-                Text(
-                  'Three or more service visits in the last 90 days. The pattern is in the '
-                  'notes below, not on the asset record.',
-                  style: theme.textTheme.bodySmall,
+            ),
+            TextButton(onPressed: onRetry, child: const Text('Retry')),
+          ],
+        ),
+        data: (data) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (data.isRepeatFailure) ...[
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: MxColors.redBg,
+                  borderRadius: BorderRadius.circular(MxRadii.md),
                 ),
-                const SizedBox(height: 12),
-              ],
-              Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const RepeatFailureChip(),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Three or more service visits in the last 90 days. The pattern is in the '
+                      'notes below, not on the asset record.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: MxColors.red),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+            IntrinsicHeight(
+              child: Row(
                 children: [
                   _Stat(label: 'Last 90 days', value: '${data.failureCount3Months}'),
+                  const VerticalDivider(width: 24),
                   _Stat(label: 'Last 12 months', value: '${data.failureCount12Months}'),
+                  const VerticalDivider(width: 24),
                   _Stat(label: 'Temporary fixes', value: '${data.temporaryFixCount}'),
                 ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                // Null is not zero: a machine nobody has touched was not serviced today.
-                data.lastServicedOn == null
-                    ? 'Never serviced.'
-                    : 'Last serviced ${formatDateOnly(data.lastServicedOn)} — '
-                        '${data.daysSinceLastService} '
-                        '${data.daysSinceLastService == 1 ? 'day' : 'days'} ago.',
-                style: muted,
-              ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 14),
+            const Divider(),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(LucideIcons.wrench, size: 14, color: MxColors.graphite),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    // Null is not zero: a machine nobody has touched was not serviced today.
+                    data.lastServicedOn == null
+                        ? 'Never serviced.'
+                        : 'Last serviced ${formatDateOnly(data.lastServicedOn)} — '
+                            '${data.daysSinceLastService} '
+                            '${data.daysSinceLastService == 1 ? 'day' : 'days'} ago.',
+                    style: meta,
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -304,81 +383,124 @@ class _Stat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(value, style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
           Text(
-            label,
-            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+            value,
+            style: theme.textTheme.headlineMedium?.copyWith(fontFeatures: MxType.tabular),
           ),
+          const SizedBox(height: 2),
+          Text(label, style: theme.textTheme.bodySmall),
         ],
       ),
     );
   }
 }
 
-/// One visit. The technician's note is shown VERBATIM — no maxLines, no ellipsis, no
-/// "read more" — because the fault this history is evidence of is spread across several
-/// terse notes, and a note cut to its first line can drop exactly the clause that matters.
-class _ServiceRecordCard extends StatelessWidget {
-  const _ServiceRecordCard({required this.record, required this.index, required this.total});
+/// One visit on the timeline: a dot in the outcome's colour on a rail joining the visits in
+/// the order they happened, and a card beside it. The technician's note is shown VERBATIM —
+/// no maxLines, no ellipsis, no "read more" — because the fault this history is evidence of
+/// is spread across several terse notes, and a note cut to its first line can drop exactly
+/// the clause that matters.
+class _ServiceRecordEntry extends StatelessWidget {
+  const _ServiceRecordEntry({
+    required this.record,
+    required this.index,
+    required this.total,
+    required this.isLast,
+  });
 
   final ServiceRecord record;
   final int index;
   final int total;
+  final bool isLast;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final accent = outcomeColor(record.outcome);
-    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    final meta = theme.textTheme.bodySmall?.copyWith(fontFeatures: MxType.tabular);
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 22,
+            child: Column(
               children: [
-                Expanded(
-                  child: Text(
-                    formatDateOnly(record.servicedOn),
-                    style: theme.textTheme.titleSmall,
+                const SizedBox(height: 20),
+                Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: accent,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: MxColors.canvas, width: 2),
                   ),
                 ),
-                Text('Visit ${index + 1} of $total', style: muted),
+                if (!isLast)
+                  Expanded(child: Container(width: 2, color: MxColors.hairline))
+                else
+                  const Spacer(),
               ],
             ),
-            const SizedBox(height: 8),
-            OutcomeChip(outcome: record.outcome),
-            const SizedBox(height: 10),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                border: Border(left: BorderSide(color: accent, width: 3)),
-              ),
-              child: record.technicianNote == null || record.technicianNote!.isEmpty
-                  ? Text('No note recorded.', style: muted?.copyWith(fontStyle: FontStyle.italic))
-                  : SelectableText(
-                      record.technicianNote!,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontFamily: 'monospace',
-                        height: 1.45,
-                      ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: MxCard(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            formatDateOnly(record.servicedOn),
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontFeatures: MxType.tabular,
+                            ),
+                          ),
+                        ),
+                        Text('Visit ${index + 1} of $total', style: meta),
+                      ],
                     ),
+                    const SizedBox(height: 8),
+                    OutcomeChip(outcome: record.outcome),
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                      decoration: BoxDecoration(
+                        color: MxColors.well,
+                        borderRadius: BorderRadius.circular(MxRadii.sm),
+                        border: Border(left: BorderSide(color: accent, width: 3)),
+                      ),
+                      child: record.technicianNote == null || record.technicianNote!.isEmpty
+                          ? Text(
+                              'No note recorded.',
+                              style: meta?.copyWith(fontStyle: FontStyle.italic),
+                            )
+                          : SelectableText(
+                              record.technicianNote!,
+                              style: theme.textTheme.bodyMedium?.copyWith(height: 1.5),
+                            ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      [
+                        record.technicianName,
+                        if (record.workOrderId != null) 'Work order #${record.workOrderId}',
+                      ].join(' · '),
+                      style: meta,
+                    ),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              [
-                record.technicianName,
-                if (record.workOrderId != null) 'Work order #${record.workOrderId}',
-              ].join(' · '),
-              style: muted,
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

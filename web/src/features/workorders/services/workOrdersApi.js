@@ -324,3 +324,39 @@ export function createWorkOrder(reportId, values) {
     },
   });
 }
+
+/**
+ * POST /api/workorders/{id}/resubmit — 204. A Draft that a manager sent back for revision,
+ * re-planned and put through the approval gate again: the SAME order, so no report or asset
+ * is sent, and no status — the API routes it exactly as it routes a new one. The caller reads
+ * the order back to learn which side of the gate it landed on.
+ */
+export function resubmitWorkOrder(id, values) {
+  const parts = values.partsRequired.trim();
+
+  return request(`${buildWorkOrderPath(id)}/resubmit`, {
+    method: 'POST',
+    body: {
+      strategy: values.strategy,
+      // Held to rupees and cents by validate(), exactly as createWorkOrder.
+      estimatedCost: Number(values.estimatedCost),
+      partsRequired: parts === '' ? null : parts,
+    },
+  });
+}
+
+/** GET /api/workorders/{id} — the order, read back after a resubmit to say where it landed. */
+export function getWorkOrder(id) {
+  return request(buildWorkOrderPath(id));
+}
+
+/**
+ * POST /api/timetable/sync — FacilitiesManager only, and ALWAYS a 200: Google being down is
+ * not a failed request. The body says whether Google was read (`degraded`, `failureReason` by
+ * NAME), how old the cached timetable now is (`cacheAgeMinutes`, null when nothing was ever
+ * synced — never 0), `stalenessWarning` in the API's own words, and on a rate limit how long
+ * Google asked to wait (`retryAfterSeconds`, null when it did not say). Shown as sent.
+ */
+export function syncTimetable() {
+  return request('/api/timetable/sync', { method: 'POST' });
+}

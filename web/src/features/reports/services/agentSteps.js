@@ -211,15 +211,19 @@ function describeApproval(decision, payload) {
   const reason = field(payload, 'reason');
   const note = field(payload, 'note');
 
+  // On the gate's own steps the note says who put the order through it — the workflow runner
+  // from a proposal, or a manager resubmitting a revision — as the API wrote it.
+  const by = note ? ` ${note}` : '';
+
   switch (decision) {
     case 'ApprovalRequired':
       return basis
-        ? `Raised ${order}: ${describeApprovalBasis(cost, basis).headline} — paused for a facilities manager's decision.`
-        : `Raised ${order} — paused for a facilities manager's decision.`;
+        ? `Raised ${order}: ${describeApprovalBasis(cost, basis).headline} — paused for a facilities manager's decision.${by}`
+        : `Raised ${order} — paused for a facilities manager's decision.${by}`;
     case 'AutoApproved':
       return cost === undefined
-        ? `Raised ${order} — approved by the API's threshold; nobody had to decide.`
-        : `Raised ${order} at ${formatMoney(cost)} — within the threshold, so approved without a decision.`;
+        ? `Raised ${order} — approved by the API's threshold; nobody had to decide.${by}`
+        : `Raised ${order} at ${formatMoney(cost)} — within the threshold, so approved without a decision.${by}`;
     case 'ManagerApproved':
       return `A facilities manager approved ${order}.`;
     case 'ManagerRejected':

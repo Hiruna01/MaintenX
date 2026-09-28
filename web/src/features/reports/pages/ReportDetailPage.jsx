@@ -121,21 +121,27 @@ function Fact({ icon: Icon, label, children }) {
  */
 function RaisedNotice({ order }) {
   const link = <Link to={`/workorders/${order.id}`}>Work order #{order.id}</Link>;
+  const verb = order.resubmitted ? 'resubmitted' : 'raised';
 
   if (order.status === 'AwaitingApproval') {
     return (
       <Notice>
-        {link} raised. It needs a manager&apos;s decision and is waiting in the{' '}
+        {link} {verb}. It needs a manager&apos;s decision and is waiting in the{' '}
         <Link to="/approvals">approval queue</Link>.
       </Notice>
     );
   }
 
-  return (
-    <Notice>
-      {link} raised and approved — no decision was needed. Assign a technician and book a visit next.
-    </Notice>
-  );
+  if (order.status === 'Approved') {
+    return (
+      <Notice>
+        {link} {verb} and approved — no decision was needed. Assign a technician and book a visit next.
+      </Notice>
+    );
+  }
+
+  // Resubmitted, but the order could not be read back to say where the gate put it.
+  return <Notice>{link} {verb}. Open it to see where the approval gate routed it.</Notice>;
 }
 
 function ReportBody({ report, isManager, canDispatch, onRefresh }) {
@@ -143,6 +149,9 @@ function ReportBody({ report, isManager, canDispatch, onRefresh }) {
   // the order exists, and the notice says where it went.
   const [raisedOrder, setRaisedOrder] = useState(null);
   const offerRaise = canDispatch && !raisedOrder && Boolean(report.latestWorkflow?.canRaiseWorkOrder);
+  // An order sent back for revision is resubmitted, never joined by a second one: while the
+  // Draft exists the API sets canRaiseWorkOrder false and refuses POST /api/workorders.
+  const offerResubmit = canDispatch && !raisedOrder && Boolean(report.revisionDraft);
 
   const unanswered = report.clarificationQuestions.filter(
     (question) => question.answerText === null || question.answerText === undefined,
@@ -192,6 +201,9 @@ function ReportBody({ report, isManager, canDispatch, onRefresh }) {
       <div className={styles.detailGrid}>
         <div className={styles.column}>
           {offerRaise ? <RaiseWorkOrderPanel report={report} onRaised={setRaisedOrder} /> : null}
+          {offerResubmit ? (
+            <RaiseWorkOrderPanel report={report} revisionDraft={report.revisionDraft} onRaised={setRaisedOrder} />
+          ) : null}
 
           <Panel eyebrow="Clarification" count={report.clarificationQuestions.length || null}>
             <p className={styles.sectionLead}>

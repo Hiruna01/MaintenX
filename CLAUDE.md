@@ -313,10 +313,12 @@ and 14 service records.
   background exception has no request to surface on, so a workflow must never be left
   parked because the agent was down.
 - **The queue is in memory, so the runner re-queues unfinished runs at startup**
-  (`RequeueUnfinishedRunsAsync`): every workflow in `Submitted` or `Diagnosing`, oldest
-  first, alongside the loop rather than before it (the channel is bounded). Idempotent — the
-  runner only starts from those two states. Pinned by
-  `AtStartup_EveryRunLeftSubmittedOrDiagnosing_IsQueuedAgain_AndNothingElse`.
+  (`RequeueUnfinishedRunsAsync`): every workflow in `Submitted` or `Diagnosing`, plus every
+  `Strategizing` one with a revision PENDING (`IWorkOrderService.GetPendingRevisionWorkflowIdsAsync`),
+  oldest first, alongside the loop rather than before it (the channel is bounded).
+  Idempotent — the runner only starts from those. Pinned by
+  `AtStartup_EveryRunLeftSubmittedOrDiagnosing_IsQueuedAgain_AndNothingElse` and
+  `AtStartup_ARevisionNotYetAnswered_IsQueuedAgain_AndNoOtherStrategizingRun`.
 - **The runner advances the workflow ONE AGENT AT A TIME**: each agent's step is recorded,
   then that agent's transition made, each saved on its own, so a poll sees the run move.
   One `/run` call per segment between human pauses, not per agent — the graph runs the
@@ -342,14 +344,41 @@ and 14 service records.
     **appended**, so the first diagnosis stays beside the second. Pinned by
     `AReopenedRepair_RunsTheDiagnosticAgain_OnTheOrdersAsset_AndKeepsBothDiagnoses`,
     verified to fail with the asset fallback removed.
-  - **It never reaches `AwaitingManagerApproval` itself.** It leaves the workflow in
-    `Strategizing` with the proposal, and a manager raising the order moves it on through
-    the approval gate — from the web report page's `RaiseWorkOrderPanel` (see Reports under
-    FRONTEND). A run parked in `Strategizing` is waiting on that person, not stuck. A diagnostic or strategist that safe-failed still moves the workflow
-    on — the failure is on its step, and missing advice is not a reason to stop a manager
-    acting. One ABSENT from the reply (the graph broke its promise) → `Failed`.
-  - Anything else dequeued — waiting on a person, a revision re-queued in `Strategizing` —
-    is skipped with a warning. `ProcessAsync` is `internal` for `WorkflowRunnerTests`.
+  - **It RAISES the strategist's proposal, through the approval gate** (a team decision,
+    replacing "the runner never raises one"): after the strategist, `RaiseFromProposalAsync`
+    calls `IWorkOrderService.CreateAsync` — the same gate a manager's order goes through, so
+    the GATE decides whether it waits in `AwaitingManagerApproval` (human pause 2) or is
+    approved at once, and the manager's part is approve, reject or revise. It raises only a
+    proposal it can: a report, an asset (the report's, or the reopened ORDER's — a fresh
+    report usually names none), a strategist that succeeded, a strategy `AgentAnalysis` maps,
+    and an estimate inside `CreateWorkOrderDto`'s `[Range]` at no more than two decimal places
+    (`RaisableProposal` — never rounded, never guessed). Otherwise the workflow waits in
+    `Strategizing` for a manager to raise one from the report page's `RaiseWorkOrderPanel` (see
+    Reports under FRONTEND) — waiting on that person, not stuck. **Consequence to know: a
+    proposal at or under the threshold is approved with nobody deciding**, exactly as a
+    manager's order at that cost would be; the gate's step says "Raised by the workflow
+    runner". A diagnostic or strategist that safe-failed still moves the workflow on — the
+    failure is on its step, and missing advice is not a reason to stop a manager acting. One
+    ABSENT from the reply (the graph broke its promise) → `Failed`. A raise the gate refuses
+    (a manager got there first: a 409-shaped outcome or an illegal move) is logged, never a
+    failed run. Pinned by `AProposalForANamedAsset_IsRaisedByTheRunner_ThroughTheApprovalGate`
+    and `AProposalTheApiCannotRaise_IsLeftForAManager`, each verified to fail with its rule
+    removed.
+  - **From `Strategizing`, a REVISION** — and only then: a manager sent the order back
+    (`request-revision`), and `IWorkOrderService.GetPendingRevisionAsync` finds the report's
+    latest order a `Draft` with a `RevisionNote` and NO strategist agent-run step on the
+    workflow since the latest `RevisionRequested` step. The request carries `revision_note`
+    and `revision_work_order_id` on the ORDER's asset, which routes `graph.py` to the
+    strategist ALONE; its step and a plan step (`AppendRevision`) are appended; a usable
+    proposal RESUBMITS THE SAME ORDER through the same gate (`ResubmitAsync`). A failed call,
+    a safe failure or an unusable proposal leaves the workflow in `Strategizing` with the
+    Draft and an Outcome saying a manager must resubmit it — not `Failed`: missing advice
+    costs advice, never the ability to act. A failed call is still recorded as a `CallFailed`
+    strategist step, and THAT is what marks the revision answered, so a restart does not run
+    it twice. Pinned by `ARevision_RunsTheStrategistAlone_WithTheNote_AndResubmitsTheSameOrder`
+    and `ARevisionTheRunnerCannotAnswer_WaitsForAManagerToResubmit_AndIsNotRunAgain`.
+  - Anything else dequeued — waiting on a person, a `Strategizing` workflow with no revision
+    pending — is skipped with a warning. `ProcessAsync` is `internal` for `WorkflowRunnerTests`.
 - **The runner records one agent-level step per AGENT that ran** — the planner's, the
   clarifier's, then the diagnostic's and the strategist's — each with
   `ToolCallsJson` `"[]"` and that agent's output verbatim. Tool calls are recorded by
@@ -361,7 +390,11 @@ and 14 service records.
   `WorkOrderService`, not the runner): one step when an order is raised — where the gate
   routed it, `ApprovalRequired` or `AutoApproved`, with the threshold it was measured against —
   and one per manager decision, `ManagerApproved`, `ManagerRejected` (with the reason) or
-  `RevisionRequested` (with the note), carrying the deciding manager's user id. AgentName
+  `RevisionRequested` (with the note), carrying the deciding manager's user id. A resubmitted
+  Draft gets a gate step of its own, the same two tags. The gate's step carries a `note` saying
+  who put the order through it — "Raised by the workflow runner…", "Resubmitted by the workflow
+  runner…", or "Resubmitted after revision by user N" — and still no `DecidedByUserId`: the gate
+  routed it, nobody decided. AgentName
   `"approval"`, `ToolCallsJson` null, no duration or attempts: neither an agent run nor a tool
   call. Written in the same save as the move it records (raising is one transaction, because
   the step needs the new order's id), so a 409 writes none. The order's own columns are
@@ -403,7 +436,8 @@ when the plan includes one.
   `addedBy`). Each step's status — `pending`, `completed`, `failed` (safe failure), `skipped`
   — is settled by `MarkPlanStepAsync` as the runner records that agent. A reopened repair
   APPENDS a second diagnostic and strategist step (`AppendRediagnosis`, idempotent), like its
-  steps. `WorkflowDetailDto.Plan` is the typed read; `PlanJson` stays beside it, raw.
+  steps; a revision APPENDS one strategist step (`AppendRevision`, idempotent while it is
+  pending, so each later revision adds its own). `WorkflowDetailDto.Plan` is the typed read; `PlanJson` stays beside it, raw.
 - **Its tool subset is empty** — least privilege: deciding whether a report needs clarifying
   is a judgement about the report's own words. It sees the description and whether a room and
   an asset are identified, never their ids.
@@ -485,9 +519,9 @@ expects four 404s.
 triage or a QR scan names the equipment — so the diagnostic and strategist can read the
 machine's history. Their results are stored as agent-level steps (above) and read back into
 typed DTOs by `AgentAnalysis`, the counterpart of `ParseQuestions` and the only place the
-API reads those two shapes. **`revision_note` is still not sent**: the runner starts only
-from `Submitted` and `Diagnosing`, so a revised one is never re-run (see request-revision
-below). Re-running the strategist alone needs its own route in `graph.py`.
+API reads those two shapes. **`revision_note` is sent on a revision**, with
+`revision_work_order_id` (`AgentRunRequest`, both left off the wire when null), and
+`graph.py` routes it `START -> strategize` — see the runner's Strategizing branch above.
 
 **The clarification resume is wired.** Answers move the workflow to `Diagnosing` and re-queue
 it; the runner sends them as `clarification_answers` (`AgentRunRequest`, left off the wire
@@ -504,8 +538,8 @@ a manager APPROVING; with a state-only table, raising a second order on the same
 that edge and read as an approval nobody gave. It is a viva question.
 
 - **`WorkflowTransitions.Move(workflow, trigger)` is the only way a state changes.** Every
-  service calls it — `WorkflowService` (the runner's moves), `WorkOrderService` (raise,
-  approve, reject, revision, complete), `ClarificationService` (answered),
+  service calls it — `WorkflowService` (the runner's moves), `WorkOrderService` (raise and
+  resubmit — through the one gate — approve, reject, revision, complete), `ClarificationService` (answered),
   `VerificationService` (the sweep). No `CurrentState =` anywhere else, except the two
   places a row is CREATED (`StartAsync` and the seeder) — creation is not a transition.
 - **An illegal move throws `InvalidWorkflowTransitionException`**, and
@@ -669,6 +703,18 @@ like every other enum. `IWorkOrderService` / `WorkOrderService`, `AddScoped`, be
   reason in rupees and cents. **A float here is not a display bug, it is money spent
   without authorisation**: an estimate that should sit exactly on the threshold can land a
   hair below it and auto-approve. It is a viva question.
+- **CHECK constraints at the database** (`AddMoneyAndSlotCheckConstraints`):
+  `CK_WorkOrders_EstimatedCost_NotNegative`, `CK_WorkOrders_ActualCost_NotNegative` (NULL
+  allowed — not recorded yet), and `EndsAt > StartsAt` on `ScheduledSlot` and
+  `ClassScheduleSlot`. The DTOs, `SlotRules` and the sync already refuse every one; the
+  constraint is for the writer that skips them all. One SQL on both providers: on SQLite
+  money is TEXT, and the comparison with 0 still gets the SIGN right (EF writes a leading
+  '-', which sorts before every digit) — a sign test, nothing more. **The migration repairs
+  first**, like `AddWorkOrders`: bad mirrored classes and bookings deleted (they block no
+  slot anyway), a negative `ActualCost` NULLed, a negative `EstimatedCost` set to 0 — a
+  CHECK is validated against every existing row, and CI's empty database would never show
+  it failing. Pinned by `WorkOrderTests` (a violating insert is a `DbUpdateException`, the
+  boundary value accepted), each constraint verified to fail its test when removed.
 - Input DTOs bound cost with the **decimal overload** of `[Range]`
   (`[Range(typeof(decimal), "0", "10000000", ParseLimitsInInvariantCulture = true)]`), not
   `[Range(0, double.MaxValue)]` — that overload would validate money by parsing it through
@@ -738,7 +784,10 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
   strategy except `EscalateReplacement`, which waits because it is a replacement, not
   because of the money. `ApprovalTests.AtExactlyTheThreshold_OnlyAReplacementNeedsAManager`
   says so for all six strategies; verified to fail with `>=` in `ApprovalBasisFor`. An
-  auto-approved order has no `ApprovedBy` — nobody decided.
+  auto-approved order has no `ApprovedBy` — nobody decided. **One gate,
+  `RouteThroughGateAsync`**, called by `CreateAsync` and `ResubmitAsync` alike: the status,
+  the workflow move, `ReportProgress`, the `ApprovalAudit` step and the Outcome, in one
+  transaction. There is no second copy of the rule to drift.
 - **`CreateWorkOrderDto.EstimatedCost` and `Strategy` are `[Required]` nullables**, as are
   `CompleteWorkOrderDto.ActualCost` and `Outcome`. A plain `decimal` binds a missing field
   as `0` — under any threshold — so leaving the estimate out would auto-approve an order
@@ -752,9 +801,21 @@ policy on complete. An `Admin` is refused the manager actions too — same reaso
   otherwise). Approve and reject both record `ApprovedBy` / `ApprovedAt` — who decided,
   whichever way. Reject needs `RejectWorkOrderDto.Reason` (400 if missing or blank) and
   closes the workflow — and the report (`ReportProgress`). **Request-revision puts the order back to `Draft` with the note on
-  `WorkOrder.RevisionNote`**, moves the workflow to `Strategizing` and re-queues it — the
-  runner skips it with a warning today: it starts only from `Submitted` and `Diagnosing`,
-  and re-running the strategist alone needs a `graph.py` route reading `revision_note`.
+  `WorkOrder.RevisionNote`**, moves the workflow to `Strategizing` and re-queues it; the
+  runner re-runs the strategist with the note and resubmits the same order (see AGENT
+  WORKFLOWS).
+- **`POST /api/workorders/{id}/resubmit`** (`ResubmitWorkOrderDto`: `Strategy`,
+  `EstimatedCost` — `[Required]` nullables bounded like `CreateWorkOrderDto` — and
+  `PartsRequired`; no id, report, asset or status), FacilitiesManager, **204**. A Draft only
+  (409 otherwise), not on a `Closed` report (409); the SAME order back through the same gate,
+  `RevisionNote` kept. The runner does it itself from a usable revised proposal; this is for
+  when it could not, or for a manager who will not wait.
+- **While a Draft exists, `CreateAsync` refuses a second order on the report**
+  (`RevisionPending`, a 409 naming the resubmit) — a second order was what orphaned the Draft
+  and its note. `ReportDetailDto.RevisionDraft` carries it, and `CanRaiseWorkOrder` is false
+  while it does, so the offer and the POST still agree. Pinned by
+  `WhileADraftWaitsToBeResubmitted_ASecondOrderIsRefused` and
+  `ReportDetail_OffersTheRevisedDraft_NotASecondOrder_WhileOneWaits`.
 - `assign` needs an order that has cleared approval and is not finished (`Approved`,
   `Scheduled`, `InProgress`) and a user whose role is `Technician` (400 otherwise). It does
   not book a time and does not change the status.
@@ -879,9 +940,18 @@ refused too) runs it now; `TimetableSyncWorker` runs it at startup and every
   (`ExponentialBackOffPolicy.None`): it would spend the timeout waiting on an outage. The
   next scheduled sync is the retry.
 - **Every failure is a 200 with `degraded: true`**, a `failureReason` by NAME (`Timeout`,
-  `GoogleServerError`, `AuthenticationFailed` for a refused token or 401/403, `Rejected` for
-  other 4xx — Google's 404 also means "not shared with the service account" — `Unreachable`,
-  `NotConfigured`), a warning in the log, and **the existing rows untouched**. The service
+  `GoogleServerError`, `AuthenticationFailed` for a refused token or 401/403, `RateLimited`
+  for a 429 **or a 403 whose reason is a usage limit** (`rateLimitExceeded`,
+  `userRateLimitExceeded`, `quotaExceeded`, `dailyLimitExceeded` — the Calendar API sends a
+  quota as a 403 as often as a 429), `Rejected` for other 4xx — Google's 404 also means "not
+  shared with the service account" — `Unreachable`, `NotConfigured`), a warning in the log,
+  and **the existing rows untouched**.
+- **A rate limit reports Google's `Retry-After`** as `retryAfterSeconds` (whole seconds,
+  rounded UP; null when Google sent none — never invented, and only on `RateLimited`).
+  `GoogleApiException` carries no headers, so `GoogleCalendarClient` catches the header with a
+  per-request `RetryAfterCapture` (an unsuccessful-response handler that asks for NO retry)
+  and attaches it to the exception's `Data`; the sync reads it. It is reported, not obeyed:
+  the next scheduled sync is still the retry. Pinned in `TimetableSyncTests`. The service
   never throws for a Google failure; only `GoogleCalendarSyncService.FetchAsync` catches
   Google's exception types.
 - **Every response carries the cache's age**: `lastSyncedAt` (the newest `SyncedAt`) and
@@ -1294,6 +1364,12 @@ agent/config.py        settings read from the environment
   `diagnose` (the resume), and `main.py` then fills the top-level fields from the
   diagnostic, as it does from the verifier on a verification run. Pinned by spy agents in
   `tests/test_graph.py`, each rule verified to fail its test when removed.
+- **A revision (`RunRequest.revision_note`) routes `START -> strategize -> END`** — the
+  fault is diagnosed already, and what a manager sent back is the plan for the work. One
+  condition in `_route_from_start`; `main.py` fills the top-level fields from the strategist,
+  as it does from the diagnostic on a resume. `revision_work_order_id` names the Draft that
+  was sent back. Pinned by spy agents in `test_graph.py` and by `test_api.py`, each verified
+  to fail with the route removed.
 - **Two paths from `START`, chosen by `_route_from_start`**: a request carrying
   `verification` goes `START -> verify -> END`, anything else the report pipeline. A
   verification is not appended after `strategize` because it is a different question about
@@ -1440,10 +1516,15 @@ API's `WorkOrderStrategy` in snake_case), an `estimated_cost`, an `urgency` and 
   open-orders lookup is a note, not an empty list — null is not empty here either.
 - The revision note is a manager's, and **still data**: inside the JSON block, with the
   same injection test as the report and the diagnosis.
-- **The C# side reads the proposal but never acts on it.** The runner stores it as a
-  `strategist` step and the approval queue shows it beside the order as raised; raising
-  an order stays `WorkOrderService.CreateAsync`, approval gate and all, from what a manager
-  posts. `revision_note` is not sent yet (see AGENT WORKFLOWS).
+- **The order under revision is not open work.** It is a Draft, so `get_open_work_orders`
+  returns it; `revision_work_order_id` moves it out of `open_work_orders` into
+  `order_under_revision`, so consolidating with it is refused like any id the agent was not
+  shown. Pinned in `test_strategist.py`, verified to fail with the split removed.
+- **The C# side raises the proposal only through the gate.** The runner stores it as a
+  `strategist` step, and when it is raisable calls `WorkOrderService.CreateAsync` (or
+  `ResubmitAsync` on a revision) — the approval gate decides where it lands, and the approval
+  queue shows it beside the order as raised. A `consolidated_job` is raised as that strategy;
+  its ids are not acted on, so nothing links orders on a model's say-so.
 - **The golden case is the seeded projector's real history**: a weak **fan bearing**,
   not a compressor — that is `ACU-ENG101-01`. `evals/test_strategist_live.py` asserts
   `escalate_replacement`, not `known_fix`, a dated visit cited, and no "compressor"; the
@@ -1623,32 +1704,38 @@ flakiness to retry away.
     illegal (state, trigger) pair, the save-time check, and every illegal move through the
     API a 409 that writes nothing. `WorkflowRunnerTests` — the runner with a scripted
     `IAgentClient` (`AgentStubApiFactory`): one agent at a time, both pauses, the resume,
-    and the reopen (a real completion's `ServiceRecord` read back through the tool router).
+    the reopen (a real completion's `ServiceRecord` read back through the tool router), the
+    proposal raised through the gate, and the revision loop (resubmitted, or left for a
+    manager and not run twice).
     `WorkflowEndToEndTests` — both loops through the real endpoints on a movable clock, a
     fresh factory per test: clarified → under threshold → sweep → "yes" → `Closed`, and the
-    same asset over threshold → approved → sweep → "no" → `Diagnosing` → `Strategizing`,
+    same asset over threshold → approved → sweep → "no" → `Diagnosing` → the runner raises
+    the second proposal (`WorkOrderRaised`),
     with every state and the final `AgentStep` count asserted — the REPORT's status and the
     reporter's stage too, after every step, plus a rejection and an already-Closed report.
     `WorkflowTestData` puts a report's workflow in a state as DATA (ExecuteUpdate, around
     the machine) — every test that raises an order starts from `Strategizing` through it.
   - `WorkOrderEndpointTests` — the work order lifecycle end to end: the approval gate either
-    side of the threshold, a Technician's 403, reject / request-revision, assign, the
+    side of the threshold, a Technician's 403, reject / request-revision / resubmit, no
+    second order beside a Draft, assign, the
     completion transaction, visibility, the cost sort, and the slot endpoints' wiring
     (including a slot taken between offer and booking).
   - `ApprovalQueueTests` also pins the report detail's raise offer: `LatestWorkflow
-    .CanRaiseWorkOrder` in every state against what `POST /api/workorders` then answers, and
-    `Proposal` read like the queue's. `ReportTests` pins `CreateReportDto.AssetId`, the
+    .CanRaiseWorkOrder` in every state against what `POST /api/workorders` then answers — and
+    off while a revised Draft waits (`RevisionDraft`) — and `Proposal` read like the queue's. `ReportTests` pins `CreateReportDto.AssetId`, the
     filing transaction, and `ReportProgress` as pure functions (the trigger map, `StageFor`).
   - `ApprovalTests` — the gate's edge cases: cost == threshold for every strategy,
     `EscalateReplacement` at any cost, no token → 401 on every decision, a decision not
-    reversed by the opposite one, and every approval event on the workflow's audit trail
-    (`ApprovalAudit`) with who decided — a refused decision adding none.
+    reversed by the opposite one, every approval event on the workflow's audit trail
+    (`ApprovalAudit`) with who decided — a refused decision adding none — and a resubmitted
+    Draft routed by the same gate at exactly the threshold.
   - `SlotRulesTests` — the slot arithmetic as pure functions, to the minute.
     `SlotFinderTests` — the same boundaries through the real endpoints and database.
   - `WorkOrderTests` — the tables themselves: exact decimal round trips, enums stored as
-    names, the unique `ExternalEventId`. Not endpoint tests.
+    names, the unique `ExternalEventId`, the CHECK constraints. Not endpoint tests.
   - `TimetableSyncTests` — the Google sync, including Google down → degraded with the cache
-    kept, and the slot finder still reading that cache.
+    kept, rate limits (429, a quota 403, `Retry-After`), and the slot finder still reading
+    that cache.
   - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub,
     metadata stripping and the 429 included; `TestImages` builds the JPEGs and PNGs.
   - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
@@ -1959,9 +2046,9 @@ never the first thing a reader has to parse, and never hidden either.
   `reportsApi.js`.
 - The header shows **"Reporter sees: …"** — `ReportDetailDto.Stage`, the phone's progress line
   (`REPORT_STAGES` in `reportsApi.js`, tones in `tones.js`). Display only.
-- **The detail page is where a FacilitiesManager raises the work order** (`RaiseWorkOrderPanel`,
-  in `features/workorders/`). `Strategizing` is a human pause: the runner never raises one.
-  The panel shows only when `ReportDetailDto.LatestWorkflow.CanRaiseWorkOrder` is true —
+- **The detail page is where a FacilitiesManager raises the work order the runner could
+  not** (`RaiseWorkOrderPanel`, in `features/workorders/`) — no asset named, no usable
+  proposal, or a failed run. The panel shows only when `ReportDetailDto.LatestWorkflow.CanRaiseWorkOrder` is true —
   `WorkflowTransitions.CanRaiseWorkOrder` (read off the table: `Strategizing` or `Failed`) and
   the report not `Closed` — and only for `DISPATCH_ROLES`. It starts from
   `ReportDetailDto.Proposal` (`AgentAnalysis.ToProposal`, the approval queue's reader) and the
@@ -1969,6 +2056,12 @@ never the first thing a reader has to parse, and never hidden either.
   status: the notice after it says where the API's gate put the order. Pinned by
   `ReportDetail_OffersRaisingAnOrder_ExactlyWhenTheApiWouldAcceptOne` (every state, the offer
   against the POST's answer), verified to fail with `Failed` dropped from the rule.
+- **While a revised Draft waits, the same panel RESUBMITS it** (`revisionDraft` prop, from
+  `ReportDetailDto.RevisionDraft`) instead of offering a second order: the manager's note
+  verbatim, the order's asset fixed, and the values as sent back (`initialResubmitValues` —
+  not the proposal, which by then is the one sent back or one the runner could not use). It
+  posts to `resubmit`, reads the order back and the notice says where the gate put it. The
+  runner does this itself when the revised proposal is usable; the panel is the fallback.
 
 ### Work orders — `features/workorders/`
 
@@ -2000,6 +2093,11 @@ them both. Which orders a caller sees is the API's rule; the client keeps no cop
   only for the Technician it is assigned to. Unassigned, the slot finder checks the room
   alone and offers **no Book button** — a booking is time in somebody's diary. A slot is
   booked by sending it back exactly as offered; a 409 is shown against that slot.
+- **"Sync timetable now"** (`TimetableSyncButton`, beside the slot finder, for the same
+  manager) calls `POST /api/timetable/sync` and shows the answer as the API worded it:
+  degraded or not, `failureReason` by name, Google's wait when it gave one, the cache's age
+  ("never synced" for null, not 0) and `stalenessWarning` verbatim. The slot finder remounts
+  after it, so results found against the old timetable go.
 - **`JobProgress` is read off facts already on the order** (status, assigned technician,
   booked slots) and moves nothing. The detail also shows `WorkOrderDetailDto.Diagnosis`
   through the same `DiagnosisPanel` as the queue.

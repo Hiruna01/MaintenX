@@ -1,0 +1,117 @@
+%% The full maintenance loop, from a reporter's first report to a reopened repair being
+%% diagnosed again. Every call, status code and transition is read from the code; the
+%% same path is exercised by api.Tests/WorkflowEndToEndTests.cs (with IAgentClient stubbed).
+%% Export: npx @mermaid-js/mermaid-cli -i e2e-sequence.mmd -o e2e-sequence.png -s 3 -b white
+
+sequenceDiagram
+    autonumber
+    actor F as Flutter app<br/>(Reporter / Technician)
+    actor M as React SPA<br/>(FacilitiesManager)
+    participant API as ASP.NET Core API
+    participant DB as PostgreSQL
+    participant Q as IWorkflowQueue<br/>(Channel<int>)
+    participant W as WorkflowRunner<br/>(BackgroundService)
+    participant AG as Agent service<br/>POST /run (graph.py)
+    participant LLM as LLM provider
+    participant SW as VerificationSweepService<br/>(timer, or "Run sweep now")
+
+    rect rgb(238, 240, 243)
+    Note over F,LLM: 1. Report filed, clarifier runs in the background
+    F->>API: POST /api/reports {description, roomId, assetId?} (JWT)
+    API->>DB: ReportService.CreateAsync: Report(Submitted) + AgentWorkflow(Submitted)
+    API->>Q: EnqueueAsync(workflowId)
+    API-->>F: 201 Created (report), does not wait for the agent
+    loop ClarifierWait: every 2 s, up to 3 min
+        F->>API: GET /api/reports/{id}
+    end
+    Q->>W: DequeueAsync → ProcessAsync (own DI scope)
+    W->>DB: BeginProcessingAsync (state is Submitted)
+    W->>AG: POST /run {workflow_id, description, room_id, asset_id} (Agent:TimeoutSeconds)
+    AG->>AG: _route_from_start → clarify
+    AG->>API: POST /api/internal/tools/get_room (X-Agent-Secret)
+    API->>DB: AgentStep (tool row, Ok / NotFound)
+    API-->>AG: 200 {tool, found, result}
+    opt request carries asset_id
+        AG->>API: POST /api/internal/tools/get_asset (X-Agent-Secret)
+        API-->>AG: 200 {tool, found, result}
+    end
+    AG->>LLM: chat/completions (at most 2 attempts)
+    LLM-->>AG: JSON, validated against ClarifierOutput
+    AG->>AG: _route_after_clarify → END (questions asked)
+    AG-->>W: 200 RunResponse {status: ok, output.questions[1..2]}
+    W->>DB: clarifier AgentStep (verbatim) + ClarificationQuestion rows, Report → AwaitingClarification
+    W->>DB: Move(ClarifierAsked): Submitted → AwaitingClarification
+    Note over W: HUMAN PAUSE 1: the run ends, nothing waits
+    end
+
+    rect rgb(232, 230, 252)
+    Note over F,LLM: 2. Reporter answers, diagnostic and strategist run
+    F->>API: POST /api/reports/{id}/clarifications {answers} (whole form, one request)
+    API->>DB: answers + Report → Clarified + Move(ReporterAnswered) → Diagnosing (one SaveChanges)
+    API->>Q: EnqueueAsync(workflowId), after the save
+    API-->>F: 204 No Content
+    Q->>W: DequeueAsync → ProcessAsync
+    W->>AG: POST /run {..., clarification_answers}
+    AG->>AG: _route_from_start → diagnose
+    AG->>API: get_asset, get_asset_service_history, get_related_open_reports (X-Agent-Secret)
+    AG->>LLM: chat/completions → DiagnosticOutput
+    AG->>AG: diagnose → strategize
+    AG->>API: get_asset, get_asset_service_history, get_open_work_orders (X-Agent-Secret)
+    AG->>LLM: chat/completions → StrategistOutput
+    AG-->>W: 200 RunResponse {diagnosis, strategy}
+    W->>DB: diagnostic AgentStep, then Move(Diagnosed): Diagnosing → Strategizing
+    W->>DB: strategist AgentStep + Outcome text (no transition)
+    Note over W,DB: Workflow waits in Strategizing for a person
+    end
+
+    rect rgb(255, 247, 224)
+    Note over M,DB: 3. Manager raises the order, the API applies the threshold gate
+    M->>API: GET /api/reports/{id} (Proposal, LatestWorkflow.CanRaiseWorkOrder)
+    M->>API: POST /api/workorders {reportId, assetId, strategy, estimatedCost}
+    API->>API: ApprovalBasisFor: estimatedCost > Approval:CostThreshold OR strategy == EscalateReplacement
+    alt requires approval
+        API->>DB: WorkOrder(AwaitingApproval) + Move(WorkOrderNeedsApproval) → AwaitingManagerApproval
+        API-->>M: 201 Created
+        M->>API: POST /api/workorders/{id}/approve
+        API->>DB: WorkOrder(Approved, ApprovedBy) + Move(ManagerApproved) → WorkOrderRaised
+        API-->>M: 204 No Content
+    else at or under threshold, not a replacement
+        API->>DB: WorkOrder(Approved, no ApprovedBy) + Move(WorkOrderAutoApproved) → WorkOrderRaised
+        API-->>M: 201 Created
+    end
+    M->>API: PUT /api/workorders/{id}/assign {technicianId} (optionally POST {id}/schedule)
+    API-->>M: 204 No Content
+    end
+
+    rect rgb(230, 246, 236)
+    Note over F,DB: 4. Technician completes the job in ONE transaction
+    opt completion photo
+        F->>API: POST /api/workorders/{id}/photo (multipart), before completing
+        API-->>F: 201 Created {photoUrl}
+    end
+    F->>API: POST /api/workorders/{id}/complete {outcome, actualCost, resolutionNote ≥ 20 chars}
+    API->>DB: BEGIN TRANSACTION
+    API->>DB: WorkOrder → Completed, ServiceRecord appended, Move(WorkCompleted) → Completed, SaveChanges
+    API->>DB: VerificationCheck(Pending, DueAt = CompletedAt + DelayDays)
+    API->>DB: COMMIT
+    API-->>F: 204 No Content
+    end
+
+    rect rgb(253, 236, 236)
+    Note over F,SW: 5. Verification sweep after DelayDays (default 5), reporter says "no"
+    SW->>DB: ProcessDueChecksAsync step 0: Move(VerificationDue) Completed → AwaitingVerification
+    SW->>DB: step 1: check Pending → AwaitingReporterResponse (ProcessedAt stamped)
+    F->>API: GET /api/verifications?status=AwaitingReporterResponse
+    F->>API: POST /api/verifications/{id}/confirm {confirmed: false, comment?}
+    API->>DB: check → Reopened, AgentQueuedAt, Move(RepairReopened) → Diagnosing, ReopenedWorkOrderId (one SaveChanges)
+    API->>Q: EnqueueAsync(workflowId), after the save
+    API-->>F: 204 No Content
+    Q->>W: DequeueAsync → ProcessAsync (state is Diagnosing)
+    W->>AG: POST /run {reopened: true, asset_id (report's, else the reopened order's), answers}
+    AG->>AG: _route_from_start → diagnose → strategize
+    AG->>API: tool calls now return the appended ServiceRecord
+    AG->>LLM: chat/completions (fresh, the first diagnosis is not passed in)
+    AG-->>W: 200 RunResponse {diagnosis, strategy}
+    W->>DB: second diagnostic AgentStep APPENDED, Move(Diagnosed) → Strategizing
+    Note over W,DB: Back in Strategizing, both diagnoses on record
+    end

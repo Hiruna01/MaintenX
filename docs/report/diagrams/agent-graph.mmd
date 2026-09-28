@@ -1,0 +1,40 @@
+%% The LangGraph compiled by build_graph() in agent/graph.py. Condition labels are the
+%% exact Python expressions in _route_from_start and _route_after_clarify, evaluated top
+%% to bottom (the first true branch wins). Compiled without a checkpointer: no state
+%% survives between /run calls.
+%% Export: npx @mermaid-js/mermaid-cli -i agent-graph.mmd -o agent-graph.png -s 3 -b white
+
+flowchart TD
+    START(["START<br/>POST /run with a RunRequest"])
+    R1{"_route_from_start(state)<br/>request = state['request']"}
+    CL["clarify<br/>ClarifierAgent.run(request)"]
+    R2{"_route_after_clarify(state)<br/>response = state['response']"}
+    DI["diagnose<br/>DiagnosticAgent.run(request)"]
+    ST["strategize<br/>ResolutionStrategist.run(request, state['diagnosis'])"]
+    VE["verify<br/>VerificationAgent.run(request)"]
+    END_(["END<br/>main.py assembles the RunResponse"])
+
+    START --> R1
+    R1 -- "1 · request.verification is not None" --> VE
+    R1 -- "2 · request.clarification_answers or request.reopened" --> DI
+    R1 -- "3 · otherwise" --> CL
+
+    CL --> R2
+    R2 -- "response.status is AgentStatus.ok<br/>and not response.output.questions" --> DI
+    R2 -- "otherwise: questions asked, or safe_failure<br/>(human pause 1)" --> END_
+
+    DI --> ST
+    ST --> END_
+    VE --> END_
+
+    NOTE["The verify path exists and is tested (agent/tests/test_verification.py),<br/>but the API never sends a 'verification' field: api/Dtos/AgentRunRequest.cs has none."]
+    VE -.- NOTE
+
+    classDef router fill:#FFF7E0,stroke:#B7791F,color:#15171C
+    classDef agent fill:#E8E6FC,stroke:#5B50E8,color:#15171C
+    classDef terminal fill:#EEF0F3,stroke:#15171C,color:#15171C
+    classDef note fill:#FFFFFF,stroke:#9CA3AF,color:#374151,stroke-dasharray: 4 3
+    class R1,R2 router
+    class CL,DI,ST,VE agent
+    class START,END_ terminal
+    class NOTE note

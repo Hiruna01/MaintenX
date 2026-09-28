@@ -203,10 +203,12 @@ _TODO: confirm each command once the projects are scaffolded._
 dotnet run --project api
 ```
 
-**Agent service** — `http://localhost:8000`
+**Agent service** — `http://localhost:8000`. Run it from `agent/`: the modules are flat, so
+the app is `main:app` (there is no `app/` package). Check it with `curl localhost:8000/health`
+before filing a report.
 
 ```bash
-uvicorn app.main:app --reload --port 8000
+cd agent && .venv/bin/uvicorn main:app --reload --port 8000
 ```
 
 **Web client** — `http://localhost:5173`

@@ -111,6 +111,7 @@ class ClarifierAgent:
                 output=ClarifierOutput(questions=[]),
                 error=result.error,
                 tool_calls=tool_calls,
+                attempts=result.attempts,
             )
 
         output = result.data
@@ -122,6 +123,7 @@ class ClarifierAgent:
             status=AgentStatus.ok,
             output=output,
             tool_calls=tool_calls,
+            attempts=result.attempts,
         )
 
     async def _gather_context(

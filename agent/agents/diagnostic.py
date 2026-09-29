@@ -117,6 +117,7 @@ class DiagnosticAgent:
                 output=None,
                 error=result.error,
                 tool_calls=tool_calls,
+                attempts=result.attempts,
             )
 
         output = result.data
@@ -127,6 +128,7 @@ class DiagnosticAgent:
             status=AgentStatus.ok,
             output=output,
             tool_calls=tool_calls,
+            attempts=result.attempts,
         )
 
     async def _gather_context(

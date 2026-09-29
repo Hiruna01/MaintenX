@@ -9,13 +9,99 @@ import pytest
 from fastapi.testclient import TestClient
 
 from main import app
-from schemas import MAX_QUESTIONS, AgentStatus, RunResponse
+from schemas import MAX_QUESTIONS, AgentStatus, PlanAgent, RunResponse
+
+# conftest.py sets AGENT_SHARED_SECRET to this for the whole run.
+SECRET = "test-shared-secret"
 
 
 @pytest.fixture
 def client():
+    """A caller holding the shared secret — the API, as far as /run is concerned."""
+    with TestClient(app) as test_client:
+        test_client.headers.update({"X-Agent-Secret": SECRET})
+        yield test_client
+
+
+@pytest.fixture
+def stranger():
+    """A caller that can reach the port but does not hold the secret."""
     with TestClient(app) as test_client:
         yield test_client
+
+
+FRESH_REPORT = {
+    "workflow_id": 7,
+    "description": "Water leaking from the ceiling near the lab entrance.",
+    "room_id": 1,
+}
+
+
+def test_run_without_the_secret_is_refused(stranger):
+    """Only the API may start an agent run — not anything else that can reach this port."""
+    response = stranger.post("/run", json=FRESH_REPORT)
+
+    assert response.status_code == 401
+
+
+def test_run_with_the_wrong_secret_is_refused(stranger):
+    response = stranger.post("/run", json=FRESH_REPORT, headers={"X-Agent-Secret": "guessed"})
+
+    assert response.status_code == 401
+
+
+def test_a_refused_caller_is_told_nothing_about_the_body(stranger):
+    """401 before 422: a caller without the secret never learns what a valid body looks like."""
+    response = stranger.post("/run", json={"not": "a run request"})
+
+    assert response.status_code == 401
+    assert "workflow_id" not in response.text
+
+
+def test_health_needs_no_secret(stranger):
+    assert stranger.get("/health").status_code == 200
+
+
+def test_a_fresh_run_is_planned_first_and_carries_the_plan(client):
+    """
+    The planner runs before anything else on a fresh report, and its plan travels in `plan`
+    for the API to check and store. The stub plan includes the clarifier, so the clarifier's
+    fields are at the top level as always.
+    """
+    response = client.post("/run", json=FRESH_REPORT)
+
+    assert response.status_code == 200
+    body = RunResponse.model_validate(response.json())
+
+    assert body.plan is not None
+    assert body.plan.agent == "planner"
+    assert body.plan.status is AgentStatus.ok
+    assert [step.agent for step in body.plan.output.steps] == [
+        PlanAgent.clarifier,
+        PlanAgent.diagnostic,
+        PlanAgent.strategist,
+    ]
+    assert body.plan.tool_calls == []
+    assert body.agent == "clarifier"
+
+
+def test_every_agent_reports_its_attempts_and_its_own_time(client):
+    response = client.post(
+        "/run",
+        json={**FRESH_REPORT, "clarification_answers": [
+            {"question_text": "Is it still leaking?", "answer_text": "Yes"},
+        ]},
+    )
+
+    raw = response.json()
+
+    # The stub's first reply always validates: one attempt each, no retry.
+    assert raw["diagnosis"]["attempts"] == 1
+    assert raw["strategy"]["attempts"] == 1
+    assert isinstance(raw["diagnosis"]["duration_ms"], int)
+    assert isinstance(raw["strategy"]["duration_ms"], int)
+    # A resumed run follows the plan the API already stored: it is not planned again.
+    assert raw["plan"] is None
 
 
 def test_health_reports_stub_mode(client):

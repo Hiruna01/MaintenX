@@ -110,7 +110,7 @@ class ResolutionStrategist:
                 request.workflow_id,
                 result.error,
             )
-            return self._safe_failure(result.error, tool_calls)
+            return self._safe_failure(result.error, tool_calls, result.attempts)
 
         output = result.data
         assert isinstance(output, StrategistOutput)
@@ -124,16 +124,19 @@ class ResolutionStrategist:
         if unknown:
             error = f"Proposed consolidating with work orders it was not shown: {unknown}."
             logger.warning("Strategist output rejected for workflow %s: %s", request.workflow_id, error)
-            return self._safe_failure(error, tool_calls)
+            return self._safe_failure(error, tool_calls, result.attempts)
 
         return StrategistResult(
             agent=self.name,
             status=AgentStatus.ok,
             output=output,
             tool_calls=tool_calls,
+            attempts=result.attempts,
         )
 
-    def _safe_failure(self, error: str | None, tool_calls: list[ToolCallOutcome]) -> StrategistResult:
+    def _safe_failure(
+        self, error: str | None, tool_calls: list[ToolCallOutcome], attempts: int = 0
+    ) -> StrategistResult:
         # No output rather than a placeholder: no proposal is not a proposal to defer, and
         # a made-up strategy would be a decision nobody made. A manager decides instead.
         return StrategistResult(
@@ -142,6 +145,7 @@ class ResolutionStrategist:
             output=None,
             error=error,
             tool_calls=tool_calls,
+            attempts=attempts,
         )
 
     async def _gather_context(

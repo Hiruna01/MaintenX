@@ -1,14 +1,16 @@
 import clsx from 'clsx';
-import { Bot, Cable, ChevronDown, CircleAlert } from 'lucide-react';
+import { Bot, Cable, ChevronDown, CircleAlert, Scale } from 'lucide-react';
 import { useState } from 'react';
 
 import { formatInstant } from '../../../components/ui/format';
 import { Pill } from '../../../components/ui/Pill';
-import { describeStep, durationLabel, prettyJson } from '../../reports/services/agentSteps';
+import { attemptsLabel, describeStep, durationLabel, prettyJson } from '../../reports/services/agentSteps';
 import { answerTypeLabel } from '../../reports/services/reportsApi';
 import styles from '../workflows.module.css';
 
-const OUTCOME_TONES = { ok: 'green', neutral: 'slate', failed: 'red' };
+const OUTCOME_TONES = { ok: 'green', neutral: 'slate', failed: 'red', waiting: 'amber' };
+
+const KIND_ICONS = { agent: Bot, tool: Cable, approval: Scale };
 
 // The agent writes snake_case answer types; the reports service labels the C# names.
 const AGENT_ANSWER_TYPES = { yes_no: 'YesNo', single_select: 'SingleSelect', short_text: 'ShortText' };
@@ -48,8 +50,9 @@ function RawRecord({ step }) {
 }
 
 /**
- * The workflow's audit trail — every agent run and every tool call, in the order the API sent
- * it (oldest first). Each row is readable first: who, what kind, a plain outcome, the time,
+ * The workflow's audit trail — every agent run, every tool call and every approval step (the
+ * gate's routing of a raised order, and each manager decision), in the order the API sent it
+ * (oldest first). Each row is readable first: who, what kind, a plain outcome, the time,
  * and one sentence from `describeStep`. The stored record is behind "Show raw", verbatim —
  * never the first thing a reader has to parse, and never hidden either.
  *
@@ -61,26 +64,30 @@ function RawRecord({ step }) {
 export function AuditTrail({ steps, showTally = true }) {
   const described = steps.map((step) => ({ step, info: describeStep(step) }));
   const agentRuns = described.filter(({ info }) => info.kind === 'agent').length;
+  const toolCalls = described.filter(({ info }) => info.kind === 'tool').length;
+  const approvals = described.filter(({ info }) => info.kind === 'approval').length;
   const failures = described.filter(({ info }) => info.outcome.failed).length;
 
   return (
     <>
       {showTally ? (
       <p className={styles.trailTally}>
-        {agentRuns} agent {agentRuns === 1 ? 'run' : 'runs'} · {steps.length - agentRuns} tool{' '}
-        {steps.length - agentRuns === 1 ? 'call' : 'calls'}
+        {agentRuns} agent {agentRuns === 1 ? 'run' : 'runs'} · {toolCalls} tool {toolCalls === 1 ? 'call' : 'calls'}
+        {approvals > 0 ? ` · ${approvals} approval ${approvals === 1 ? 'step' : 'steps'}` : null}
         {failures > 0 ? <span className={styles.trailFailures}> · {failures} failed</span> : null}
       </p>
       ) : null}
       <ol className={styles.trail}>
         {described.map(({ step, info }, index) => {
-          const Icon = info.kind === 'agent' ? Bot : Cable;
+          const Icon = KIND_ICONS[info.kind] ?? Cable;
           return (
             <li
               key={step.id}
               className={clsx(
                 styles.trailItem,
-                info.kind === 'agent' ? styles.trailAgent : styles.trailTool,
+                info.kind === 'agent' && styles.trailAgent,
+                info.kind === 'tool' && styles.trailTool,
+                info.kind === 'approval' && styles.trailApproval,
                 info.outcome.failed && styles.trailFailed,
               )}
               style={{ animationDelay: `${Math.min(index, 10) * 40}ms` }}
@@ -93,12 +100,15 @@ export function AuditTrail({ steps, showTally = true }) {
                   <span className={styles.trailAgentName}>{step.agentName}</span>
                   {info.kind === 'agent' ? (
                     <span className={styles.trailKind}>Agent run</span>
+                  ) : info.kind === 'approval' ? (
+                    <span className={styles.trailKind}>Approval</span>
                   ) : (
                     <span className={clsx(styles.trailKind, 'mx-mono')}>{info.tool.tool}</span>
                   )}
                   <Pill tone={OUTCOME_TONES[info.outcome.tone] ?? 'slate'}>{info.outcome.label}</Pill>
                   <span className={styles.trailMeta}>
-                    <span>{durationLabel(step, info.kind)}</span>
+                    {durationLabel(step, info.kind) ? <span>{durationLabel(step, info.kind)}</span> : null}
+                    {attemptsLabel(step) ? <span>{attemptsLabel(step)}</span> : null}
                     <span>{formatInstant(step.createdAt)}</span>
                   </span>
                 </header>

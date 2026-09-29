@@ -82,6 +82,13 @@ MAX_TOOL_RELATED_REPORTS = 10
 MAX_TECHNICIAN_NOTE = 2000
 MAX_REPORT_DESCRIPTION = 4000
 
+# A plan delegates a report run to two or three agents — the diagnostic and the strategist
+# always, the clarifier when the report needs it. The same limits as the API's PlanRules.
+MIN_PLAN_STEPS = 2
+MAX_PLAN_STEPS = 3
+MAX_PLAN_PURPOSE = 200
+MAX_PLAN_RATIONALE = 300
+
 
 class AnswerType(str, Enum):
     """How the client should render the answer control for a question."""
@@ -362,6 +369,12 @@ class DiagnosticResult(BaseModel):
     error: str | None = None
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
 
+    # How many LLM attempts it took (1, or 2 with the one retry; 0 when it failed before
+    # asking the model) and how long it ran. Observability, not output: the API records both
+    # on the agent's step. duration_ms is stamped by graph.py around the agent's run.
+    attempts: int = 0
+    duration_ms: int = 0
+
 
 class Strategy(str, Enum):
     """
@@ -510,6 +523,12 @@ class StrategistResult(BaseModel):
     output: StrategistOutput | None = None
     error: str | None = None
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
+
+    # How many LLM attempts it took (1, or 2 with the one retry; 0 when it failed before
+    # asking the model) and how long it ran. Observability, not output: the API records both
+    # on the agent's step. duration_ms is stamped by graph.py around the agent's run.
+    attempts: int = 0
+    duration_ms: int = 0
 
 
 class VerificationOutcome(str, Enum):
@@ -681,6 +700,142 @@ class VerificationResult(BaseModel):
     error: str | None = None
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
 
+    # How many LLM attempts it took (1, or 2 with the one retry; 0 when it failed before
+    # asking the model) and how long it ran. Observability, not output: the API records both
+    # on the agent's step. duration_ms is stamped by graph.py around the agent's run.
+    attempts: int = 0
+    duration_ms: int = 0
+
+
+class PlanAgent(str, Enum):
+    """
+    The agents a report run can be delegated to. Exactly the AgentStep names the API records
+    them under. Not the verification agent: a verification is a different run about a
+    different question, and never part of a report's plan.
+    """
+
+    clarifier = "clarifier"
+    diagnostic = "diagnostic"
+    strategist = "strategist"
+
+
+# The only order the agents can run in. A plan may leave the clarifier out; it may not leave
+# anything else out, reorder it or repeat it.
+PIPELINE_ORDER: tuple[PlanAgent, ...] = (PlanAgent.clarifier, PlanAgent.diagnostic, PlanAgent.strategist)
+
+
+class PlanStep(BaseModel):
+    """One delegated step: which agent, and what it is to establish for THIS report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: PlanAgent
+    purpose: str = Field(min_length=1, max_length=MAX_PLAN_PURPOSE)
+
+
+class PlannerInput(BaseModel):
+    """
+    What the planner may see — a projection of RunRequest, like DiagnosticInput, so a field
+    added to the request for another agent does not silently reach this prompt.
+
+    Whether a room and an asset are identified, not their ids: the planner has no tools, and
+    an id it cannot look up tells it nothing a yes/no does not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = Field(min_length=1, max_length=4000)
+    room_identified: bool
+    asset_identified: bool
+
+    @classmethod
+    def from_run_request(cls, request: "RunRequest") -> "PlannerInput":
+        return cls(
+            description=request.description,
+            room_identified=request.room_id is not None,
+            asset_identified=request.asset_id is not None,
+        )
+
+
+class PlannerOutput(BaseModel):
+    """
+    The planner's structured plan for one report run, and nothing else.
+
+    The field set is pinned exactly by a test, like every agent's output: `steps` and a short
+    `rationale`. No message, no approval, no cost — a plan says which agents do what, and the
+    API decides everything that follows. `extra="forbid"` makes a reply that adds a field a
+    validation failure, retried once and then a safe failure.
+
+    Checked here BEFORE graph.py routes on it, and checked again by the API's PlanRules before
+    it is stored: the model proposes the plan, deterministic code decides whether it is run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    steps: list[PlanStep] = Field(min_length=MIN_PLAN_STEPS, max_length=MAX_PLAN_STEPS)
+    rationale: str = Field(min_length=1, max_length=MAX_PLAN_RATIONALE)
+
+    @model_validator(mode="after")
+    def _check_the_pipeline(self) -> "PlannerOutput":
+        positions = [PIPELINE_ORDER.index(step.agent) for step in self.steps]
+
+        # Strictly increasing: in pipeline order, and no agent twice.
+        if any(later <= earlier for earlier, later in zip(positions, positions[1:])):
+            raise ValueError("steps must follow clarifier, diagnostic, strategist, each at most once")
+
+        agents = {step.agent for step in self.steps}
+        missing = [a.value for a in (PlanAgent.diagnostic, PlanAgent.strategist) if a not in agents]
+        if missing:
+            raise ValueError(f"every report run needs the {' and the '.join(missing)}")
+
+        return self
+
+    @property
+    def includes_clarifier(self) -> bool:
+        return any(step.agent is PlanAgent.clarifier for step in self.steps)
+
+    @classmethod
+    def stub_example(cls) -> dict[str, Any]:
+        """
+        STUB_MODE's fixed plan. It includes the clarifier, so the stub pipeline runs exactly as
+        it did before the planner existed. Evidence of nothing about a real model.
+        """
+        return {
+            "steps": [
+                {
+                    "agent": "clarifier",
+                    "purpose": "Find out whether the projector is dead or cuts out, and whether it is safe.",
+                },
+                {
+                    "agent": "diagnostic",
+                    "purpose": "Propose the likely cause from the projector's service history.",
+                },
+                {
+                    "agent": "strategist",
+                    "purpose": "Propose a repair strategy and cost for a manager to review.",
+                },
+            ],
+            "rationale": "The report does not say whether it fails outright or intermittently.",
+        }
+
+
+class PlannerResult(BaseModel):
+    """
+    The planner's envelope. `output` is None on a safe failure: no plan is not an empty plan.
+    graph.py then runs the full pipeline — the clarifier included, the safe default — and the
+    API stores its own fallback plan with the reason.
+
+    `tool_calls` is always empty: the planner has no tools (PlannerAgent.ALLOWED_TOOLS).
+    """
+
+    agent: str
+    status: AgentStatus
+    output: PlannerOutput | None = None
+    error: str | None = None
+    tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
+    attempts: int = 0
+    duration_ms: int = 0
+
 
 class ToolCallOutcome(BaseModel):
     """
@@ -759,6 +914,16 @@ class RunResponse(BaseModel):
     output: ClarifierOutput
     error: str | None = None
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
+
+    # How many LLM attempts the agent in the top-level fields took, and how long it ran — the
+    # same observability fields every envelope carries.
+    attempts: int = 0
+    duration_ms: int = 0
+
+    # The planner's plan, on a fresh report run — the first thing the graph does. None on a
+    # resumed or reopened run, which follows the plan the API already stored, and on a
+    # verification run, which is not planned.
+    plan: PlannerResult | None = None
 
     # The diagnostic's result, when the graph ran it. A separate field rather than a
     # change to the ones above: the top-level fields are the clarifier's and the API's

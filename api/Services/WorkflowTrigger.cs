@@ -19,6 +19,14 @@ public enum WorkflowTrigger
     /// <summary>The clarifier found nothing that needed asking.</summary>
     ClarifierFoundNothing,
 
+    /// <summary>
+    /// The planner judged the report clear enough to go straight to diagnosis, so the
+    /// clarifier was never delegated a step. Its own trigger rather than ClarifierFoundNothing:
+    /// the two reach the same state, but "the clarifier ran and asked nothing" and "the
+    /// clarifier did not run" are different facts, and a table keyed by trigger keeps them apart.
+    /// </summary>
+    PlannedWithoutClarification,
+
     /// <summary>The reporter submitted the clarification form.</summary>
     ReporterAnswered,
 

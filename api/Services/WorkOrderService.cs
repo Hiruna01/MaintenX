@@ -371,7 +371,7 @@ public class WorkOrderService : IWorkOrderService
     public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>
         _db.WorkOrders.AnyAsync(w => w.Id == id, cancellationToken);
 
-    public async Task<IReadOnlyList<WorkOrderDto>?> GetOpenWorkOrdersInAssetRoomAsync(
+    public async Task<IReadOnlyList<ToolWorkOrderDto>?> GetOpenWorkOrdersInAssetRoomAsync(
         int assetId,
         CancellationToken cancellationToken = default)
     {
@@ -394,7 +394,8 @@ public class WorkOrderService : IWorkOrderService
             // order raised this morning, which is the one most worth consolidating with.
             .OrderByDescending(w => w.Id)
             .Take(IWorkOrderService.MaxToolOpenWorkOrders)
-            .Select(ToDtoExpression)
+            .Select(w => new ToolWorkOrderDto(
+                w.Id, w.ReportId, w.AssetId, w.Asset!.AssetTag, w.Status, w.Strategy, w.EstimatedCost, w.CreatedAt))
             .ToListAsync(cancellationToken);
     }
 
@@ -449,7 +450,8 @@ public class WorkOrderService : IWorkOrderService
         var estimatedCost = dto.EstimatedCost!.Value;
         var strategy = dto.Strategy!.Value;
 
-        var needsApproval = ApprovalBasisFor(estimatedCost, strategy).RequiresApproval;
+        var basis = ApprovalBasisFor(estimatedCost, strategy);
+        var needsApproval = basis.RequiresApproval;
 
         // Raised as Draft in principle (see CreateWorkOrderDto), and routed out of it in
         // the same breath: the gate is decided before the row is ever written, so no
@@ -480,12 +482,29 @@ public class WorkOrderService : IWorkOrderService
         // a workflow that is waiting on a manager as if the manager had approved.
         var workflow = await LatestWorkflowForReportAsync(dto.ReportId, cancellationToken);
 
-        if (workflow is not null)
+        if (workflow is null)
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        else
         {
             WorkflowTransitions.Move(workflow, WorkflowTransitions.ForRaisedWorkOrder(needsApproval));
-        }
 
-        await _db.SaveChangesAsync(cancellationToken);
+            // Where the gate routed the order goes on the run's audit trail (ApprovalAudit),
+            // and the step needs the order's id, which exists only after the first save — so
+            // the order, the move and the step are one transaction: all three or none.
+            await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+            await _db.SaveChangesAsync(cancellationToken);
+
+            _db.AgentSteps.Add(ApprovalAudit.Step(
+                workflow, order,
+                needsApproval ? ApprovalAudit.ApprovalRequired : ApprovalAudit.AutoApproved,
+                basis, decidedByUserId: null));
+
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
 
         return new CreateWorkOrderResult(
             CreateWorkOrderOutcome.Success,
@@ -715,6 +734,9 @@ public class WorkOrderService : IWorkOrderService
         if (workflow is not null)
         {
             WorkflowTransitions.Move(workflow, WorkflowTrigger.ManagerApproved);
+            _db.AgentSteps.Add(ApprovalAudit.Step(
+                workflow, order, ApprovalAudit.ManagerApproved,
+                ApprovalBasisFor(order.EstimatedCost, order.Strategy), managerId));
         }
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -755,6 +777,9 @@ public class WorkOrderService : IWorkOrderService
             WorkflowTransitions.Move(workflow, WorkflowTrigger.ManagerRejected);
             workflow.CompletedAt = now;
             workflow.Outcome = $"Work order {order.Id} was rejected by a facilities manager: {reason}";
+            _db.AgentSteps.Add(ApprovalAudit.Step(
+                workflow, order, ApprovalAudit.ManagerRejected,
+                ApprovalBasisFor(order.EstimatedCost, order.Strategy), managerId, reason: reason));
         }
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -763,6 +788,7 @@ public class WorkOrderService : IWorkOrderService
 
     public async Task<WorkOrderActionOutcome> RequestRevisionAsync(
         int id,
+        int managerId,
         string note,
         CancellationToken cancellationToken = default)
     {
@@ -794,6 +820,12 @@ public class WorkOrderService : IWorkOrderService
         order.RevisionNote = note;
 
         WorkflowTransitions.Move(workflow, WorkflowTrigger.RevisionRequested);
+
+        // The order goes back to Draft and its next revision overwrites the note, so this
+        // step is the only lasting record that the manager sent it back, and why.
+        _db.AgentSteps.Add(ApprovalAudit.Step(
+            workflow, order, ApprovalAudit.RevisionRequested,
+            ApprovalBasisFor(order.EstimatedCost, order.Strategy), managerId, note: note));
 
         await _db.SaveChangesAsync(cancellationToken);
 

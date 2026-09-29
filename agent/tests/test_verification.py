@@ -572,7 +572,7 @@ def _initial(request: RunRequest) -> dict:
 async def test_a_verification_request_runs_the_verifier_and_nothing_else():
     """Re-clarifying a repaired fault would put questions to the reporter about it again."""
     clarifier, diagnostic, strategist, verifier = _spies()
-    graph = build_graph(clarifier, diagnostic, strategist, verifier)
+    graph = build_graph(clarifier, diagnostic, strategist, verifier, _Spy("planner", None))
 
     state = await graph.ainvoke(_initial(GOLDEN.request()))
 
@@ -583,7 +583,7 @@ async def test_a_verification_request_runs_the_verifier_and_nothing_else():
 
 async def test_a_report_request_never_runs_the_verifier():
     clarifier, diagnostic, strategist, verifier = _spies()
-    graph = build_graph(clarifier, diagnostic, strategist, verifier)
+    graph = build_graph(clarifier, diagnostic, strategist, verifier, _Spy("planner", None))
 
     await graph.ainvoke(_initial(RunRequest(workflow_id=50, description="Projector cutting out.")))
 

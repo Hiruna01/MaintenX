@@ -137,7 +137,7 @@ class VerificationAgent:
                 request.workflow_id,
                 result.error,
             )
-            return self._safe_failure(result.error, tool_calls)
+            return self._safe_failure(result.error, tool_calls, result.attempts)
 
         output = result.data
         assert isinstance(output, VerificationOutput)
@@ -147,9 +147,12 @@ class VerificationAgent:
             status=AgentStatus.ok,
             output=output,
             tool_calls=tool_calls,
+            attempts=result.attempts,
         )
 
-    def _safe_failure(self, error: str | None, tool_calls: list[ToolCallOutcome]) -> VerificationResult:
+    def _safe_failure(
+        self, error: str | None, tool_calls: list[ToolCallOutcome], attempts: int = 0
+    ) -> VerificationResult:
         # No output rather than a placeholder: no verdict is not a verdict to confirm. The
         # check keeps the status the reporter's answer gave it, and a human reads the rest.
         return VerificationResult(
@@ -158,6 +161,7 @@ class VerificationAgent:
             output=None,
             error=error,
             tool_calls=tool_calls,
+            attempts=attempts,
         )
 
     async def _gather_input(

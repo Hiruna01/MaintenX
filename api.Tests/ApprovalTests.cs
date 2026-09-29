@@ -26,6 +26,7 @@ namespace api.Tests;
 ///   * EscalateReplacement at every cost that matters, Rs 0 included.
 ///   * No token is 401 on every decision, not only on create.
 ///   * A decision, once made, is not rewritten by the opposite one.
+///   * Every approval event is a step on the workflow's audit trail (ApprovalAudit).
 /// </summary>
 public class ApprovalTests : IClassFixture<ApiFactory>
 {
@@ -163,8 +164,111 @@ public class ApprovalTests : IClassFixture<ApiFactory>
     }
 
     // ---------------------------------------------------------------------------------
+    // The audit trail — ApprovalAudit
+    // ---------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The human pause is on the WORKFLOW's audit trail, not only on the order: where the gate
+    /// routed it (and against which threshold), then who decided, which way, and why. The
+    /// order's own columns are overwritten — a revised order is back in Draft — so these
+    /// steps are the lasting record.
+    /// </summary>
+    [Theory]
+    [InlineData("approve", ApprovalAudit.ManagerApproved)]
+    [InlineData("reject", ApprovalAudit.ManagerRejected)]
+    [InlineData("request-revision", ApprovalAudit.RevisionRequested)]
+    public async Task EveryApprovalEvent_IsOnTheWorkflowsAuditTrail_WithWhoDecided(string action, string decision)
+    {
+        var (manager, managerId) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        var order = await RaiseAsync(manager, fault, 42_000m);
+
+        var response = await manager.PostAsJsonAsync(
+            $"/api/workorders/{order.Id}/{action}",
+            new { reason = "Out of budget this term.", note = "Try a cheaper fix first." }, JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        var steps = await ApprovalStepsAsync(fault.ReportId);
+        Assert.Equal(new[] { ApprovalAudit.ApprovalRequired, decision }, steps.Select(s => s.Decision));
+        Assert.All(steps, s => Assert.Equal(order.Id, s.WorkOrderId));
+
+        var gate = steps[0];
+        Assert.Null(gate.DecidedByUserId);
+        Assert.Equal(42_000m, gate.EstimatedCost);
+        Assert.Equal(Threshold, gate.Basis.Threshold);
+        Assert.True(gate.Basis.ExceedsThreshold);
+
+        var decided = steps[1];
+        Assert.Equal(managerId, decided.DecidedByUserId);
+        Assert.Equal(action == "reject" ? "Out of budget this term." : null, decided.Reason);
+        Assert.Equal(action == "request-revision" ? "Try a cheaper fix first." : null, decided.Note);
+    }
+
+    /// <summary>Under the threshold the gate still leaves its step — and says nobody decided.</summary>
+    [Fact]
+    public async Task AnOrderInsideTheThreshold_IsRecordedAsAutoApproved_WithNobodyDeciding()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+
+        await RaiseAsync(manager, fault, Threshold);
+
+        var step = Assert.Single(await ApprovalStepsAsync(fault.ReportId));
+        Assert.Equal(ApprovalAudit.AutoApproved, step.Decision);
+        Assert.Null(step.DecidedByUserId);
+        Assert.False(step.Basis.RequiresApproval);
+    }
+
+    /// <summary>A refused decision (409) writes nothing — the step shares the move's save.</summary>
+    [Fact]
+    public async Task ARefusedDecision_AddsNoStep()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        var order = await RaiseAsync(manager, fault, 42_000m);
+
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await manager.PostAsync($"/api/workorders/{order.Id}/approve", null)).StatusCode);
+        var reject = await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/reject",
+            new RejectWorkOrderDto("Changed my mind."), JsonOptions);
+        Assert.Equal(HttpStatusCode.Conflict, reject.StatusCode);
+
+        Assert.Equal(
+            new[] { ApprovalAudit.ApprovalRequired, ApprovalAudit.ManagerApproved },
+            (await ApprovalStepsAsync(fault.ReportId)).Select(s => s.Decision));
+    }
+
+    // ---------------------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------------------
+
+    /// <summary>The report's approval steps, oldest first, read back as the payload they store.</summary>
+    private async Task<List<ApprovalStepPayload>> ApprovalStepsAsync(int reportId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var steps = await db.AgentSteps
+            .Where(s => s.Workflow!.ReportId == reportId && s.AgentName == ApprovalAudit.StepName)
+            .OrderBy(s => s.Id)
+            .ToListAsync();
+
+        Assert.All(steps, s =>
+        {
+            Assert.Null(s.ToolCallsJson);
+            Assert.Null(s.Attempts);
+        });
+
+        return steps
+            .Select(s => JsonSerializer.Deserialize<ApprovalStepPayload>(s.PayloadJson!, JsonOptions)!)
+            .Zip(steps, (payload, step) =>
+            {
+                // The tag on the row and the payload's own copy must agree.
+                Assert.Equal(step.ValidationResult, payload.Decision);
+                return payload;
+            })
+            .ToList();
+    }
 
     private record Fault(int ReportId, int AssetId);
 
@@ -174,10 +278,7 @@ public class ApprovalTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "ApprovalPass1", "Test User", role),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "ApprovalPass1", "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -190,13 +291,13 @@ public class ApprovalTests : IClassFixture<ApiFactory>
     /// <summary>A room, an asset in it, and a report filed through POST /api/reports.</summary>
     private async Task<Fault> NewFaultAsync()
     {
-        var anonymous = _factory.CreateClient();
+        var estate = await _factory.CreateAdminClientAsync();
 
-        var building = await (await anonymous.PostAsJsonAsync(
+        var building = await (await estate.PostAsJsonAsync(
                 "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions))
             .Content.ReadFromJsonAsync<BuildingDto>(JsonOptions);
 
-        var room = await (await anonymous.PostAsJsonAsync(
+        var room = await (await estate.PostAsJsonAsync(
                 "/api/rooms", new CreateRoomDto(building!.Id, "Lecture Hall A", UniqueCode(), 1), JsonOptions))
             .Content.ReadFromJsonAsync<RoomDto>(JsonOptions);
 

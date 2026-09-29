@@ -315,6 +315,17 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Equal("Failing cooling fan", rediagnosis.Hypotheses[rediagnosis.PrimaryHypothesisIndex!.Value].Cause);
         Assert.Equal("replace", rediagnosis.RecommendedNextAction);
 
+        // The plan gains the re-diagnosis as two NEW steps, appended and settled, beside the
+        // first run's three — delegated in the plan as well as recorded in the steps.
+        Assert.Equal(
+            new[]
+            {
+                ("clarifier", "completed", "api"), ("diagnostic", "completed", "api"), ("strategist", "completed", "api"),
+                ("diagnostic", "completed", "api"), ("strategist", "completed", "api")
+            },
+            detail.Plan!.Steps.Select(p => (p.Agent, p.Status, p.AddedBy)));
+        Assert.Contains($"#{orderId}", detail.Plan.Steps[3].Purpose);
+
         // What the second run's history tool reads: the record the completion appended, newest
         // first. Nothing is cached between runs — the tool reads the table as it is now.
         var history = await CallToolAsync("get_asset_service_history", workflowId, second.AssetId!.Value);
@@ -322,6 +333,222 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Equal(orderId, newest.GetProperty("workOrderId").GetInt32());
         Assert.Equal("TemporaryFix", newest.GetProperty("outcome").GetString());
         Assert.Equal(TemporaryFixNote, newest.GetProperty("technicianNote").GetString());
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The plan. The planner's reply is recorded verbatim on its own step; what is STORED as
+    // the workflow's plan is the one PlanRules has checked, or the fallback with the reason.
+    // Each plan step is then settled as its agent's result is recorded.
+    // ---------------------------------------------------------------------------------
+
+    private static string PlanEnvelope(string steps, string status = "ok", int attempts = 1, int durationMs = 300) =>
+        status == "ok"
+            ? $$"""
+                {"agent": "planner", "status": "ok", "error": null, "tool_calls": [],
+                 "attempts": {{attempts}}, "duration_ms": {{durationMs}},
+                 "output": {"steps": {{steps}}, "rationale": "The report does not say whether it is dead or intermittent."} }
+                """
+            : $$"""
+                {"agent": "planner", "status": "safe_failure", "error": "provider timed out", "tool_calls": [],
+                 "attempts": {{attempts}}, "duration_ms": {{durationMs}}, "output": null}
+                """;
+
+    private const string FullPlanSteps = """
+        [{"agent": "clarifier", "purpose": "Find out whether it is dead or cuts out."},
+         {"agent": "diagnostic", "purpose": "Propose the cause from its history."},
+         {"agent": "strategist", "purpose": "Propose a resolution and cost."}]
+        """;
+
+    private const string NoClarifierSteps = """
+        [{"agent": "diagnostic", "purpose": "Propose the cause from its history."},
+         {"agent": "strategist", "purpose": "Propose a resolution and cost."}]
+        """;
+
+    // Each agent reporting its own attempts and time, as the agent service now does.
+    private const string TimedDiagnosis = """
+        {"agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [], "attempts": 2, "duration_ms": 700,
+         "output": {"hypotheses": [{"cause": "Overheating", "confidence": "high",
+                    "evidence": ["2026-09-02: fan bearing weak"]}],
+                    "recommended_next_action": "repair", "reasoning_summary": "Thermal."}}
+        """;
+
+    private const string TimedProposal = """
+        {"agent": "strategist", "status": "ok", "error": null, "tool_calls": [], "attempts": 1, "duration_ms": 500,
+         "output": {"strategy": "single_job", "estimated_cost": 4500.0, "urgency": "high",
+                    "justification": "Replace the fan.", "consolidate_with_work_order_ids": []}}
+        """;
+
+    private static string PlannedRun(string plan) => $$"""
+        {"workflow_id": 1, "agent": "clarifier", "status": "ok", "error": null, "tool_calls": [],
+         "attempts": 1, "duration_ms": 400, "output": {"questions": []},
+         "plan": {{plan}}, "diagnosis": {{TimedDiagnosis}}, "strategy": {{TimedProposal}}}
+        """;
+
+    [Fact]
+    public async Task AFreshRun_IsPlannedFirst_TheCheckedPlanIsStored_AndEachStepIsSettledAsItsAgentFinishes()
+    {
+        var scene = await _factory.SceneAsync();
+        var workflowId = await WorkflowOfNewReportAsync(scene);
+
+        _factory.Agent.Replies.Enqueue(Reply(PlannedRun(PlanEnvelope(FullPlanSteps)), durationMs: 2500));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+
+        // The planner's step comes first; every agent carries ITS OWN time and attempts, not
+        // a share of the call's 2500 ms. The diagnostic needed the one retry.
+        Assert.Equal(
+            new[] { ("planner", 300, (int?)1), ("clarifier", 400, 1), ("diagnostic", 700, 2), ("strategist", 500, 1) },
+            detail.Steps.Select(s => (s.AgentName, s.DurationMs, s.Attempts)));
+        Assert.All(detail.Steps, s => Assert.Equal("Ok", s.ValidationResult));
+
+        // The plan is the planner's, stored — PlanJson is populated — and fully settled.
+        Assert.NotNull(detail.PlanJson);
+        var plan = detail.Plan!;
+        Assert.Equal(PlanRules.SourcePlanner, plan.Source);
+        Assert.Null(plan.Note);
+        Assert.Equal(
+            new[] { ("clarifier", "completed"), ("diagnostic", "completed"), ("strategist", "completed") },
+            plan.Steps.Select(p => (p.Agent, p.Status)));
+        Assert.Equal("Find out whether it is dead or cuts out.", plan.Steps[0].Purpose);
+    }
+
+    [Fact]
+    public async Task APlanWithoutTheClarifier_GoesStraightToDiagnosis_ThroughItsOwnTrigger_AndAsksNobodyAnything()
+    {
+        var scene = await _factory.SceneAsync();
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        // The agent service followed the plan: no clarifier ran, so the top-level fields are
+        // the diagnostic's, exactly as on a resumed run.
+        var skipped = $$"""
+            {"workflow_id": 1, "agent": "diagnostic", "status": "ok", "error": null, "tool_calls": [],
+             "attempts": 2, "duration_ms": 700, "output": {"questions": []},
+             "plan": {{PlanEnvelope(NoClarifierSteps)}}, "diagnosis": {{TimedDiagnosis}}, "strategy": {{TimedProposal}}}
+            """;
+        _factory.Agent.Replies.Enqueue(Reply(skipped));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+
+        // No clarifier step, because the clarifier never ran — not one that "asked nothing".
+        Assert.Equal(new[] { "planner", "diagnostic", "strategist" }, detail.Steps.Select(s => s.AgentName));
+        Assert.Equal(new[] { "diagnostic", "strategist" }, detail.Plan!.Steps.Select(p => p.Agent));
+        Assert.All(detail.Plan.Steps, p => Assert.Equal(PlanStepStatus.Completed, p.Status));
+
+        // Nobody was asked anything, and the report never waited on its reporter.
+        var questions = await scene.Reporter.GetFromJsonAsync<List<ClarificationQuestionDto>>(
+            $"/api/reports/{reportId}/clarifications", JsonOptions);
+        Assert.Empty(questions!);
+    }
+
+    [Fact]
+    public async Task APlanThatFailsTheCSharpCheck_IsNotStored_TheFallbackIs_AndThePlannersStepSaysRejected()
+    {
+        var scene = await _factory.SceneAsync();
+        var workflowId = await WorkflowOfNewReportAsync(scene);
+
+        // Strategist before diagnostic: the agent's schema would refuse this, which is exactly
+        // why the API checking it again is worth pinning — a drifted contract must not be run.
+        const string outOfOrder = """
+            [{"agent": "strategist", "purpose": "Replace it."},
+             {"agent": "diagnostic", "purpose": "Diagnose it."}]
+            """;
+        _factory.Agent.Replies.Enqueue(Reply(PlannedRun(PlanEnvelope(outOfOrder))));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+
+        var plannerStep = detail.Steps.First();
+        Assert.Equal("planner", plannerStep.AgentName);
+        Assert.Equal("Rejected", plannerStep.ValidationResult);
+        Assert.Contains("out of order", plannerStep.ErrorMessage);
+        // The model's plan is still on its step, verbatim — the audit copy.
+        Assert.Contains("Replace it.", plannerStep.PayloadJson);
+
+        var plan = detail.Plan!;
+        Assert.Equal(PlanRules.SourceFallback, plan.Source);
+        Assert.Contains("rejected", plan.Note);
+        Assert.Equal(new[] { "clarifier", "diagnostic", "strategist" }, plan.Steps.Select(p => p.Agent));
+        Assert.DoesNotContain("Replace it.", detail.PlanJson);
+    }
+
+    [Fact]
+    public async Task APlannerThatSafeFailed_LeavesTheFallbackPlan_AndTheRunCarriesOn()
+    {
+        var scene = await _factory.SceneAsync();
+        var workflowId = await WorkflowOfNewReportAsync(scene);
+
+        _factory.Agent.Replies.Enqueue(Reply(PlannedRun(PlanEnvelope("[]", status: "safe_failure", attempts: 2))));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+
+        var plannerStep = detail.Steps.First();
+        Assert.Equal(("planner", "SafeFailure", (int?)2), (plannerStep.AgentName, plannerStep.ValidationResult, plannerStep.Attempts));
+        Assert.Equal(PlanRules.SourceFallback, detail.Plan!.Source);
+        Assert.Contains("provider timed out", detail.Plan.Note);
+    }
+
+    [Fact]
+    public async Task AReplyWithNoPlan_StillLeavesAPlan_TheFallback_WithNoPlannerStep()
+    {
+        var scene = await _factory.SceneAsync();
+        var workflowId = await WorkflowOfNewReportAsync(scene);
+
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothing));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.DoesNotContain(detail.Steps, s => s.AgentName == "planner");
+        Assert.Equal(PlanRules.SourceFallback, detail.Plan!.Source);
+        Assert.All(detail.Plan.Steps, p => Assert.Equal(PlanStepStatus.Completed, p.Status));
+    }
+
+    [Fact]
+    public async Task AtStartup_EveryRunLeftSubmittedOrDiagnosing_IsQueuedAgain_AndNothingElse()
+    {
+        var scene = await _factory.SceneAsync();
+        var queue = _factory.Services.GetRequiredService<IWorkflowQueue>();
+
+        // One run left where a restart would strand it, and one already waiting on a manager.
+        var stranded = await WorkflowOfNewReportAsync(scene);
+        var waiting = await WorkflowOfNewReportAsync(scene);
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothing));
+        await Runner().ProcessAsync(waiting, CancellationToken.None);
+
+        // What a restart does to the in-memory queue.
+        await DrainAsync(queue);
+
+        await Runner().RequeueUnfinishedRunsAsync(CancellationToken.None);
+
+        var requeued = await DrainAsync(queue);
+        Assert.Contains(stranded, requeued);
+        Assert.DoesNotContain(waiting, requeued);
+    }
+
+    /// <summary>Empties the queue and returns what was in it. DequeueAsync blocks, so a short timeout is the end.</summary>
+    private static async Task<List<int>> DrainAsync(IWorkflowQueue queue)
+    {
+        var ids = new List<int>();
+
+        while (true)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+            try
+            {
+                ids.Add(await queue.DequeueAsync(timeout.Token));
+            }
+            catch (OperationCanceledException)
+            {
+                return ids;
+            }
+        }
     }
 
     [Fact]

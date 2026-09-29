@@ -1,6 +1,13 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CampusFacilities.Api.Data;
+using CampusFacilities.Api.Dtos;
+using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -192,6 +199,84 @@ public class ApiFactory : WebApplicationFactory<Program>
         using var command = connection.CreateCommand();
         command.CommandText = $"DROP DATABASE IF EXISTS \"{_testDatabaseName}\" WITH (FORCE)";
         command.ExecuteNonQuery();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Accounts. POST /api/auth/register creates a Reporter for anyone, and every other role
+    // only for an Admin — so a test that needs a Technician or a FacilitiesManager registers
+    // it AS AN ADMIN, through the real endpoint. The one account nothing can register is the
+    // first Admin itself; that one is written straight into the table, the way a deployment's
+    // first Admin is seeded, and signed in through the real login.
+    // ---------------------------------------------------------------------------
+
+    private const string BootstrapAdminEmail = "bootstrap-admin@tests.invalid";
+    private const string BootstrapAdminPassword = "BootstrapAdmin1";
+
+    private static readonly JsonSerializerOptions AccountJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    private readonly SemaphoreSlim _adminLock = new(1, 1);
+    private string? _adminToken;
+
+    /// <summary>
+    /// POST /api/auth/register as the bootstrap Admin, so the request may ask for any role.
+    /// The response is the endpoint's own: a 201 carrying the NEW account's token.
+    /// </summary>
+    public async Task<HttpResponseMessage> RegisterAsync(RegisterRequest request)
+    {
+        using var admin = await CreateAdminClientAsync();
+        return await admin.PostAsJsonAsync("/api/auth/register", request, AccountJson);
+    }
+
+    /// <summary>A client signed in as the bootstrap Admin — for the registry, buildings and rooms.</summary>
+    public async Task<HttpClient> CreateAdminClientAsync()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", await BootstrapAdminTokenAsync());
+        return client;
+    }
+
+    private async Task<string> BootstrapAdminTokenAsync()
+    {
+        await _adminLock.WaitAsync();
+
+        try
+        {
+            if (_adminToken is not null)
+            {
+                return _adminToken;
+            }
+
+            using (var scope = Services.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                if (!await db.Users.AnyAsync(u => u.Email == BootstrapAdminEmail))
+                {
+                    var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher<User>>();
+                    var admin = new User { Email = BootstrapAdminEmail, FullName = "Bootstrap Admin", Role = Role.Admin };
+                    admin.PasswordHash = hasher.HashPassword(admin, BootstrapAdminPassword);
+
+                    db.Users.Add(admin);
+                    await db.SaveChangesAsync();
+                }
+            }
+
+            using var anonymous = CreateClient();
+            var login = await anonymous.PostAsJsonAsync(
+                "/api/auth/login", new LoginRequest(BootstrapAdminEmail, BootstrapAdminPassword), AccountJson);
+            login.EnsureSuccessStatusCode();
+
+            _adminToken = (await login.Content.ReadFromJsonAsync<AuthResponse>(AccountJson))!.Token;
+            return _adminToken;
+        }
+        finally
+        {
+            _adminLock.Release();
+        }
     }
 
     protected override void Dispose(bool disposing)

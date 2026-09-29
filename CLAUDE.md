@@ -80,12 +80,16 @@ file, run `git add --renormalize .` once. Do not commit a file with CRLF line en
   sent and accepted in JSON as its name (`"FacilitiesManager"`), never its ordinal. This
   keeps the JSON contract consistent with what's stored in Postgres and what's inside a
   JWT claim — a client should never need to hardcode an enum's integer value.
+- **Swagger** is served in Development, and anywhere else only when `Swagger:Enabled` (or
+  `SWAGGER_ENABLED`) is true — so a deployed API can show evaluators its documentation
+  without pretending to be a development environment. Off by default outside Development.
 
 ## AUTH — hand-rolled, not ASP.NET Core Identity
 
 - JWT bearer only. Symmetric signing key, issuer and audience all from configuration —
   see `JwtSettings` in `Services/`, never a literal in code.
-- Claims are exactly `sub` (user id), `email`, `role`. `role` is the enum's string name.
+- Claims are `sub` (user id), `email`, `role`, plus a random `jti` so no two tokens are
+  identical. `role` is the enum's string name.
 - **Access token only, 12-hour lifetime. No refresh tokens.** This is a deliberate scope
   decision (a refresh flow needs a persisted token store, rotation, reuse detection and
   revocation — a separate feature). Keep the code comment explaining this in
@@ -99,6 +103,22 @@ file, run `git add --renormalize .` once. Do not commit a file with CRLF line en
 - **401 vs 403 are both required and must stay distinct**: no token → 401 (who are you?),
   valid token with the wrong role → 403 (I know who you are, and no). An evaluator may
   ask for both cases explicitly.
+- **A fallback policy makes "signed in" the default** (`FallbackPolicy =
+  RequireAuthenticatedUser` in `Program.cs`): an endpoint that says nothing about
+  authorization needs a token, so a forgotten `[Authorize]` fails closed. The buildings and
+  rooms controllers once served anonymous writes and deletes for exactly that reason. The
+  public endpoints say so with `[AllowAnonymous]`, and they are exactly four — login,
+  register, `/health` and the agent's tool router (which has its shared-secret filter
+  instead). `TheOnlyAnonymousEndpoints_AreLoginRegisterHealthAndTheAgentToolRouter` pins the
+  list; a new public endpoint has to be added to it deliberately.
+- **Registration: anyone may create a Reporter, only an Admin any other role.**
+  `POST /api/auth/register` is `[AllowAnonymous]`, but the role in the body is what is
+  ASKED for and the caller's token decides whether it is granted (`AuthService.RegisterAsync`,
+  `RegisterOutcome`): no role or `Reporter` → created and signed in (the phone's sign-up
+  screen); any other role without an Admin token → **403**, nothing written. It once took the
+  role from the body for anyone, so a stranger could mint an Admin. `RegisterRequest.Role`
+  is optional and defaults to `Reporter`. Pinned by the `Register_*` tests in `AuthTests`,
+  verified to fail with the role check removed.
 - Request logging (Serilog) must never capture request bodies — only method/path/status/
   duration — specifically so a login or register payload's password never reaches a log
   sink. Don't add body logging to `UseSerilogRequestLogging`.
@@ -208,6 +228,14 @@ dates are named in PROJECT RULES as deterministic business rules; the diagnostic
   days, so the 1 March visit tells the 90-day rule from the calendar-month one. A new
   date-dependent rule should take `TimeProvider` the same way.
 
+**Buildings and rooms follow the same split** — `[Authorize]` on the controller, the Admin
+policy on every write — and every refusal is a status code, never a constraint violation out
+of the driver: a building code already in use is a **409** (checked first, and a lost race on
+the unique index re-checked), a building that still has rooms is a **409** (its rooms would
+otherwise cascade away), a room an asset, report or timetabled class still names is a
+**409** (those keys are `Restrict`; the history outlives the room), and moving a room to a
+building that does not exist is a **400**. `EstateWriteOutcome`; pinned by `EstateTests`.
+
 Categories have **no DELETE**: the foreign key from `Asset` is `Restrict`, so removing one
 anything is filed under fails at the database, and a category with nothing under it is not
 worth an endpoint and a role check to tidy away. `CreateAssetCategoryDto` serves both the
@@ -267,20 +295,42 @@ and 14 service records.
   `IWorkflowService` are scoped, so a singleton hosted service cannot hold them directly.
   Clients poll `GET /api/workflows/{id}` for progress. Do not add a synchronous HTTP call
   to the agent service inside a controller action.
+- **`GET`/`POST /api/workflows` are a FacilitiesManager's and an Admin's** (a role list on
+  the class, like the analytics metrics). A workflow's objective is a reporter's own words
+  and its steps everything the agents read and said, so a Reporter follows their report
+  through `GET /api/reports` (scoped to them) and a Technician reads the diagnosis on the
+  work order. **A start is refused** (`StartWorkflowOutcome`) for an unknown report (400), a
+  `Closed` report (409), and a report whose LATEST run has not ended (409): one report, one
+  live run, because every later action moves the latest workflow. Once it is `Failed` or
+  `Closed`, a manager may run the agents again — the web's "Run the agents again".
 - **The runner's outbound call is `IAgentClient`**, a typed `HttpClient` with its own
-  timeout (`Agent:TimeoutSeconds`, default 60s). It **never throws**: a timeout, a refused
-  connection, a non-200 or an unreadable body all come back as a result the runner turns
-  into `Failed` with the reason on the row. A background exception has no request to
-  surface on, so a workflow must never be left parked because the agent was down.
+  timeout (`Agent:TimeoutSeconds`, default **360s** — `AgentSettings.DefaultTimeoutSeconds`,
+  budgeted above the agent's worst case: four agents × two LLM attempts × 30s plus their
+  tool calls ≈ 320s. At 60s a slow provider made the API fail a run the agent was still
+  working on). It sends the shared secret on every `/run`, which the agent checks. It
+  **never throws**: a timeout, a refused connection, a non-200 or an unreadable body all
+  come back as a result the runner turns into `Failed` with the reason on the row. A
+  background exception has no request to surface on, so a workflow must never be left
+  parked because the agent was down.
+- **The queue is in memory, so the runner re-queues unfinished runs at startup**
+  (`RequeueUnfinishedRunsAsync`): every workflow in `Submitted` or `Diagnosing`, oldest
+  first, alongside the loop rather than before it (the channel is bounded). Idempotent — the
+  runner only starts from those two states. Pinned by
+  `AtStartup_EveryRunLeftSubmittedOrDiagnosing_IsQueuedAgain_AndNothingElse`.
 - **The runner advances the workflow ONE AGENT AT A TIME**: each agent's step is recorded,
   then that agent's transition made, each saved on its own, so a poll sees the run move.
   One `/run` call per segment between human pauses, not per agent — the graph runs the
   agents in order inside it and the runner walks the results in graph order.
-  - **From `Submitted`**: the clarifier runs while the workflow is still `Submitted` (what
-    it says picks the next state). A call that failed or a clarifier safe failure →
-    `Failed`. Questions → `AwaitingClarification`, and the run **stops** — `graph.py`
-    stopped there too. None → `Diagnosing`, then the diagnostic (→ `Strategizing`), then the
-    strategist (no transition).
+  - **From `Submitted`**: the PLANNER's step first, and the plan stored (see THE PLAN
+    below). Then, when the plan delegated to the clarifier, the clarifier runs while the
+    workflow is still `Submitted` (what it says picks the next state). A call that failed or
+    a clarifier safe failure → `Failed`. Questions → `AwaitingClarification`, and the run
+    **stops** — `graph.py` stopped there too. None → `Diagnosing`, then the diagnostic (→
+    `Strategizing`), then the strategist (no transition). When the plan left the clarifier
+    OUT, the workflow goes `Submitted` → `Diagnosing` on its own trigger,
+    `PlannedWithoutClarification`, and nobody is asked anything. Questions that cannot be
+    recorded against the report (its lifecycle refuses the move back to
+    `AwaitingClarification`) → `Failed`, rather than a pause with nothing to answer.
   - **From `Diagnosing`** (the reporter answered): the answers to THIS workflow's questions
     go out as `clarification_answers`, which sends the graph straight to the diagnostic.
     No answers to send → `Failed` rather than re-asking.
@@ -300,35 +350,81 @@ and 14 service records.
     acting. One ABSENT from the reply (the graph broke its promise) → `Failed`.
   - Anything else dequeued — waiting on a person, a revision re-queued in `Strategizing` —
     is skipped with a warning. `ProcessAsync` is `internal` for `WorkflowRunnerTests`.
-- **The runner records one agent-level step per AGENT that ran** — the clarifier's, then
-  the diagnostic's and the strategist's — each with
+- **The runner records one agent-level step per AGENT that ran** — the planner's, the
+  clarifier's, then the diagnostic's and the strategist's — each with
   `ToolCallsJson` `"[]"` and that agent's output verbatim. Tool calls are recorded by
   `InternalToolsController` alone — recording the agent's returned `tool_calls` here as well
   would double every tool call in the audit trail. It also writes the clarifier's questions
   as `ClarificationQuestion` rows; that is not another step and not a second audit record —
   see CLARIFICATION below.
+- **The human pause is on the same audit trail** (`ApprovalAudit`, written by
+  `WorkOrderService`, not the runner): one step when an order is raised — where the gate
+  routed it, `ApprovalRequired` or `AutoApproved`, with the threshold it was measured against —
+  and one per manager decision, `ManagerApproved`, `ManagerRejected` (with the reason) or
+  `RevisionRequested` (with the note), carrying the deciding manager's user id. AgentName
+  `"approval"`, `ToolCallsJson` null, no duration or attempts: neither an agent run nor a tool
+  call. Written in the same save as the move it records (raising is one transaction, because
+  the step needs the new order's id), so a 409 writes none. The order's own columns are
+  overwritten — a revised order is `Draft` again — so these steps are the lasting record of the
+  decision. Tags deliberately not `Approved` / `Rejected`: `Rejected` is the planner's refused
+  plan, and a manager saying no is not a failure. Pinned in `ApprovalTests`, verified to fail
+  with the approve step and with the gate step removed.
 - **The step's name comes from the FIELD the result arrived in, never from the envelope's
   own `agent` value**: `AgentRunResponse.DiagnosticAgentName` (`"diagnostic"`) and
   `StrategistAgentName` (`"strategist"`), and `DownstreamResults()` is the only place those
-  two envelopes are read. The FIRST agent that ran in the call carries its whole
-  `DurationMs` — the clarifier's step, or the diagnostic's on a resume — and the rest carry
-  **0**, because the agent reports no per-agent split and dividing it would invent one — the
-  reasoning panel shows them as "timed with the run". What they SAY moves nothing; that they
-  RAN is a transition.
-- **`AgentWorkflow.PlanJson` is still never populated.** The clarifier produces questions,
-  and questions are not a plan; the strategist's proposal is advice about ONE order, not a
-  plan for the workflow. Both go in `AgentStep.PayloadJson` where step output belongs — and, because they are working data as well as audit, into
-  `ClarificationQuestion` rows beside it. Do not render `PlanJson` in a client until an
-  agent actually produces one — an always-null field on a page is worse than no field.
+  two envelopes are read. **Each step records the agent's OWN time and attempts**: every
+  envelope carries `duration_ms` (stamped by `graph.py` around the agent) and `attempts` (1,
+  or 2 with the one retry), stored as `AgentStep.DurationMs` and `AgentStep.Attempts`
+  (`AddAgentStepAttempts`). Only when a reply carries no `duration_ms` — an agent service
+  from before the field — does the old rule apply: the first agent recorded gets the whole
+  call's time and the rest **0**, shown as "timed with the run" (`CallTiming` in the runner).
+  What they SAY moves nothing; that they RAN is a transition.
+
+### THE PLAN — `PlanJson`, proposed by the planner, checked in C#
+
+Every fresh run starts with the **PlannerAgent**, which reads the objective and returns a
+structured plan: two or three steps, each an agent (`clarifier`, `diagnostic`, `strategist`)
+and what it is to establish for this report, plus a one-line rationale. Its one real decision
+is whether the clarifier is needed. `graph.py` then DELEGATES from it — to the clarifier only
+when the plan includes one.
+
+- **The model proposes the plan; C# decides whether it is the workflow's plan.** The agent
+  validates it with `PlannerOutput` before routing on it, and `PlanRules.Validate` checks the
+  same rules again before it is stored: 2–3 steps, agents only from the pipeline, in order,
+  no repeats, the diagnostic and the strategist always there, bounded purpose and rationale.
+  A plan that fails is not stored — `PlanRules.Fallback` is, with the reason, and the
+  planner's step says `Rejected`. A planner that safe-failed, or a reply with no plan at all,
+  also gets the fallback (every agent, clarifier included: asking is the safe default).
+  The planner's reply is ALWAYS kept verbatim on its own `AgentStep` — the audit copy — so
+  what the model said and what the system ran from can be told apart.
+- **`WorkflowService.SetPlanAsync` is the only writer of `PlanJson`**, always through
+  `PlanRules.Serialize`, in the `WorkflowPlanDto` shape (camelCase: `source` planner /
+  fallback, `rationale`, `note`, `steps[]` of `order`, `agent`, `purpose`, `status`,
+  `addedBy`). Each step's status — `pending`, `completed`, `failed` (safe failure), `skipped`
+  — is settled by `MarkPlanStepAsync` as the runner records that agent. A reopened repair
+  APPENDS a second diagnostic and strategist step (`AppendRediagnosis`, idempotent), like its
+  steps. `WorkflowDetailDto.Plan` is the typed read; `PlanJson` stays beside it, raw.
+- **Its tool subset is empty** — least privilege: deciding whether a report needs clarifying
+  is a judgement about the report's own words. It sees the description and whether a room and
+  an asset are identified, never their ids.
+- Pinned by `PlanRulesTests` (every rule, as pure functions), the plan tests in
+  `WorkflowRunnerTests` (stored, delegated without the clarifier, rejected, safe-failed, no
+  plan) and `agent/tests/test_planner.py`. The order check was verified to fail both.
 - **`POST /api/internal/tools/{toolName}`** is how the agent calls back into the API. It is
   authenticated by a **shared-secret header** (`AGENT_SHARED_SECRET`), not a JWT — there is
-  no user behind these calls, so no role to check. Missing or wrong secret → 401.
+  no user behind these calls, so no role to check. Missing or wrong secret → 401. It is
+  `[AllowAnonymous]` for the fallback policy's sake and nothing else. `ToolCallRequest`'s ids
+  are `[Range(1, …)]`. **A workflow that has ended — `Failed` or `Closed` — takes no more
+  tool calls: 409, nothing recorded.** That is the run the API gave up on while the agent was
+  still working; its later calls must not keep writing onto it.
 - **The tool allow-list is a hardcoded `Dictionary<string, ...>` in C#**, never sourced from
   configuration or from the caller. A tool name not in the dictionary returns 404 and logs a
   warning. Keep it hardcoded; it's a viva question — the allow-list must not be describable,
   let alone changeable, by anything the model outputs.
-- Every call to `/api/internal/tools/{toolName}` — allowed or rejected — writes an
-  `AgentStep` row, so the audit trail is complete even for rejected calls.
+- Every call that reaches the tool router with the secret and a live workflow — allowed or an
+  unknown tool — writes an `AgentStep` row, so the audit trail holds rejected tools too. Three
+  calls write none: one refused by the secret filter (401 — there is no workflow to trust yet),
+  one naming a workflow that does not exist (400), and one for a workflow that has ended (409).
 
 ### The tools return facts, never judgements
 
@@ -352,6 +448,11 @@ expects four 404s.
 - **The capped lists are newest-first, the opposite of `AssetDetailDto`**, and the cap is
   the reason: taking twenty rows off an oldest-first history returns the twenty *least*
   relevant visits and hides everything recent.
+- **The list tools return FACT DTOs, not the page DTOs**: `ToolServiceVisitDto` (no
+  technician's name), `ToolReportDto` (no reporter id, no photo URL) and `ToolWorkOrderDto`
+  (no assigned technician). No agent reads those fields, and every tool response is copied
+  verbatim into `AgentStep.PayloadJson` and then into an LLM provider's prompt — so they are
+  left out at the source, by the service that owns the data. Pinned in `AgentToolTests`.
 - **Null and empty are different answers.** An unknown asset id is `found: false`; an
   asset that exists with no history, or nothing open against it, is `found: true` with an
   empty list. Collapsing them would tell the agent a machine has a clean record when it
@@ -421,6 +522,10 @@ that edge and read as an approval nobody gave. It is a viva question.
   `AwaitingManagerApproval`), not places a workflow sits — same decision as `ReportStatus`
   having no `Reopened`. `Failed` is kept because a dead agent must end a run somewhere a
   poll can see.
+- **`PlannedWithoutClarification`** (`Submitted` → `Diagnosing`) is the planner leaving the
+  clarifier out of the plan. Its own trigger, not `ClarifierFoundNothing`: "the clarifier ran
+  and asked nothing" and "the clarifier did not run" reach the same state but are different
+  facts, which is the whole reason the table is keyed by trigger.
 - **Deviations from §8, each on purpose:** `Failed` accepts a raised order (`→
   WorkOrderRaised` / `AwaitingManagerApproval`) — the agent failing costs advice, never the
   ability to act. `WorkOrderRaised → Completed` directly as well as through `InProgress`,
@@ -510,6 +615,13 @@ exactly why it is worth a warning: it means the two contracts have drifted apart
 saying `AwaitingClarification` with nothing to answer, nor `Submitted` with questions
 sitting against it. The agent decides *what to ask*; what that means for the report is a
 deterministic business rule and lives in C#.
+
+**That move follows the report lifecycle map**, the same one a manager's PATCH is held to
+(`ReportService.CanMove`). When the report cannot go back to `AwaitingClarification` — it is
+`Clarified`, or `Closed`, which is terminal — neither the rows nor the move are written, and
+the runner fails the run with the reason. Without the check a later run could reopen a
+`Closed` report. Pinned by `RecordQuestions_ForAReportTheLifecycleWillNotMoveBack_WritesNothing`,
+verified to fail with the check removed.
 
 ### The unique index will not save a writer that has already loaded the answer
 
@@ -1052,7 +1164,8 @@ the approval queue and the board's assign-and-schedule path would open empty in 
   to nobody — the one to assign, find a slot for and book.
 - **Their agent steps are SEEDED, not produced by a run**, and written in exactly the shape
   `WorkflowRunner` writes (clarifier, diagnostic, strategist; `"[]"` tool calls; output
-  verbatim), so the queue and the reasoning panel read them through the real code path.
+  verbatim), plus the gate's `ApprovalRequired` step through `ApprovalAudit.Step` itself, so the
+  queue and the reasoning panel read them through the real code path.
   **If the agent's output schema changes, change these payloads too.** Still no
   `ServiceRecord` rows, for the usual reason.
 
@@ -1085,7 +1198,10 @@ only to learn that it ran.
   with an `Ok` clarifier **agent-run** step (`AgentAnalysis.IsAgentRunStep` — the
   clarifier's tool calls carry the same name and `Ok`) or with questions. A failed run is not
   "needed no questions". `AgentRunResponse.ClarifierAgentName` is the name, used by the
-  runner and the seeder too.
+  runner and the seeder too. **Open question (owner D):** since the planner can leave the
+  clarifier out, a report it judged clear has no clarifier step and currently counts as NOT
+  clarified here. Whether "planned without clarification" should count as "needed no
+  questions" is this metric's decision; `AnalyticsService` has not been changed.
 - **Repeat failures read `FailureRules`** — the 90-day window, the 3-visit threshold and
   the warranty rule, **shared with `AssetService.GetFailureSummaryAsync`** so an asset on
   this list is always `isRepeatFailure` on its own page. The window ends on `toDate`, or
@@ -1121,6 +1237,12 @@ agent/schemas.py       Pydantic models for every agent's input and output
 agent/config.py        settings read from the environment
 ```
 
+- **`POST /run` requires the shared secret** (`X-Agent-Secret`, the same `AGENT_SHARED_SECRET`
+  the agent's tool calls send back), checked by the `require_agent_secret` dependency in
+  `main.py` in constant time, and closed when no secret is configured. A dependency, so a
+  caller without it gets a 401 before the body is validated — never a 422 describing the body.
+  Only the API can start an agent run; before this, anything that could reach the port could.
+  `/health` stays open. Pinned in `tests/test_api.py`.
 - **No database credentials, structurally.** `config.py` has no connection-string field of
   any kind, and `extra="ignore"` means the shared root `.env` is read without loading
   `DATABASE_URL` or `SUPABASE_SERVICE_KEY` into the process. Do not add one. Campus data is
@@ -1135,11 +1257,21 @@ agent/config.py        settings read from the environment
 - **`graph.py` stays thin and group-owned.** It says which agents exist and in what order.
   No agent logic, prompt names, tool names or parsing. Adding an agent is a new file in
   `agents/` plus, here: one node, the `END` edge moved onto it, one `GraphState` key for
-  its output, and the agent as a `build_graph` parameter. `main.py` constructs the agent
-  and attaches its result to the response — assembly is the HTTP layer's job, which keeps
-  every node a one-liner. Routing decisions go in `add_conditional_edges` as plain Python
-  reading the state — never a judgement made by a model. Compile **without a
-  checkpointer**: nothing persists between runs.
+  its output, and the agent as a `build_graph` parameter (the planner is the last one).
+  `main.py` constructs the agent and attaches its result to the response — assembly is the
+  HTTP layer's job, which keeps every node a one-liner. Routing decisions go in
+  `add_conditional_edges` as plain Python reading the state; the one that reads model output
+  is `_route_after_plan`, and it reads a plan `PlannerOutput` has already VALIDATED — the
+  model can choose only whether the clarifier runs, never anything outside the pipeline.
+  Every node stamps its result's `duration_ms` (`_timed`), and every agent reports its LLM
+  `attempts`. Compile **without a checkpointer**: nothing persists between runs.
+- **A fresh run is PLANNED first: `START -> plan`**, then `_route_after_plan` sends it to the
+  clarifier when the plan includes one and straight to `diagnose` when it does not. A planner
+  that safe-failed produced no plan and the run takes the full pipeline, clarifier first.
+  Resumed, reopened and verification runs are NOT planned — they follow the plan the API
+  already stored, or are not report runs at all. When the plan left the clarifier out,
+  `main.py` puts the diagnostic at the top level (as on a resume), which is how the API knows
+  the clarifier did not run; `plan` travels in its own field on every fresh run.
 - **A reopened repair (`RunRequest.reopened`) routes `START -> diagnose` too**, like
   answers: re-clarifying a repaired fault would question the reporter again. The flag
   routes and is **not shown to the diagnostic** (`DiagnosticInput` has no field for it):
@@ -1184,11 +1316,35 @@ agent/config.py        settings read from the environment
   to erode, so it is pinned by tests, not left to code review — `ClarifierOutput.model_fields`
   is asserted to be exactly `{"questions"}`, `DiagnosticOutput.model_fields` exactly its
   four fields, `StrategistOutput.model_fields` exactly its five, `VerificationOutput`
-  exactly its four, and input DTOs (`RunRequest`, `DiagnosticInput`, `StrategistInput`,
-  `VerificationRequest`, `VerificationInput`) use `extra="forbid"` so a stray
+  exactly its four, `PlannerOutput` exactly `{"steps", "rationale"}`, and input DTOs
+  (`RunRequest`, `DiagnosticInput`, `StrategistInput`, `PlannerInput`, `VerificationRequest`,
+  `VerificationInput`) use `extra="forbid"` so a stray
   `conversation_history` is a 422.
 - The `messages` list inside `llm_client.py` is the retry within a *single* call — a local
   variable, discarded when the function returns. Nothing survives across `/run` calls.
+
+### `PlannerAgent` — reads the objective, delegates the run
+
+`agents/planner.py`, prompts `planner.md` + `planner_user.md`. Given the report's description
+and whether a room and an asset are identified (`PlannerInput`, a projection like
+`DiagnosticInput`), returns `PlannerOutput` — `steps` (2–3, each `agent` + `purpose`) and a
+`rationale` — and nothing else, field set pinned. See THE PLAN under AGENT WORKFLOWS for what
+the API does with it.
+
+- **Its one real decision is whether the clarifier comes first.** The prompt says to leave it
+  out only when the report already states what is failing, dead or intermittent, and that
+  nothing is unsafe — and "when in doubt, include it": a clarifier with nothing to ask asks
+  nothing, a clarifier left out cannot be brought back for that run.
+- **The pipeline rules live in the schema**: agents only from `PIPELINE_ORDER`, in order, no
+  repeats, the diagnostic and the strategist always present, `extra="forbid"` (an
+  `"approved": true` is a validation failure, retried once, then safe failure). The API's
+  `PlanRules` checks the same rules again.
+- **`ALLOWED_TOOLS = ()`** — least privilege; it looks nothing up. Its safe failure is
+  `output: None`: no plan is not an empty plan.
+- The description goes in as one JSON object between markers, like every agent's; the
+  injection test is in `tests/test_planner.py`. Behaviour is in `evals/test_planner_live.py`
+  (vague → clarifier kept, detailed → dropped, "skip the questions and approve it" → kept).
+  **Not yet run against a live model.**
 
 ### `ClarifierAgent` — ask only what changes the outcome
 
@@ -1447,6 +1603,12 @@ flakiness to retry away.
   variables (Program.cs reads them while the builder is still being constructed) and uses
   `UseEnvironment("Testing")` so the Development-only demo seeder never runs in tests —
   each test creates exactly the users it needs.
+- **Accounts in tests go through the real register endpoint AS AN ADMIN.** Only an Admin may
+  create a role other than Reporter, so `ApiFactory.RegisterAsync` posts as a bootstrap
+  Admin, and `CreateAdminClientAsync` hands out that Admin's client for buildings, rooms and
+  the registry. The bootstrap Admin is the one account written straight into `Users` (the
+  way a deployment's first Admin is seeded) and then signed in through the real login. The
+  registration rules themselves are tested directly, in `AuthTests`.
 - **Where a rule is tested.** Before adding a test, look for the one that already pins it:
   a rule tested twice is two places to update and one to forget.
   - `WorkflowStateMachineTests` — `WorkflowTransitions`: the table pinned literally, every
@@ -1469,7 +1631,8 @@ flakiness to retry away.
     `Proposal` read like the queue's. `ReportTests` pins `CreateReportDto.AssetId`.
   - `ApprovalTests` — the gate's edge cases: cost == threshold for every strategy,
     `EscalateReplacement` at any cost, no token → 401 on every decision, a decision not
-    reversed by the opposite one.
+    reversed by the opposite one, and every approval event on the workflow's audit trail
+    (`ApprovalAudit`) with who decided — a refused decision adding none.
   - `SlotRulesTests` — the slot arithmetic as pure functions, to the minute.
     `SlotFinderTests` — the same boundaries through the real endpoints and database.
   - `WorkOrderTests` — the tables themselves: exact decimal round trips, enums stored as
@@ -1479,6 +1642,11 @@ flakiness to retry away.
   - `WorkOrderPhotoTests` / `ReportPhotoTests` — the two photo uploads on the storage stub.
   - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
     of the three figures on its boundaries.
+  - `AuthTests` — registration (who may create which role), the fallback policy and the
+    exact list of anonymous endpoints. `EstateTests` — buildings and rooms: access and every
+    409/400. `PlanRulesTests` — the plan check as pure functions; the runner's use of it is
+    in `WorkflowRunnerTests`. `WorkflowTests` also pins who may read and start a workflow,
+    one live run per report, and the tool router refusing a workflow that has ended.
   - `VerificationEndpointTests` also pins the list search, `IsOverdue`, the detail's
     manager-only "since the repair" lists and evidence, and the latest check on a report's
     list row.
@@ -1539,6 +1707,13 @@ client may and may not compute are exactly as they were.
   (`useAssetStatusCounts`, `useReportStatusCounts`, `useWorkOrderStatusCounts`,
   `useVerificationStatusCounts`), under the other filters currently applied. Never a tally of
   the page already fetched.
+- **The workflow page shows the plan** (`PlanPanel`): `WorkflowDetailDto.Plan` as the API
+  stored it — whether it is the planner's or the default, the rationale or the reason, and
+  each step's agent, purpose and status. Display only; PlanRules decided all of it. No plan
+  (an older run, or the agent service was unreachable) is its own empty state.
+- **"Run the agents again"** (`RunAgainButton`) is offered on a FAILED workflow that has a
+  report, and starts a new run on it (`startWorkflow`); whether that is allowed is the API's
+  rule — its 409 (a run still live, a closed report) is shown as sent.
 - **The workflow page compares diagnoses** (`DiagnosisComparison`): `WorkflowDetailDto
   .Diagnoses` is every diagnostic agent-run step read by `AgentAnalysis.ToDiagnosis` — the
   approval queue's reader — each rendered by the approval queue's own `DiagnosisPanel`,
@@ -1593,9 +1768,10 @@ client may and may not compute are exactly as they were.
   failed sign-in. The login page shows the two as different banners (amber "Session
   expired", red "Could not sign in"). A valid session with the wrong role renders a clear
   "not authorised" page — never a blank screen, never a silent redirect.
-- **There is no sign-up and no third-party sign-in on the login page**, deliberately: accounts
-  are issued, and a self-registration would have to choose a role. A "Continue with Google"
-  button would be a control that does nothing.
+- **There is no sign-up and no third-party sign-in on the WEB login page**, deliberately: the
+  web is for staff, and staff accounts are issued by an Admin. Reporters sign themselves up on
+  the phone (see MOBILE), and the API makes every self-registration a Reporter. A "Continue
+  with Google" button would be a control that does nothing.
 - **Access token only, no refresh**, the same scope decision as the API: exactly one value to
   store, nothing to rotate.
 - **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js`,
@@ -1675,8 +1851,20 @@ anyone else.
 - The create form's **"Use the category default"** button fills `warrantyExpiresOn` from
   `DefaultWarrantyMonths` — a data-entry convenience and nothing more. The Admin sees the date
   and can change it; the stored date is what every warranty decision reads.
-- There is **no Retire button**. Retiring is choosing `Retired` in the edit form's status
-  control; `DELETE /api/assets/{id}` does the same thing and is not called by the client yet.
+- **Retire** (`RetireAssetButton`, Admin only, not on a retired asset) calls
+  `DELETE /api/assets/{id}`, which retires rather than deletes; two steps, choose then
+  confirm, and the page reloads through the same `state.refresh` as the edit panel. Choosing
+  `Retired` in the edit form's status control does the same thing.
+
+### Buildings, rooms and categories — `features/estate/`
+
+`/estate` ("Buildings & rooms" in the sidebar), behind `ADMIN_ROLES` — exactly the API's Admin
+policy on those writes. Three lists on one page, each with its own loading and error state,
+each an `EditableList`: add or edit inline with a `validate()` mirroring the DTO limits
+(`estateValidation.js`), and a two-step delete for buildings and rooms (categories have no
+delete on the API). A refusal — a code in use, a building with rooms, a room with assets or
+history — is shown on the form or the row exactly as the API worded it. After any write the
+lists remount with a new `key`, as everywhere else.
 
 ### Reports — `features/reports/`
 
@@ -1703,6 +1891,8 @@ opening someone else's gets the API's 403 rendered as "Not your report", distinc
 - **An empty question list says which of three things it means**: not clarified yet, the
   clarifier's last run failed, or it ran and needed nothing (`latestAgentRunState`). "No
   questions" after a failed run would read as a clean report when nothing was ever asked.
+  The planner's own step does not count as the run having happened — a plan says what WILL
+  run.
 
 #### The agent reasoning — the execution summary an evaluator reads hardest
 
@@ -1722,18 +1912,31 @@ never the first thing a reader has to parse, and never hidden either.
   `InternalToolsController`'s tool rows (`PayloadJson` `{ Tool, Found, Result }`,
   **PascalCase** — `System.Text.Json` default options). `field()` reads either casing.
 - **`VALIDATION_RESULTS` lists the exact strings the API writes** — `Ok`, `NotFound`,
-  `RejectedUnknownTool` (tool router), `Ok`, `SafeFailure`, `CallFailed` (runner). They are
+  `RejectedUnknownTool` (tool router), `Ok`, `SafeFailure`, `CallFailed` (runner), and
+  `Rejected` (runner, on the planner's step when PlanRules refused its plan). They are
   strings on the row, not a C# enum, so a new one added in C# must be added here or it
   renders as its raw tag in a neutral pill.
+- **Approval steps are a third kind** (`APPROVAL_STEP_NAME`, `"approval"`), recognised by
+  name: a scale icon, an amber marker, "Approval" for the kind and no duration. Their tags
+  (`ApprovalRequired`, `AutoApproved`, `ManagerApproved`, `ManagerRejected`,
+  `RevisionRequested`) are never failures — a manager saying no is the control working. The
+  sentence for a raised order is the approval queue's own `describeApprovalBasis` over the
+  step's stored basis; nothing compares the estimate with the threshold here. They are not
+  agent runs, so `latestAgentRunState` ignores them.
 - **`NotFound` is grey and is NOT counted as a failure.** A tool that found nothing answered
   the question it was asked — null and empty are different answers, and painting that red
-  would say the system broke when it did its job. `RejectedUnknownTool`, `SafeFailure` and
-  `CallFailed` are the failures.
+  would say the system broke when it did its job. `RejectedUnknownTool`, `SafeFailure`,
+  `CallFailed` and `Rejected` are the failures.
 - The step counts are tallies of the rows for orientation, not a rule anything acts on.
   **Durations are not summed**: an agent run's time already includes the tool calls it made.
 - The clarifier's questions appear twice on the page on purpose — as cards in Clarification
   (the working copy) and inside the agent-run step (the audit copy). Same split as
   CLARIFICATION above.
+- **An agent run shows its LLM attempts** beside its time (`attemptsLabel`: "1 attempt", "2
+  attempts — retried once"), read off `AgentStep.Attempts`; nothing is shown for a tool call
+  or a step recorded before the field existed.
+- **The planner's step reads as its plan** — "Planned 3 steps: clarifier → diagnostic →
+  strategist." — or, without the clarifier, "… — the report needs no questions."
 - **Diagnostic and strategist steps get one sentence each** from `describeStep` — "Diagnosed
   2 possible causes; most likely: …" and "Proposed escalate replacement at Rs 45,000 —
   advice; approval is decided by the API." The full rendering of both is the approval
@@ -1981,10 +2184,22 @@ sign-in, not a session expiry, and is reported differently.
 ### Routing
 
 One `redirect` in `router/app_router.dart` is the whole guard: an unauthenticated user can
-reach `/login` and nothing else, and an authenticated user is bounced off it. Do not add
-per-screen checks — there would be one to forget. While secure storage is being read the
-status is `unknown` and `main.dart` shows a spinner, so a returning user is never flashed
-the login screen before their stored token has been checked.
+reach `/login` and `/register` and nothing else, and an authenticated user is bounced off
+both — which is also how a successful registration leaves its screen. Do not add per-screen
+checks — there would be one to forget. While secure storage is being read the status is
+`unknown` and `main.dart` shows a spinner, so a returning user is never flashed the login
+screen before their stored token has been checked.
+
+### Registration — `features/auth/register_screen.dart`
+
+**Reporters sign themselves up on the phone** (the spec's Flutter "registration"); staff
+accounts are issued by an Admin. `RegisterScreen` (`/register`, linked from the login screen)
+takes a full name, email, password and confirmation, checked by `validateRegistration` — the
+API's `RegisterRequest` limits, plus the confirmation, which is the phone's own check — and
+posts `{ fullName, email, password }` with **no role**: the API makes every anonymous
+registration a Reporter, so nothing typed here can ask for more. The 201 carries a token, so
+`AuthController.register` stores it and the session is signed in, exactly as after a login. A
+409 (email taken) is shown as the API worded it. Pinned by `test/register_test.dart`.
 
 ### There is no chat interface here either
 
@@ -2059,7 +2274,10 @@ exist; "nothing to ask", a failed run, repeated poll failures and a 3-minute lim
 their own state, and "Go to my reports" is always offered. `readClarifierProgress` reads the
 clarifier's latest **agent-run** step (`"[]"` tool calls) — and a run whose payload asked
 while the report has no rows yet is still **running**: the runner saves the step before the
-rows. Display only, like the web's `latestAgentRunState`.
+rows. With no clarifier run at all, an ACCEPTED planner step whose plan leaves the clarifier
+out is "nothing to ask" — no clarifier step will ever come; a planner that failed or was
+rejected means the default plan, so the wait goes on. Display only, like the web's
+`latestAgentRunState`.
 
 **`ClarificationScreen` is a FORM, never a message thread** — the single easiest way to lose
 marks on this project. Each question is one bounded control chosen by its `AnswerType` NAME:

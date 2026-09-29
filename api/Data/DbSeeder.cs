@@ -19,6 +19,7 @@ public static class DbSeeder
         IPasswordHasher<User> passwordHasher,
         VerificationSettings verificationSettings,
         ILogger logger,
+        ApprovalSettings? approvalSettings = null,
         CancellationToken cancellationToken = default)
     {
         await SeedBuildingsAndRoomsAsync(db, cancellationToken);
@@ -28,7 +29,7 @@ public static class DbSeeder
         // reporter. The verification seeder checks for one and backs out if it is absent.
         await SeedUsersAsync(db, configuration, passwordHasher, logger, cancellationToken);
         await SeedVerificationAsync(db, verificationSettings, logger, cancellationToken);
-        await SeedLiveWorkOrdersAsync(db, logger, cancellationToken);
+        await SeedLiveWorkOrdersAsync(db, approvalSettings ?? new ApprovalSettings(), logger, cancellationToken);
     }
 
     private static async Task SeedBuildingsAndRoomsAsync(
@@ -673,6 +674,7 @@ public static class DbSeeder
     /// </summary>
     private static async Task SeedLiveWorkOrdersAsync(
         AppDbContext db,
+        ApprovalSettings approvalSettings,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -824,7 +826,7 @@ public static class DbSeeder
 
             db.Reports.Add(report);
 
-            db.WorkOrders.Add(new WorkOrder
+            var order = new WorkOrder
             {
                 Report = report,
                 AssetId = asset.Id,
@@ -832,7 +834,9 @@ public static class DbSeeder
                 Strategy = seed.Strategy,
                 EstimatedCost = seed.EstimatedCost,
                 PartsRequired = seed.PartsRequired
-            });
+            };
+
+            db.WorkOrders.Add(order);
 
             // Saved per order: AgentWorkflow carries ReportId with no navigation to follow,
             // so the report needs its id before the workflow can point at it.
@@ -854,6 +858,18 @@ public static class DbSeeder
                 workflow.Steps.Add(SeededAgentStep(AgentRunResponse.ClarifierAgentName, new { questions = Array.Empty<object>() }, 7_800));
                 workflow.Steps.Add(SeededAgentStep(AgentRunResponse.DiagnosticAgentName, seed.Diagnosis, 0));
                 workflow.Steps.Add(SeededAgentStep(AgentRunResponse.StrategistAgentName, seed.Proposal, 0));
+
+                // Then the gate routing the raised order to a manager — the step
+                // WorkOrderService.CreateAsync writes (ApprovalAudit), read against the threshold
+                // this API is configured with.
+                var exceedsThreshold = order.EstimatedCost > approvalSettings.CostThreshold;
+                var isReplacement = order.Strategy == WorkOrderStrategy.EscalateReplacement;
+                workflow.Steps.Add(ApprovalAudit.Step(
+                    workflow, order, ApprovalAudit.ApprovalRequired,
+                    new ApprovalBasisDto(
+                        approvalSettings.CostThreshold, exceedsThreshold, isReplacement,
+                        exceedsThreshold || isReplacement),
+                    decidedByUserId: null));
 
                 db.AgentWorkflows.Add(workflow);
                 await db.SaveChangesAsync(cancellationToken);

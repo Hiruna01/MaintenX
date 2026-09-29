@@ -173,3 +173,12 @@ export function updateAsset(id, values) {
     },
   });
 }
+
+/**
+ * DELETE /api/assets/{id} — Admin only, 204. It RETIRES the asset, never deletes the row: the
+ * status becomes Retired and the service history stays, because that history outlives the
+ * machine. Retiring an asset that is already retired is still a 204.
+ */
+export function retireAsset(id) {
+  return request(buildAssetPath(id), { method: 'DELETE' });
+}

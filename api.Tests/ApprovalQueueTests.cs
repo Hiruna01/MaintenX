@@ -473,10 +473,7 @@ public class ApprovalQueueTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "ApprovalPass1", fullName, role),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "ApprovalPass1", fullName, role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -489,13 +486,13 @@ public class ApprovalQueueTests : IClassFixture<ApiFactory>
     /// <summary>A room, an asset in it, and a report filed through POST /api/reports.</summary>
     private async Task<Fault> NewFaultAsync()
     {
-        var anonymous = _factory.CreateClient();
+        var estate = await _factory.CreateAdminClientAsync();
 
-        var building = await (await anonymous.PostAsJsonAsync(
+        var building = await (await estate.PostAsJsonAsync(
                 "/api/buildings", new CreateBuildingDto("Main Block", UniqueCode()), JsonOptions))
             .Content.ReadFromJsonAsync<BuildingDto>(JsonOptions);
 
-        var room = await (await anonymous.PostAsJsonAsync(
+        var room = await (await estate.PostAsJsonAsync(
                 "/api/rooms", new CreateRoomDto(building!.Id, "Lecture Hall", UniqueCode(), 1), JsonOptions))
             .Content.ReadFromJsonAsync<RoomDto>(JsonOptions);
 

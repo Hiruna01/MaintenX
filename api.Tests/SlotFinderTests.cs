@@ -133,10 +133,7 @@ public class SlotFinderTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SlotPass1", "Test User", role),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SlotPass1", "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -149,13 +146,13 @@ public class SlotFinderTests : IClassFixture<ApiFactory>
     /// <summary>An asset in a room of its own, so no other test's classes can reach it.</summary>
     private async Task<int> NewAssetAsync()
     {
-        var anonymous = _factory.CreateClient();
+        var estate = await _factory.CreateAdminClientAsync();
 
-        var building = await (await anonymous.PostAsJsonAsync(
+        var building = await (await estate.PostAsJsonAsync(
                 "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions))
             .Content.ReadFromJsonAsync<BuildingDto>(JsonOptions);
 
-        var room = await (await anonymous.PostAsJsonAsync(
+        var room = await (await estate.PostAsJsonAsync(
                 "/api/rooms", new CreateRoomDto(building!.Id, "Lecture Hall A", UniqueCode(), 1), JsonOptions))
             .Content.ReadFromJsonAsync<RoomDto>(JsonOptions);
 

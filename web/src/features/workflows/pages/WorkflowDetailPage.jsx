@@ -11,6 +11,8 @@ import { EmptyState, ErrorState } from '../../../components/ui/States';
 import AuditTrail from '../components/AuditTrail';
 import DiagnosisComparison from '../components/DiagnosisComparison';
 import LifecycleRail from '../components/LifecycleRail';
+import PlanPanel from '../components/PlanPanel';
+import RunAgainButton from '../components/RunAgainButton';
 import useWorkflow from '../hooks/useWorkflow';
 import { workflowStateLabel } from '../services/workflowsService';
 import styles from '../workflows.module.css';
@@ -45,12 +47,12 @@ function Fact({ icon: Icon, label, children }) {
 }
 
 /**
- * One workflow and its audit trail.
+ * One workflow: its objective, the plan it was delegated from, where it sits in the
+ * lifecycle, its diagnoses and its audit trail.
  *
- * NOTE what is not on this page: the workflow's PlanJson. Nothing populates it — the
- * clarifier produces questions, and questions are not a plan — so rendering it would put
- * a permanently empty "Plan" heading on the page. It comes back when an agent actually
- * produces a plan.
+ * The plan is `data.plan` — PlanJson as the API stored it, after its PlanRules check: the
+ * planner agent's plan, or the default one with the reason. The page shows it and says which;
+ * it decides nothing about it. The raw planner reply is on the planner's step in the trail.
  */
 export function WorkflowDetailPage() {
   const { id } = useParams();
@@ -88,9 +90,12 @@ export function WorkflowDetailPage() {
         title={`Workflow #${data.id}`}
         actions={
           data.reportId ? (
-            <MxButton variant="primary" icon={FileText} to={`/reports/${data.reportId}`}>
-              Open report
-            </MxButton>
+            <>
+              <RunAgainButton workflow={data} />
+              <MxButton variant="primary" icon={FileText} to={`/reports/${data.reportId}`}>
+                Open report
+              </MxButton>
+            </>
           ) : null
         }
       >
@@ -106,6 +111,8 @@ export function WorkflowDetailPage() {
             {/* The report's description, verbatim — it is what the run was asked to act on. */}
             <blockquote className={styles.objective}>{data.objective}</blockquote>
           </Panel>
+
+          <PlanPanel plan={data.plan} />
 
           <LifecycleRail state={data.currentState} reopenedWorkOrderId={data.reopenedWorkOrderId} />
 

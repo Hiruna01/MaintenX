@@ -7,6 +7,7 @@ import '../features/assets/scan_asset_screen.dart';
 import '../features/auth/auth_controller.dart';
 import '../features/auth/auth_state.dart';
 import '../features/auth/login_screen.dart';
+import '../features/auth/register_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/reports/clarification_screen.dart';
 import '../features/reports/my_reports_screen.dart';
@@ -38,23 +39,30 @@ final routerProvider = Provider<GoRouter>((ref) {
     initialLocation: HomeScreen.path,
     refreshListenable: refresh,
 
-    // The guard. An unauthenticated user can reach exactly one screen: login. There is
-    // no per-screen check to forget, because every route goes through here.
+    // The guard. An unauthenticated user can reach exactly two screens: sign in and create
+    // an account. There is no per-screen check to forget, because every route goes through
+    // here — and a signed-in user is bounced off both, which is also how a successful
+    // registration leaves its screen.
     //
     // `unknown` never reaches this point — MaintenXApp shows a spinner until secure
     // storage has been read, so a returning user is not flashed the login screen.
     redirect: (context, state) {
       final isAuthenticated = ref.read(authControllerProvider).isAuthenticated;
-      final isAtLogin = state.matchedLocation == LoginScreen.path;
+      final location = state.matchedLocation;
+      final isSignedOutScreen = location == LoginScreen.path || location == RegisterScreen.path;
 
-      if (!isAuthenticated && !isAtLogin) return LoginScreen.path;
-      if (isAuthenticated && isAtLogin) return HomeScreen.path;
+      if (!isAuthenticated && !isSignedOutScreen) return LoginScreen.path;
+      if (isAuthenticated && isSignedOutScreen) return HomeScreen.path;
       return null;
     },
     routes: [
       GoRoute(
         path: LoginScreen.path,
         builder: (context, state) => const LoginScreen(),
+      ),
+      GoRoute(
+        path: RegisterScreen.path,
+        builder: (context, state) => const RegisterScreen(),
       ),
       GoRoute(
         path: HomeScreen.path,

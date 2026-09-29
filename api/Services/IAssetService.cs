@@ -123,8 +123,11 @@ public interface IAssetService
     /// NULL means no asset has that id; an EMPTY LIST means the asset exists and has
     /// never been serviced. Collapsing those two would tell the agent a machine has a
     /// clean record when in fact it was asking about a machine that is not there.
+    ///
+    /// Each visit is a <see cref="ToolServiceVisitDto"/> — the evidence without the technician's
+    /// name, which no agent reads and which would otherwise be copied into every tool step.
     /// </summary>
-    Task<IReadOnlyList<ServiceRecordDto>?> GetRecentServiceHistoryAsync(
+    Task<IReadOnlyList<ToolServiceVisitDto>?> GetRecentServiceHistoryAsync(
         int assetId,
         CancellationToken cancellationToken = default);
 

@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Middleware;
+using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CampusFacilities.Api.Controllers;
@@ -19,6 +21,10 @@ namespace CampusFacilities.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/internal/tools")]
+// No JWT here — there is no user behind a tool call — so it opts out of the fallback
+// "signed-in user" policy explicitly. It is NOT open: AgentSecretFilter below refuses every
+// call without the shared secret, and fails closed when none is configured.
+[AllowAnonymous]
 [ServiceFilter(typeof(AgentSecretFilter))]
 public class InternalToolsController : ControllerBase
 {
@@ -94,6 +100,7 @@ public class InternalToolsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<ToolCallResponse>> Invoke(
         string toolName,
         ToolCallRequest request,
@@ -126,15 +133,35 @@ public class InternalToolsController : ControllerBase
                 durationMs: 0,
                 validationResult: "RejectedUnknownTool",
                 errorMessage: $"Tool '{toolName}' is not in the allow-list.",
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             return NotFound();
         }
 
-        if (!await _workflowService.ExistsAsync(workflowId, cancellationToken))
+        var state = await _workflowService.GetStateAsync(workflowId, cancellationToken);
+
+        if (state is null)
         {
             ModelState.AddModelError(nameof(request.WorkflowId), $"Workflow {workflowId} does not exist.");
             return ValidationProblem(ModelState);
+        }
+
+        // A workflow that has ended takes no more tool calls. The case this exists for: the
+        // API's wait on /run timed out and marked the run Failed while the agent was still
+        // working, and its later calls would otherwise keep writing audit rows onto a
+        // workflow already declared dead. Nothing is recorded — the run it belongs to is over.
+        if (state is WorkflowState.Failed or WorkflowState.Closed)
+        {
+            _logger.LogWarning(
+                "Agent {AgentName} called {ToolName} for workflow {WorkflowId}, which is {State}. Refused.",
+                agentName, toolName, workflowId, state);
+
+            return Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Workflow has ended",
+                Detail = $"Workflow {workflowId} is {state}; it takes no more tool calls."
+            });
         }
 
         var stopwatch = Stopwatch.StartNew();
@@ -151,7 +178,7 @@ public class InternalToolsController : ControllerBase
             durationMs: (int)stopwatch.ElapsedMilliseconds,
             validationResult: result is not null ? "Ok" : "NotFound",
             errorMessage: null,
-            cancellationToken);
+            cancellationToken: cancellationToken);
 
         return Ok(response);
     }

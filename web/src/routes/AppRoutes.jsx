@@ -13,6 +13,7 @@ import {
   WORK_ORDER_ROLES,
 } from '../features/auth/services/roles';
 import DashboardPage from '../features/dashboard/pages/DashboardPage';
+import EstatePage from '../features/estate/pages/EstatePage';
 import ReportDetailPage from '../features/reports/pages/ReportDetailPage';
 import ReportsPage from '../features/reports/pages/ReportsPage';
 import MetricsPage from '../features/verification/pages/MetricsPage';
@@ -80,6 +81,12 @@ export function AppRoutes() {
           Admin and a Technician reaching this by URL get "not authorised", not a 403 page. */}
       <Route element={<ProtectedRoute allowedRoles={DISPATCH_ROLES} />}>
         <Route path="/approvals" element={<ApprovalsPage />} />
+      </Route>
+
+      {/* The buildings, rooms and asset categories: Admin only, exactly the API's policy on
+          their writes — the same split as registering an asset. */}
+      <Route element={<ProtectedRoute allowedRoles={ADMIN_ROLES} />}>
+        <Route path="/estate" element={<EstatePage />} />
       </Route>
 
       {/* Estate-wide numbers: FacilitiesManager and Admin, the two roles the endpoint names. */}

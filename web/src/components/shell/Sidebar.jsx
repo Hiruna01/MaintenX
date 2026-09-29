@@ -2,6 +2,7 @@ import clsx from 'clsx';
 import {
   BarChart3,
   Boxes,
+  Building2,
   LayoutGrid,
   LogOut,
   MessageSquareWarning,
@@ -14,6 +15,7 @@ import { Link, NavLink } from 'react-router-dom';
 
 import useAuth from '../../features/auth/hooks/useAuth';
 import {
+  ADMIN_ROLES,
   DISPATCH_ROLES,
   MANAGER_ROLES,
   METRICS_ROLES,
@@ -42,6 +44,7 @@ const GROUPS = [
     items: [
       { to: '/assets', label: 'Assets', icon: Boxes, roles: null },
       { to: '/reports', label: 'Reports', icon: MessageSquareWarning, roles: MANAGER_ROLES },
+      { to: '/estate', label: 'Buildings & rooms', icon: Building2, roles: ADMIN_ROLES },
     ],
   },
   {

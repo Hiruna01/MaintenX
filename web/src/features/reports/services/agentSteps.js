@@ -3,22 +3,32 @@
  * the reasoning panel stays presentational and every interpretation lives in one place.
  *
  * Two kinds of row arrive and they are written by two different owners:
- *   - an AGENT RUN, written by WorkflowRunner — one each for the clarifier, the diagnostic
- *     and the strategist, which run inside the same /run call. ToolCallsJson is "[]" and
- *     PayloadJson is that agent's output verbatim (`{ questions }`, `{ hypotheses, … }`,
- *     `{ strategy, estimated_cost, … }`).
+ *   - an AGENT RUN, written by WorkflowRunner — one each for the planner, the clarifier, the
+ *     diagnostic and the strategist, which run inside the same /run call. ToolCallsJson is
+ *     "[]" and PayloadJson is that agent's output verbatim (`{ steps, rationale }`,
+ *     `{ questions }`, `{ hypotheses, … }`, `{ strategy, estimated_cost, … }`).
  *   - a TOOL CALL, one per call, written by InternalToolsController — including calls it
  *     refuses. ToolCallsJson names the tool; PayloadJson is `{ Tool, Found, Result }`.
+ *   - an APPROVAL step, written by WorkOrderService (ApprovalAudit) when an order is raised
+ *     and when a manager decides. AgentName "approval", ToolCallsJson null, PayloadJson
+ *     `{ workOrderId, decision, estimatedCost, basis, decidedByUserId, reason, note }`.
  *
  * Nothing here judges what an agent produced. It says what happened, in words, and the
  * raw record is always one click away.
  */
+
+import { describeApprovalBasis, formatMoney } from '../../workorders/services/workOrdersApi';
 
 /**
  * The ValidationResult strings the API writes. They are strings on the row, not a C# enum,
  * so they are listed here by exactly the value the API uses:
  *   Ok, NotFound, RejectedUnknownTool — InternalToolsController
  *   Ok, SafeFailure, CallFailed       — WorkflowRunner
+ *   Rejected                          — WorkflowRunner, on the planner's step, when the API's
+ *                                       PlanRules refused the plan and ran the fallback instead
+ *   ApprovalRequired, AutoApproved,   — WorkOrderService, on an approval step (see
+ *   ManagerApproved, ManagerRejected,   APPROVAL_DECISIONS below)
+ *   RevisionRequested
  */
 export const VALIDATION_RESULTS = {
   Ok: 'Ok',
@@ -26,6 +36,7 @@ export const VALIDATION_RESULTS = {
   RejectedUnknownTool: 'RejectedUnknownTool',
   SafeFailure: 'SafeFailure',
   CallFailed: 'CallFailed',
+  Rejected: 'Rejected',
 };
 
 /**
@@ -39,6 +50,22 @@ const OUTCOMES = {
   [VALIDATION_RESULTS.RejectedUnknownTool]: { tone: 'failed', label: 'Rejected', failed: true },
   [VALIDATION_RESULTS.SafeFailure]: { tone: 'failed', label: 'Safe failure', failed: true },
   [VALIDATION_RESULTS.CallFailed]: { tone: 'failed', label: 'Call failed', failed: true },
+  [VALIDATION_RESULTS.Rejected]: { tone: 'failed', label: 'Plan rejected', failed: true },
+};
+
+/** The AgentName the API records the approval gate and a manager's decisions under. */
+export const APPROVAL_STEP_NAME = 'approval';
+
+/**
+ * The approval steps' outcomes. None of them is a failure: a manager saying no, or sending an
+ * order back, is the control working, and painting it red would say the system broke.
+ */
+const APPROVAL_DECISIONS = {
+  ApprovalRequired: { tone: 'waiting', label: 'Needs approval', failed: false },
+  AutoApproved: { tone: 'ok', label: 'Auto-approved', failed: false },
+  ManagerApproved: { tone: 'ok', label: 'Approved', failed: false },
+  ManagerRejected: { tone: 'neutral', label: 'Rejected by manager', failed: false },
+  RevisionRequested: { tone: 'waiting', label: 'Revision requested', failed: false },
 };
 
 /**
@@ -106,13 +133,31 @@ function describeToolResult(payload) {
 }
 
 /**
- * The diagnostic's and strategist's steps are recorded with 0 ms: all three agents ran inside
- * one /run call whose time is on the clarifier's step, and the agent reports no split. Shown
- * as such rather than as "0 ms", which would read as a measurement.
+ * Each agent reports its own time now. A step from an older run can still carry 0 ms — the
+ * agent service then reported no split, and the whole call's time sat on the first agent —
+ * so 0 is shown as such rather than as "0 ms", which would read as a measurement.
  */
 export function durationLabel(step, kind) {
+  if (kind === 'approval') return null;
   if (kind === 'agent' && step.durationMs === 0) return 'timed with the run';
   return `${step.durationMs.toLocaleString()} ms`;
+}
+
+/**
+ * "1 attempt" / "2 attempts — retried once" for an agent run whose LLM attempts were
+ * recorded; null for a tool call and for a step that predates the field. Display only.
+ */
+export function attemptsLabel(step) {
+  if (typeof step.attempts !== 'number' || step.attempts <= 0) return null;
+  if (step.attempts === 1) return '1 attempt';
+  return `${step.attempts} attempts — retried ${step.attempts - 1 === 1 ? 'once' : `${step.attempts - 1} times`}`;
+}
+
+/** The agents a plan payload delegates to, in order, or null when the payload is not a plan. */
+export function planAgents(payload) {
+  const steps = field(payload, 'steps');
+  if (!Array.isArray(steps)) return null;
+  return steps.map((step) => field(step, 'agent')).filter((agent) => typeof agent === 'string');
 }
 
 /** "Rs 45,000" — display only; the figure is the agent's, and nothing here compares it. */
@@ -121,8 +166,16 @@ function rupees(value) {
   return Number.isNaN(amount) ? String(value) : `Rs ${amount.toLocaleString('en-LK')}`;
 }
 
-/** One sentence for a diagnostic or strategist payload, or null for anything else. */
+/** One sentence for a planner, diagnostic or strategist payload, or null for anything else. */
 function describeAdvice(payload) {
+  const agents = planAgents(payload);
+  if (agents && agents.length > 0) {
+    const route = agents.join(' → ');
+    return agents.includes('clarifier')
+      ? `Planned ${agents.length} steps: ${route}.`
+      : `Planned ${agents.length} steps: ${route} — the report needs no questions.`;
+  }
+
   const hypotheses = field(payload, 'hypotheses');
   if (Array.isArray(hypotheses) && hypotheses.length > 0) {
     const primary = hypotheses[field(payload, 'primary_hypothesis_index')] ?? hypotheses[0];
@@ -147,8 +200,42 @@ export function payloadQuestions(payload) {
 }
 
 /**
+ * One sentence for an approval step. Which side of the threshold the order sat on is the
+ * API's booleans, read through the approval queue's own `describeApprovalBasis` — nothing
+ * here compares the estimate with the threshold.
+ */
+function describeApproval(decision, payload) {
+  const order = `work order #${field(payload, 'workOrderId') ?? '?'}`;
+  const basis = field(payload, 'basis');
+  const cost = field(payload, 'estimatedCost');
+  const reason = field(payload, 'reason');
+  const note = field(payload, 'note');
+
+  switch (decision) {
+    case 'ApprovalRequired':
+      return basis
+        ? `Raised ${order}: ${describeApprovalBasis(cost, basis).headline} — paused for a facilities manager's decision.`
+        : `Raised ${order} — paused for a facilities manager's decision.`;
+    case 'AutoApproved':
+      return cost === undefined
+        ? `Raised ${order} — approved by the API's threshold; nobody had to decide.`
+        : `Raised ${order} at ${formatMoney(cost)} — within the threshold, so approved without a decision.`;
+    case 'ManagerApproved':
+      return `A facilities manager approved ${order}.`;
+    case 'ManagerRejected':
+      return reason ? `A facilities manager rejected ${order}: ${reason}` : `A facilities manager rejected ${order}.`;
+    case 'RevisionRequested':
+      return note
+        ? `A facilities manager sent ${order} back to be re-planned: ${note}`
+        : `A facilities manager sent ${order} back to be re-planned.`;
+    default:
+      return `Recorded an approval event on ${order}.`;
+  }
+}
+
+/**
  * Everything the panel needs to render one step as a readable row:
- *   kind     — 'agent' or 'tool'
+ *   kind     — 'agent', 'tool' or 'approval'
  *   tool     — `{ tool, id }` for a tool call, null otherwise
  *   outcome  — `{ tone, label, failed }` from the ValidationResult
  *   summary  — one plain sentence saying what happened
@@ -158,6 +245,13 @@ export function describeStep(step) {
   const tool = firstToolCall(step);
   const payload = parseJson(step.payloadJson);
   const result = step.validationResult;
+
+  // A person's decision (or the gate's routing), not an agent's output — read by name first,
+  // because its ToolCallsJson is null like an agent run's would be read.
+  if (step.agentName === APPROVAL_STEP_NAME) {
+    const outcome = APPROVAL_DECISIONS[result] ?? { tone: 'neutral', label: result ?? 'Not recorded', failed: false };
+    return { kind: 'approval', tool: null, outcome, summary: describeApproval(result, payload), questions: null };
+  }
 
   const outcome = OUTCOMES[result] ?? {
     tone: 'neutral',
@@ -189,6 +283,8 @@ export function describeStep(step) {
 
   if (result === VALIDATION_RESULTS.CallFailed) {
     summary = 'The agent service could not be reached, or did not give a readable answer.';
+  } else if (result === VALIDATION_RESULTS.Rejected) {
+    summary = "Proposed a plan the API's checks refused, so the run followed the default plan instead.";
   } else if (result === VALIDATION_RESULTS.SafeFailure) {
     summary = 'The agent ran but could not produce a valid answer, so it returned nothing.';
   } else if (questions && questions.length === 0) {
@@ -230,9 +326,16 @@ export function groupByWorkflow(steps) {
  * How the most recent agent run on the report went: 'none' if no run has been recorded,
  * 'failed' if the latest one failed, 'ok' otherwise. Lets an empty question list say which
  * of three different things it means — not asked yet, could not ask, or asked nothing.
+ *
+ * The planner's own step does not count as the run having happened: a plan says what WILL
+ * run. Only a planner that failed or was rejected is treated as the latest outcome, because
+ * then the run followed the default plan and the next steps say how that went.
  */
 export function latestAgentRunState(steps) {
-  const runs = steps.map(describeStep).filter((step) => step.kind === 'agent');
+  const runs = steps
+    .filter((step) => step.agentName !== 'planner')
+    .map(describeStep)
+    .filter((step) => step.kind === 'agent');
   if (runs.length === 0) return 'none';
   return runs[runs.length - 1].outcome.failed ? 'failed' : 'ok';
 }

@@ -430,10 +430,7 @@ public class AnalyticsTests
     {
         var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "MetricsPass1", "Test User", role),
-            JsonOptions);
+        var response = await factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "MetricsPass1", "Test User", role));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         var auth = await response.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions);

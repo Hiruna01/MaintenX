@@ -42,9 +42,7 @@ public class AssetTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(UniqueEmail(), "AssetPass1", "Test User", role), JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(UniqueEmail(), "AssetPass1", "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -56,7 +54,7 @@ public class AssetTests : IClassFixture<ApiFactory>
 
     private async Task<int> CreateRoomAsync()
     {
-        var client = _factory.CreateClient();
+        var client = await _factory.CreateAdminClientAsync();
 
         var buildingResponse = await client.PostAsJsonAsync(
             "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions);

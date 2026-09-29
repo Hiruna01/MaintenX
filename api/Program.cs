@@ -5,6 +5,7 @@ using CampusFacilities.Api.Middleware;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -114,8 +115,14 @@ var agentSettings = new AgentSettings
         ?? string.Empty,
     TimeoutSeconds = builder.Configuration.GetValue<double?>("Agent:TimeoutSeconds")
         ?? builder.Configuration.GetValue<double?>("AGENT_TIMEOUT_SECONDS")
-        ?? 60
+        ?? AgentSettings.DefaultTimeoutSeconds
 };
+
+if (agentSettings.TimeoutSeconds <= 0)
+{
+    throw new InvalidOperationException(
+        "The agent timeout (Agent:TimeoutSeconds / AGENT_TIMEOUT_SECONDS) must be greater than zero.");
+}
 
 builder.Services.AddSingleton(agentSettings);
 
@@ -367,6 +374,16 @@ builder.Services.AddAuthorization(options =>
     {
         options.AddPolicy(role, policy => policy.RequireRole(role));
     }
+
+    // Anything that says NOTHING about authorization needs a signed-in user. Without this
+    // an endpoint that forgot [Authorize] is open to the world — which is exactly how the
+    // buildings and rooms controllers once served anonymous writes and deletes. Now the
+    // mistake fails closed, and every endpoint that really is public says so with
+    // [AllowAnonymous]: login, register, /health, and the agent's tool router (which has its
+    // own shared-secret check instead of a JWT).
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
 });
 
 // ---------------------------------------------------------------------------
@@ -459,6 +476,13 @@ builder.Services.AddHttpClient<IAgentClient, AgentClient>(client =>
     // The runner must never wait forever on a wedged agent. AgentClient turns the
     // resulting TaskCanceledException into a plain failure result.
     client.Timeout = TimeSpan.FromSeconds(agentSettings.TimeoutSeconds);
+
+    // The agent's /run checks this, the same secret its tool calls back into this API carry,
+    // so only this API can start an agent run — not whoever can reach the agent's port.
+    if (!string.IsNullOrEmpty(agentSettings.SharedSecret))
+    {
+        client.DefaultRequestHeaders.Add(AgentSettings.SecretHeaderName, agentSettings.SharedSecret);
+    }
 });
 
 // The background half of "POST /api/workflows returns 202". Registered here so the host
@@ -577,7 +601,16 @@ app.UseSerilogRequestLogging(options =>
         "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
 });
 
-if (app.Environment.IsDevelopment())
+// Swagger is on in Development, and anywhere else only when Swagger:Enabled (or
+// SWAGGER_ENABLED) says so — a deployed API has to be able to serve its documentation to an
+// evaluator without pretending to be a development environment. Off by default outside
+// Development because it describes every endpoint to anyone who asks.
+var swaggerConfigured = app.Configuration.GetValue<bool?>("Swagger:Enabled")
+    ?? app.Configuration.GetValue<bool?>("SWAGGER_ENABLED")
+    ?? false;
+var swaggerEnabled = app.Environment.IsDevelopment() || swaggerConfigured;
+
+if (swaggerEnabled)
 {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -598,7 +631,7 @@ app.MapGet("/health", () => Results.Ok(new
 {
     status = "healthy",
     utcTime = DateTime.UtcNow
-}));
+})).AllowAnonymous();
 
 // ---------------------------------------------------------------------------
 // Development-only demo data. Idempotent — safe to run on every start.
@@ -614,7 +647,7 @@ if (app.Environment.IsDevelopment())
     try
     {
         await DbSeeder.SeedAsync(
-            db, app.Configuration, passwordHasher, verificationSettings, logger);
+            db, app.Configuration, passwordHasher, verificationSettings, logger, approvalSettings);
     }
     catch (Exception ex)
     {

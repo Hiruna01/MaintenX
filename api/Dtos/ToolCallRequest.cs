@@ -14,8 +14,11 @@ namespace CampusFacilities.Api.Dtos;
 /// caps on the list-returning tools are constants in the services; a caller that could
 /// send its own limit could ask for the whole table. When a tool genuinely needs a richer
 /// argument shape, add a named field here — the caller can never widen it for us.
+///
+/// Both ids are bounded to real row ids (1 and up): a zero or negative id can name no row, so
+/// it is refused as a 400 rather than looked up and answered with found=false.
 /// </summary>
 public record ToolCallRequest(
-    [Required] int? WorkflowId,
-    [Required] int? Id,
+    [Required][Range(1, int.MaxValue)] int? WorkflowId,
+    [Required][Range(1, int.MaxValue)] int? Id,
     [MaxLength(100)] string? AgentName = null);

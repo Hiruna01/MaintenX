@@ -5,6 +5,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Infrastructure;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace api.Tests;
 
@@ -25,15 +30,18 @@ public class AuthTests : IClassFixture<ApiFactory>
     // Each test registers its own account so tests never depend on each other's data.
     private static string UniqueEmail() => $"user-{Guid.NewGuid():N}@campus.test";
 
-    private static async Task<AuthResponse> RegisterAsync(
+    /// <summary>
+    /// Registers an account of any role — as the factory's bootstrap Admin, because only an
+    /// Admin may create a role other than Reporter. The registration rules themselves are
+    /// pinned by the Register_* tests below, which call the endpoint directly.
+    /// </summary>
+    private async Task<AuthResponse> RegisterAsync(
         HttpClient client,
         string email,
         string password,
         Role role)
     {
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(email, password, "Test User", role), JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(email, password, "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -125,13 +133,126 @@ public class AuthTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
         var email = UniqueEmail();
-        await RegisterAsync(client, email, "FirstPass12", Role.Reporter);
+
+        var first = await client.PostAsJsonAsync(
+            "/api/auth/register", new RegisterRequest(email, "FirstPass12", "Someone"), JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
 
         var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(email, "SecondPass12", "Someone Else", Role.Technician), JsonOptions);
+            "/api/auth/register", new RegisterRequest(email, "SecondPass12", "Someone Else"), JsonOptions);
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Who may create which account. Anyone may sign up as a Reporter — that is the phone's
+    // registration screen. Every other role is an Admin's to hand out: the role in the body is
+    // what is ASKED for, the caller's token decides whether it is granted.
+    // -----------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Register_Anonymously_WithNoRole_CreatesAReporterAndSignsThemIn()
+    {
+        var client = _factory.CreateClient();
+        var email = UniqueEmail();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/auth/register", new RegisterRequest(email, "SignUpPass1", "New Reporter"), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions);
+        Assert.Equal(Role.Reporter, body!.Role);
+        Assert.Equal(3, body.Token.Split('.').Length);
+    }
+
+    [Theory]
+    [InlineData(Role.Admin)]
+    [InlineData(Role.FacilitiesManager)]
+    [InlineData(Role.Technician)]
+    public async Task Register_Anonymously_AskingForAnyOtherRole_Is403_AndCreatesNothing(Role role)
+    {
+        var client = _factory.CreateClient();
+        var email = UniqueEmail();
+
+        var response = await client.PostAsJsonAsync(
+            "/api/auth/register", new RegisterRequest(email, "Escalate123", "Not An Admin", role), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        // Nothing was written: the account does not exist to sign in to.
+        var login = await client.PostAsJsonAsync("/api/auth/login", new LoginRequest(email, "Escalate123"), JsonOptions);
+        Assert.Equal(HttpStatusCode.Unauthorized, login.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(Role.Reporter)]
+    [InlineData(Role.Technician)]
+    [InlineData(Role.FacilitiesManager)]
+    public async Task Register_AsANonAdmin_AskingForAdmin_Is403(Role callerRole)
+    {
+        var caller = _factory.CreateClient();
+        var auth = await RegisterAsync(caller, UniqueEmail(), "CallerPass1", callerRole);
+        caller.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", auth.Token);
+
+        var response = await caller.PostAsJsonAsync(
+            "/api/auth/register", new RegisterRequest(UniqueEmail(), "Escalate123", "Friend", Role.Admin), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(Role.Reporter)]
+    [InlineData(Role.Technician)]
+    [InlineData(Role.FacilitiesManager)]
+    [InlineData(Role.Admin)]
+    public async Task Register_AsAnAdmin_CanCreateEveryRole(Role role)
+    {
+        using var admin = await _factory.CreateAdminClientAsync();
+
+        var response = await admin.PostAsJsonAsync(
+            "/api/auth/register", new RegisterRequest(UniqueEmail(), "StaffPass12", "Staff Member", role), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(role, (await response.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions))!.Role);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The fallback policy: an endpoint that says nothing about authorization needs a
+    // signed-in user, so forgetting [Authorize] fails closed. The endpoints that are public on
+    // purpose are listed here exactly — a new one has to be added to this list deliberately.
+    // -----------------------------------------------------------------------------------
+
+    [Fact]
+    public void TheOnlyAnonymousEndpoints_AreLoginRegisterHealthAndTheAgentToolRouter()
+    {
+        var anonymous = _factory.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>()
+            .Where(e => e.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+            .Select(e => e.RoutePattern.RawText!.TrimStart('/').ToLowerInvariant())
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(
+            new[] { "api/auth/login", "api/auth/register", "api/internal/tools/{toolname}", "health" },
+            anonymous);
+    }
+
+    [Fact]
+    public void AnEndpointThatSaysNothingAboutAuthorization_NeedsASignedInUser()
+    {
+        var fallback = _factory.Services.GetRequiredService<IOptions<AuthorizationOptions>>().Value.FallbackPolicy;
+
+        Assert.NotNull(fallback);
+        Assert.Contains(fallback!.Requirements, r => r is DenyAnonymousAuthorizationRequirement);
+    }
+
+    [Fact]
+    public async Task Health_NeedsNoToken_ButTheRoomList_Does()
+    {
+        var client = _factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/rooms")).StatusCode);
     }
 
     [Fact]

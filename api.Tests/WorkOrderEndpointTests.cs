@@ -718,10 +718,7 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "WorkOrderPass1", fullName, role),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "WorkOrderPass1", fullName, role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -737,13 +734,13 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
     /// </summary>
     private async Task<Fault> NewFaultAsync()
     {
-        var anonymous = _factory.CreateClient();
+        var estate = await _factory.CreateAdminClientAsync();
 
-        var building = await (await anonymous.PostAsJsonAsync(
+        var building = await (await estate.PostAsJsonAsync(
                 "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions))
             .Content.ReadFromJsonAsync<BuildingDto>(JsonOptions);
 
-        var room = await (await anonymous.PostAsJsonAsync(
+        var room = await (await estate.PostAsJsonAsync(
                 "/api/rooms", new CreateRoomDto(building!.Id, "Lecture Hall A", UniqueCode(), 1), JsonOptions))
             .Content.ReadFromJsonAsync<RoomDto>(JsonOptions);
 

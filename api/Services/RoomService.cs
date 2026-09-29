@@ -60,18 +60,18 @@ public class RoomService : IRoomService
         return ToDto(room);
     }
 
-    public async Task<bool> UpdateAsync(int id, CreateRoomDto dto, CancellationToken cancellationToken = default)
+    public async Task<EstateWriteOutcome> UpdateAsync(int id, CreateRoomDto dto, CancellationToken cancellationToken = default)
     {
         var room = await _db.Rooms.FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
         if (room is null)
         {
-            return false;
+            return EstateWriteOutcome.NotFound;
         }
 
         var buildingExists = await _db.Buildings.AnyAsync(b => b.Id == dto.BuildingId, cancellationToken);
         if (!buildingExists)
         {
-            return false;
+            return EstateWriteOutcome.BuildingNotFound;
         }
 
         room.BuildingId = dto.BuildingId;
@@ -80,20 +80,42 @@ public class RoomService : IRoomService
         room.Floor = dto.Floor;
 
         await _db.SaveChangesAsync(cancellationToken);
-        return true;
+        return EstateWriteOutcome.Success;
     }
 
-    public async Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<EstateWriteOutcome> DeleteAsync(int id, CancellationToken cancellationToken = default)
     {
         var room = await _db.Rooms.FirstOrDefaultAsync(r => r.Id == id, cancellationToken);
         if (room is null)
         {
-            return false;
+            return EstateWriteOutcome.NotFound;
+        }
+
+        // Every one of these foreign keys is Restrict: the history outlives the room. Asked
+        // first so the refusal is a 409 that says why, not a constraint violation as a 500.
+        var inUse = await _db.Assets.AnyAsync(a => a.RoomId == id, cancellationToken)
+                    || await _db.Reports.AnyAsync(r => r.RoomId == id, cancellationToken)
+                    || await _db.ClassScheduleSlots.AnyAsync(c => c.RoomId == id, cancellationToken);
+
+        if (inUse)
+        {
+            return EstateWriteOutcome.InUse;
         }
 
         _db.Rooms.Remove(room);
-        await _db.SaveChangesAsync(cancellationToken);
-        return true;
+
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // Something started pointing at the room between the check and the delete.
+            _db.ChangeTracker.Clear();
+            return EstateWriteOutcome.InUse;
+        }
+
+        return EstateWriteOutcome.Success;
     }
 
     private static RoomDto ToDto(Room r) =>

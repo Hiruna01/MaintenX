@@ -506,10 +506,7 @@ public class VerificationEndpointTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "VerifyPass1", "Test User", role),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "VerifyPass1", "Test User", role));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         var auth = await response.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions);

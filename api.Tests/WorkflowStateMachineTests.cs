@@ -48,14 +48,14 @@ public record StateMachineScene(
 {
     public static async Task<StateMachineScene> BuildAsync(ApiFactory factory)
     {
-        var anonymous = factory.CreateClient();
+        var estate = await factory.CreateAdminClientAsync();
         var code = Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
 
-        var building = await (await anonymous.PostAsJsonAsync(
+        var building = await (await estate.PostAsJsonAsync(
                 "/api/buildings", new CreateBuildingDto("Engineering Block", code), WorkflowStateMachineTests.JsonOptions))
             .Content.ReadFromJsonAsync<BuildingDto>(WorkflowStateMachineTests.JsonOptions);
 
-        var room = await (await anonymous.PostAsJsonAsync(
+        var room = await (await estate.PostAsJsonAsync(
                 "/api/rooms", new CreateRoomDto(building!.Id, "Lecture Hall A", code, 1), WorkflowStateMachineTests.JsonOptions))
             .Content.ReadFromJsonAsync<RoomDto>(WorkflowStateMachineTests.JsonOptions);
 
@@ -94,10 +94,7 @@ public record StateMachineScene(
     {
         var client = factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "MachinePass1", "Test User", role),
-            WorkflowStateMachineTests.JsonOptions);
+        var response = await factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "MachinePass1", "Test User", role));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         var auth = await response.Content.ReadFromJsonAsync<AuthResponse>(WorkflowStateMachineTests.JsonOptions);
@@ -142,6 +139,8 @@ public class WorkflowStateMachineTests : IClassFixture<StateMachineApiFactory>
     {
         (WorkflowState.Submitted, WorkflowTrigger.ClarifierAsked, WorkflowState.AwaitingClarification),
         (WorkflowState.Submitted, WorkflowTrigger.ClarifierFoundNothing, WorkflowState.Diagnosing),
+        // The planner left the clarifier out of the plan — its own edge, not the clarifier's.
+        (WorkflowState.Submitted, WorkflowTrigger.PlannedWithoutClarification, WorkflowState.Diagnosing),
         (WorkflowState.Submitted, WorkflowTrigger.AgentFailed, WorkflowState.Failed),
         (WorkflowState.AwaitingClarification, WorkflowTrigger.ReporterAnswered, WorkflowState.Diagnosing),
         (WorkflowState.Diagnosing, WorkflowTrigger.Diagnosed, WorkflowState.Strategizing),

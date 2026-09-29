@@ -13,6 +13,8 @@ from schemas import (
     AgentStatus,
     ClarificationAnswer,
     DiagnosticResult,
+    PlannerOutput,
+    PlannerResult,
     RunRequest,
     RunResponse,
     StrategistResult,
@@ -47,7 +49,24 @@ def _clarifier_reply(status: AgentStatus = AgentStatus.ok, questions: int = 0) -
     )
 
 
-def _graph(clarifier_reply: RunResponse):
+def _plan(*agents: str, status: AgentStatus = AgentStatus.ok) -> PlannerResult:
+    """A planner reply delegating to `agents`, in order — or no plan at all on a safe failure."""
+    if status is not AgentStatus.ok:
+        return PlannerResult(agent="planner", status=status, error="spy")
+    return PlannerResult(
+        agent="planner",
+        status=AgentStatus.ok,
+        output=PlannerOutput(
+            steps=[{"agent": agent, "purpose": f"{agent} for this report"} for agent in agents],
+            rationale="spy plan",
+        ),
+    )
+
+
+FULL_PLAN = ("clarifier", "diagnostic", "strategist")
+
+
+def _graph(clarifier_reply: RunResponse, plan: PlannerResult | None = None):
     calls: list[str] = []
     diagnosis = DiagnosticResult(agent="diagnostic", status=AgentStatus.safe_failure, error="spy")
     spies = (
@@ -55,23 +74,31 @@ def _graph(clarifier_reply: RunResponse):
         _Spy("diagnose", diagnosis, calls),
         _Spy("strategize", StrategistResult(agent="strategist", status=AgentStatus.safe_failure), calls),
         _Spy("verify", None, calls),
+        _Spy("plan", plan if plan is not None else _plan(*FULL_PLAN), calls),
     )
     return build_graph(*spies), spies, calls
 
 
 def _initial(request: RunRequest) -> dict:
-    return {"request": request, "response": None, "diagnosis": None, "strategy": None, "verification": None}
+    return {
+        "request": request,
+        "plan": None,
+        "response": None,
+        "diagnosis": None,
+        "strategy": None,
+        "verification": None,
+    }
 
 
 FRESH = RunRequest(workflow_id=50, description="Projector cutting out.")
 
 
 async def test_a_clarifier_that_asks_nothing_hands_on_to_the_diagnostic_then_the_strategist():
-    graph, (_, diagnostic, strategist, _), calls = _graph(_clarifier_reply(questions=0))
+    graph, (_, diagnostic, strategist, _, _), calls = _graph(_clarifier_reply(questions=0))
 
     state = await graph.ainvoke(_initial(FRESH))
 
-    assert calls == ["clarify", "diagnose", "strategize"]
+    assert calls == ["plan", "clarify", "diagnose", "strategize"]
     # The strategist is handed the diagnosis the diagnostic produced, not a fresh lookup.
     assert strategist.args[1] is diagnostic.result
     assert state["strategy"] is strategist.result
@@ -83,7 +110,7 @@ async def test_a_clarifier_that_asks_anything_ends_the_run_there():
 
     state = await graph.ainvoke(_initial(FRESH))
 
-    assert calls == ["clarify"]
+    assert calls == ["plan", "clarify"]
     assert state["diagnosis"] is None and state["strategy"] is None
 
 
@@ -93,12 +120,12 @@ async def test_a_clarifier_that_safe_failed_ends_the_run_there():
 
     await graph.ainvoke(_initial(FRESH))
 
-    assert calls == ["clarify"]
+    assert calls == ["plan", "clarify"]
 
 
 async def test_a_run_carrying_answers_resumes_at_the_diagnostic_without_asking_again():
     """Sent to the clarifier again, it would ask the same questions and loop."""
-    graph, (clarifier, diagnostic, _, _), calls = _graph(_clarifier_reply(questions=2))
+    graph, (clarifier, diagnostic, _, _, _), calls = _graph(_clarifier_reply(questions=2))
     answered = FRESH.model_copy(
         update={"clarification_answers": [ClarificationAnswer(question_text="Question 0?", answer_text="Yes")]}
     )
@@ -117,7 +144,7 @@ async def test_a_reopened_repair_is_diagnosed_again_without_asking_again():
     the clarifier, it would put questions to the reporter about a fault somebody already
     repaired; it goes straight to the diagnostic, and on to the strategist for a new proposal.
     """
-    graph, (_, diagnostic, _, _), calls = _graph(_clarifier_reply(questions=2))
+    graph, (_, diagnostic, _, _, _), calls = _graph(_clarifier_reply(questions=2))
     reopened = FRESH.model_copy(update={"reopened": True})
 
     state = await graph.ainvoke(_initial(reopened))
@@ -125,3 +152,52 @@ async def test_a_reopened_repair_is_diagnosed_again_without_asking_again():
     assert calls == ["diagnose", "strategize"]
     assert diagnostic.args[0].reopened is True
     assert state["response"] is None
+
+
+# ----------------------------------------------------------------------
+# The plan delegates. What the planner decides is whether the clarifier runs; the routing on
+# that decision is plain Python reading a plan PlannerOutput has already validated.
+# ----------------------------------------------------------------------
+
+
+async def test_a_plan_without_the_clarifier_goes_straight_to_the_diagnostic():
+    """The planner judged the report clear: nobody is asked anything."""
+    graph, (clarifier, _, _, _, _), calls = _graph(
+        _clarifier_reply(questions=2), plan=_plan("diagnostic", "strategist")
+    )
+
+    state = await graph.ainvoke(_initial(FRESH))
+
+    assert calls == ["plan", "diagnose", "strategize"]
+    assert state["response"] is None
+    assert state["plan"].output.includes_clarifier is False
+
+
+async def test_a_planner_that_failed_falls_back_to_the_full_pipeline_clarifier_first():
+    """No plan is not a plan to skip anything: asking is the safe default."""
+    graph, _, calls = _graph(_clarifier_reply(questions=0), plan=_plan(status=AgentStatus.safe_failure))
+
+    await graph.ainvoke(_initial(FRESH))
+
+    assert calls == ["plan", "clarify", "diagnose", "strategize"]
+
+
+async def test_a_resumed_run_is_not_planned_again():
+    """It follows the plan the API already stored; a second plan would be a second opinion on it."""
+    graph, _, calls = _graph(_clarifier_reply(questions=2))
+    answered = FRESH.model_copy(
+        update={"clarification_answers": [ClarificationAnswer(question_text="Question 0?", answer_text="Yes")]}
+    )
+
+    await graph.ainvoke(_initial(answered))
+
+    assert "plan" not in calls
+
+
+async def test_every_agent_that_ran_is_stamped_with_its_own_duration():
+    graph, _, _ = _graph(_clarifier_reply(questions=0))
+
+    state = await graph.ainvoke(_initial(FRESH))
+
+    for key in ("plan", "response", "diagnosis", "strategy"):
+        assert isinstance(state[key].duration_ms, int) and state[key].duration_ms >= 0

@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -32,9 +33,7 @@ public class WorkflowTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(UniqueEmail(), "WorkflowPass1", "Test User", role), JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(UniqueEmail(), "WorkflowPass1", "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -260,12 +259,15 @@ public class WorkflowTests : IClassFixture<ApiFactory>
     {
         var userClient = await CreateAuthenticatedClientAsync();
 
-        var buildingResponse = await userClient.PostAsJsonAsync(
+        // Buildings and rooms are an Admin's to create.
+        var admin = await _factory.CreateAdminClientAsync();
+
+        var buildingResponse = await admin.PostAsJsonAsync(
             "/api/buildings", new CreateBuildingDto("Science Block", $"SB{Guid.NewGuid():N}"[..8]), JsonOptions);
         Assert.Equal(HttpStatusCode.Created, buildingResponse.StatusCode);
         var building = await buildingResponse.Content.ReadFromJsonAsync<BuildingDto>(JsonOptions);
 
-        var roomResponse = await userClient.PostAsJsonAsync(
+        var roomResponse = await admin.PostAsJsonAsync(
             "/api/rooms", new CreateRoomDto(building!.Id, "Lecture Hall 204", "B204", 2), JsonOptions);
         Assert.Equal(HttpStatusCode.Created, roomResponse.StatusCode);
         var room = await roomResponse.Content.ReadFromJsonAsync<RoomDto>(JsonOptions);
@@ -324,5 +326,138 @@ public class WorkflowTests : IClassFixture<ApiFactory>
             new ToolCallRequest(999999, 1, "diagnostician"), JsonOptions);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ToolCall_WithAnIdThatCanNameNoRow_Is400()
+    {
+        var workflow = await StartWorkflowAsync(await CreateAuthenticatedClientAsync(), "Look up nothing");
+
+        var response = await CreateAgentClient().PostAsJsonAsync(
+            "/api/internal/tools/get_room", new ToolCallRequest(workflow.Id, 0, "clarifier"), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    /// <summary>
+    /// The case this exists for: the API's wait on /run timed out and marked the run Failed
+    /// while the agent was still working. Its later tool calls are refused, and nothing more is
+    /// written onto a workflow already declared dead.
+    /// </summary>
+    [Fact]
+    public async Task ToolCall_ForAWorkflowThatHasEnded_Is409_AndWritesNothing()
+    {
+        var manager = await CreateAuthenticatedClientAsync();
+        var workflow = await StartWorkflowAsync(manager, "A run the API has given up on");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<IWorkflowService>()
+                .FailAsync(workflow.Id, "The agent service did not respond in time.");
+        }
+
+        var response = await CreateAgentClient().PostAsJsonAsync(
+            "/api/internal/tools/get_building", new ToolCallRequest(workflow.Id, 1, "clarifier"), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        var detail = await manager.GetFromJsonAsync<WorkflowDetailDto>($"/api/workflows/{workflow.Id}", JsonOptions);
+        Assert.Empty(detail!.Steps);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Who oversees the agent workflows: a FacilitiesManager and an Admin. A workflow's
+    // objective is a reporter's own words and its steps everything the agents said about the
+    // report, so a Reporter follows their report through GET /api/reports instead.
+    // -----------------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(Role.Reporter)]
+    [InlineData(Role.Technician)]
+    public async Task Workflows_AreNotAReportersOrATechniciansToListReadOrStart(Role role)
+    {
+        var workflow = await StartWorkflowAsync(await CreateAuthenticatedClientAsync(), "Someone else's fault");
+        var client = await CreateAuthenticatedClientAsync(role);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("/api/workflows")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/api/workflows/{workflow.Id}")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await client.PostAsJsonAsync("/api/workflows", new StartWorkflowRequest("Run the agents"), JsonOptions)).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(Role.FacilitiesManager)]
+    [InlineData(Role.Admin)]
+    public async Task Workflows_AreAManagersAndAnAdminsToListReadAndStart(Role role)
+    {
+        var client = await CreateAuthenticatedClientAsync(role);
+        var workflow = await StartWorkflowAsync(client, "Run the agents");
+
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/workflows")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/workflows/{workflow.Id}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task StartWorkflow_ForAClosedReport_Is409()
+    {
+        var manager = await CreateAuthenticatedClientAsync();
+        var reportId = await FileReportAsync();
+
+        var closed = await manager.PatchAsJsonAsync(
+            $"/api/reports/{reportId}/status", new UpdateReportStatusDto(ReportStatus.Closed), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, closed.StatusCode);
+
+        var response = await manager.PostAsJsonAsync(
+            "/api/workflows", new StartWorkflowRequest("Run it again", reportId), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    /// <summary>
+    /// One report, one live run: every later action moves the report's LATEST workflow, so a
+    /// second run beside a live one would quietly take its place. Once the run has ended, a
+    /// manager may run the agents again.
+    /// </summary>
+    [Fact]
+    public async Task StartWorkflow_WhileTheReportsRunIsLive_Is409_ButOnceItHasFailed_ANewRunStarts()
+    {
+        var manager = await CreateAuthenticatedClientAsync();
+        var reportId = await FileReportAsync();
+
+        var whileLive = await manager.PostAsJsonAsync(
+            "/api/workflows", new StartWorkflowRequest("Run it again", reportId), JsonOptions);
+        Assert.Equal(HttpStatusCode.Conflict, whileLive.StatusCode);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var workflowId = await scope.ServiceProvider.GetRequiredService<CampusFacilities.Api.Data.AppDbContext>()
+                .AgentWorkflows.Where(w => w.ReportId == reportId).Select(w => w.Id).SingleAsync();
+            await scope.ServiceProvider.GetRequiredService<IWorkflowService>().FailAsync(workflowId, "Agent down.");
+        }
+
+        var afterFailure = await manager.PostAsJsonAsync(
+            "/api/workflows", new StartWorkflowRequest("Run it again", reportId), JsonOptions);
+        Assert.Equal(HttpStatusCode.Accepted, afterFailure.StatusCode);
+    }
+
+    /// <summary>A report filed by a fresh Reporter in a fresh room; POST /api/reports starts its run.</summary>
+    private async Task<int> FileReportAsync()
+    {
+        var admin = await _factory.CreateAdminClientAsync();
+
+        var building = await (await admin.PostAsJsonAsync(
+                "/api/buildings", new CreateBuildingDto("Science Block", $"SB{Guid.NewGuid():N}"[..8]), JsonOptions))
+            .Content.ReadFromJsonAsync<BuildingDto>(JsonOptions);
+        var room = await (await admin.PostAsJsonAsync(
+                "/api/rooms", new CreateRoomDto(building!.Id, "Lab 3", $"L{Guid.NewGuid():N}"[..8], 1), JsonOptions))
+            .Content.ReadFromJsonAsync<RoomDto>(JsonOptions);
+
+        var reporter = await CreateAuthenticatedClientAsync(Role.Reporter);
+        var report = await reporter.PostAsJsonAsync(
+            "/api/reports", new CreateReportDto("The lab fume cupboard fan has stopped.", room!.Id), JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, report.StatusCode);
+
+        return (await report.Content.ReadFromJsonAsync<ReportDto>(JsonOptions))!.Id;
     }
 }

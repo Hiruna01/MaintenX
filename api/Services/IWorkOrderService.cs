@@ -98,8 +98,11 @@ public interface IWorkOrderService
     ///
     /// NULL means no asset has that id; an EMPTY LIST means nothing is open in its room —
     /// the same null-versus-empty rule as every other tool.
+    ///
+    /// Each order is a <see cref="ToolWorkOrderDto"/> — without the assigned technician, whom
+    /// the strategist does not read and who would otherwise be copied into every tool step.
     /// </summary>
-    Task<IReadOnlyList<WorkOrderDto>?> GetOpenWorkOrdersInAssetRoomAsync(
+    Task<IReadOnlyList<ToolWorkOrderDto>?> GetOpenWorkOrdersInAssetRoomAsync(
         int assetId,
         CancellationToken cancellationToken = default);
 
@@ -187,10 +190,12 @@ public interface IWorkOrderService
     /// "Not like this": the order goes back to Draft with the manager's note on it, the
     /// workflow goes back to Strategizing, and the workflow id is re-queued so the
     /// Strategist runs again. Only from AwaitingApproval, and only when the report has a
-    /// workflow to re-run — without one nothing would ever pick the note up.
+    /// workflow to re-run — without one nothing would ever pick the note up. Who asked is
+    /// recorded on the workflow's audit trail (ApprovalAudit), not on the order.
     /// </summary>
     Task<WorkOrderActionOutcome> RequestRevisionAsync(
         int id,
+        int managerId,
         string note,
         CancellationToken cancellationToken = default);
 

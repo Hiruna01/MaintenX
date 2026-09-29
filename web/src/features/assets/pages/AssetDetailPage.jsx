@@ -12,6 +12,7 @@ import useAuth from '../../auth/hooks/useAuth';
 import { ADMIN_ROLES, hasRole } from '../../auth/services/roles';
 import AssetLabel from '../components/AssetLabel';
 import HistoryFeed from '../components/HistoryFeed';
+import RetireAssetButton from '../components/RetireAssetButton';
 import SummaryCard from '../components/SummaryCard';
 import WarrantyPill from '../components/WarrantyPill';
 import useAsset from '../hooks/useAsset';
@@ -102,9 +103,12 @@ function AssetDetailBody({ id }) {
               Print label
             </MxButton>
             {isAdmin ? (
-              <MxButton variant="primary" icon={Pencil} to={`/assets/${data.id}/edit`}>
-                Edit asset
-              </MxButton>
+              <>
+                <RetireAssetButton asset={data} />
+                <MxButton variant="primary" icon={Pencil} to={`/assets/${data.id}/edit`}>
+                  Edit asset
+                </MxButton>
+              </>
             ) : null}
           </>
         }

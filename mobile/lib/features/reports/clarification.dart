@@ -137,6 +137,9 @@ enum ClarifierProgress {
 /// (`AgentRunResponse.ClarifierAgentName`).
 const String clarifierAgentName = 'clarifier';
 
+/// The name `WorkflowRunner` records the planner's run under (`PlanRules.PlannerAgentName`).
+const String plannerAgentName = 'planner';
+
 /// Reads [ClarifierProgress] from a `ReportDetailDto`.
 ///
 /// Questions on the report are the answer on their own. Otherwise it is the latest
@@ -145,6 +148,11 @@ const String clarifierAgentName = 'clarifier';
 /// step whose payload holds questions while the report has none yet is still [running]:
 /// the rows are a moment behind, and reading it as "nothing to ask" would send the reporter
 /// away from a form that is about to exist.
+///
+/// With no clarifier run at all, the PLANNER may have decided there is nothing to ask: its
+/// accepted plan (`validationResult` Ok) leaves the clarifier out, and no clarifier step will
+/// ever come. That is [nothingToAsk]. A planner that failed or was rejected means the default
+/// plan — the clarifier included — so the wait goes on.
 ClarifierProgress readClarifierProgress(Map<String, dynamic> report) {
   final questions = (report['clarificationQuestions'] as List<dynamic>?) ?? const [];
   if (questions.isNotEmpty) return ClarifierProgress.asked;
@@ -156,7 +164,9 @@ ClarifierProgress readClarifierProgress(Map<String, dynamic> report) {
       latestRun = step;
     }
   }
-  if (latestRun == null) return ClarifierProgress.running;
+  if (latestRun == null) {
+    return _plannedWithoutClarifier(steps) ? ClarifierProgress.nothingToAsk : ClarifierProgress.running;
+  }
   if (latestRun['validationResult'] != 'Ok') return ClarifierProgress.failed;
 
   try {
@@ -169,4 +179,24 @@ ClarifierProgress readClarifierProgress(Map<String, dynamic> report) {
     // Unreadable: keep waiting. The screen's own time limit ends the wait either way.
   }
   return ClarifierProgress.running;
+}
+
+/// Whether the latest accepted planner run delegated nothing to the clarifier.
+bool _plannedWithoutClarifier(List<dynamic> steps) {
+  Map<String, dynamic>? latestPlan;
+  for (final step in steps.cast<Map<String, dynamic>>()) {
+    if (step['agentName'] == plannerAgentName && step['toolCallsJson'] == '[]') {
+      latestPlan = step;
+    }
+  }
+  if (latestPlan == null || latestPlan['validationResult'] != 'Ok') return false;
+
+  try {
+    final payload = jsonDecode(latestPlan['payloadJson'] as String? ?? '');
+    final planned = payload is Map<String, dynamic> ? payload['steps'] : null;
+    if (planned is! List || planned.isEmpty) return false;
+    return !planned.any((step) => step is Map<String, dynamic> && step['agent'] == clarifierAgentName);
+  } on FormatException {
+    return false;
+  }
 }

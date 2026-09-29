@@ -11,8 +11,13 @@ public interface IRoomService
     /// <summary>Returns null when the referenced building does not exist (a 400 for the caller).</summary>
     Task<RoomDto?> CreateAsync(CreateRoomDto dto, CancellationToken cancellationToken = default);
 
-    /// <summary>Returns false when the room, or the building it is being moved to, does not exist.</summary>
-    Task<bool> UpdateAsync(int id, CreateRoomDto dto, CancellationToken cancellationToken = default);
+    /// <summary>Success, NotFound, or BuildingNotFound when the room is being moved to a building that does not exist.</summary>
+    Task<EstateWriteOutcome> UpdateAsync(int id, CreateRoomDto dto, CancellationToken cancellationToken = default);
 
-    Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Success, NotFound, or InUse when an asset, a report or a timetabled class still names
+    /// the room. Those foreign keys are Restrict on purpose — the history outlives the room —
+    /// so the refusal is said as a 409 here rather than thrown out of the driver as a 500.
+    /// </summary>
+    Task<EstateWriteOutcome> DeleteAsync(int id, CancellationToken cancellationToken = default);
 }

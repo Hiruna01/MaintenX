@@ -28,4 +28,9 @@ public record WorkflowDetailDto(
     // unreadable mean the same here. One entry on most workflows; a second and later one each
     // come from a repair verification reopened, and sit beside the first rather than over it.
     // The steps above still carry every payload verbatim.
-    IReadOnlyList<AgentDiagnosisDto> Diagnoses);
+    IReadOnlyList<AgentDiagnosisDto> Diagnoses,
+
+    // PlanJson read back into its typed shape (PlanRules.Read): the agents this run was
+    // delegated to, in order, and how far each has got. Null for a workflow from before plans
+    // existed, or one whose agent service could not be reached — PlanJson above is then null too.
+    WorkflowPlanDto? Plan = null);

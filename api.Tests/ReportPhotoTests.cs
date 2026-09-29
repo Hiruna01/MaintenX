@@ -104,9 +104,7 @@ public class ReportPhotoTests : IClassFixture<StorageStubApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(UniqueEmail(), "PhotoPass1", "Test User", role), JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(UniqueEmail(), "PhotoPass1", "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -119,7 +117,7 @@ public class ReportPhotoTests : IClassFixture<StorageStubApiFactory>
     /// <summary>Files a report as the given client and returns its id.</summary>
     private async Task<int> CreateReportAsync(HttpClient reporter)
     {
-        var client = _factory.CreateClient();
+        var client = await _factory.CreateAdminClientAsync();
 
         var buildingResponse = await client.PostAsJsonAsync(
             "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions);

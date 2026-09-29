@@ -214,6 +214,34 @@ public class ClarificationTests : IClassFixture<ApiFactory>
         Assert.Equal(ReportStatus.Submitted, report.Status);
     }
 
+    /// <summary>
+    /// The questions and the move to AwaitingClarification go together, and the move follows
+    /// the report lifecycle like a manager's PATCH does. A later run can no longer drag a
+    /// Closed report back to waiting on its reporter — Closed is terminal — nor a Clarified one
+    /// back through clarification. Nothing is written in either case.
+    /// </summary>
+    [Theory]
+    [InlineData(ReportStatus.Closed)]
+    [InlineData(ReportStatus.Clarified)]
+    public async Task RecordQuestions_ForAReportTheLifecycleWillNotMoveBack_WritesNothing(ReportStatus status)
+    {
+        var (reportId, workflowId, _) = await CreateReportWithWorkflowAsync();
+        var response = AgentResponse(StubOutput, out var document);
+        using var _ = document;
+
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Reports.Where(r => r.Id == reportId)
+            .ExecuteUpdateAsync(set => set.SetProperty(r => r.Status, status));
+
+        var clarifications = scope.ServiceProvider.GetRequiredService<IClarificationService>();
+        var written = await clarifications.RecordQuestionsAsync(reportId, workflowId, response.ParseQuestions());
+
+        Assert.Equal(0, written);
+        Assert.Empty(await clarifications.GetForReportAsync(reportId));
+        Assert.Equal(status, (await db.Reports.AsNoTracking().FirstAsync(r => r.Id == reportId)).Status);
+    }
+
     [Fact]
     public async Task RecordQuestions_ForAReportThatDoesNotExist_IsALoggedNoOpNotAnException()
     {
@@ -768,10 +796,7 @@ public class ClarificationTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(UniqueEmail(), "ClarifyPass1", "Test Reporter", Role.Reporter),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(UniqueEmail(), "ClarifyPass1", "Test Reporter", Role.Reporter));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -784,7 +809,7 @@ public class ClarificationTests : IClassFixture<ApiFactory>
 
     private async Task<int> CreateRoomAsync()
     {
-        var client = _factory.CreateClient();
+        var client = await _factory.CreateAdminClientAsync();
 
         var buildingResponse = await client.PostAsJsonAsync(
             "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions);
@@ -815,7 +840,8 @@ public class ClarificationTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var report = await response.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
-        var workflows = await client.GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
+        // The workflow list is a manager's and an Admin's read, not the reporter's.
+        var workflows = await (await _factory.CreateAdminClientAsync()).GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
             "/api/workflows?page=1&pageSize=50", JsonOptions);
 
         var workflow = Assert.Single(workflows!.Items.Where(w => w.ReportId == report!.Id));
@@ -844,7 +870,8 @@ public class ClarificationTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var report = await created.Content.ReadFromJsonAsync<ReportDto>(JsonOptions);
 
-        var workflows = await client.GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
+        // The workflow list is a manager's and an Admin's read, not the reporter's.
+        var workflows = await (await _factory.CreateAdminClientAsync()).GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
             "/api/workflows?page=1&pageSize=50", JsonOptions);
 
         var workflow = Assert.Single(workflows!.Items.Where(w => w.ReportId == report!.Id));

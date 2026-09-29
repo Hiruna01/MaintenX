@@ -322,15 +322,24 @@ public enum CompletionPhotoOutcome
     /// <summary>Larger than <see cref="ImageUploadRules.MaxBytes"/>. A 400.</summary>
     TooLarge,
 
-    /// <summary>The bytes do not start the way the claimed type always starts. A 400.</summary>
+    /// <summary>
+    /// The bytes do not start the way the claimed type always starts, or the file's structure
+    /// cannot be walked to strip its metadata (ImageMetadata). A 400.
+    /// </summary>
     ContentDoesNotMatchType,
 
     /// <summary>Storage was unreachable or refused the upload; nothing was recorded. A 503.</summary>
-    StorageUnavailable
+    StorageUnavailable,
+
+    /// <summary>Storage rate-limited the upload (429); nothing was recorded. A 503 with Retry-After when sent.</summary>
+    StorageRateLimited
 }
 
-/// <summary><see cref="PhotoUrl"/> is set only on <see cref="CompletionPhotoOutcome.Success"/>.</summary>
-public record CompletionPhotoResult(CompletionPhotoOutcome Outcome, string? PhotoUrl = null);
+/// <summary>
+/// <see cref="PhotoUrl"/> is set only on <see cref="CompletionPhotoOutcome.Success"/>,
+/// <see cref="RetryAfter"/> only on <see cref="CompletionPhotoOutcome.StorageRateLimited"/>.
+/// </summary>
+public record CompletionPhotoResult(CompletionPhotoOutcome Outcome, string? PhotoUrl = null, string? RetryAfter = null);
 
 /// <summary>
 /// Why a <see cref="IWorkOrderService.GetAvailableSlotsAsync"/> call ended as it did. Every

@@ -15,10 +15,12 @@ public class WorkflowService : IWorkflowService
     private const int MaxOutcomeLength = 2000;
 
     private readonly AppDbContext _db;
+    private readonly ILogger<WorkflowService> _logger;
 
-    public WorkflowService(AppDbContext db)
+    public WorkflowService(AppDbContext db, ILogger<WorkflowService> logger)
     {
         _db = db;
+        _logger = logger;
     }
 
     public async Task<StartWorkflowResult> StartAsync(
@@ -331,6 +333,9 @@ public class WorkflowService : IWorkflowService
 
         WorkflowTransitions.Move(workflow, trigger);
         workflow.Outcome = Truncate(outcome, MaxOutcomeLength);
+
+        // The report moves with it where the trigger implies one (Diagnosed), in the same save.
+        await ReportProgress.AdvanceAsync(_db, workflow, trigger, _logger, cancellationToken);
 
         if (completed)
         {

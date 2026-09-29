@@ -42,4 +42,8 @@ public record ReportDetailDto(
     // The strategist's latest proposal, read by AgentAnalysis exactly as the approval queue
     // reads it — what a manager raising the order starts from. Advice: null when the
     // strategist never ran, and nothing in it decides whether the order needs approval.
-    AgentProposalDto? Proposal);
+    AgentProposalDto? Proposal,
+
+    // The stage the reporter is shown — the same ReportProgress.StageFor reading as the
+    // list row, so the two cannot disagree.
+    ReportStage Stage);

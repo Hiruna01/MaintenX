@@ -55,4 +55,26 @@ public static class ImageUploadRules
 
         return read == expected.Length && header.AsSpan().SequenceEqual(expected);
     }
+
+    /// <summary>
+    /// The photo as it may be stored: read whole (it is at most <see cref="MaxBytes"/>) and
+    /// with its metadata removed by <see cref="ImageMetadata"/> — the bucket is public, and a
+    /// phone photo's EXIF can carry where it was taken. Null when the file's structure cannot
+    /// be walked, which the caller refuses exactly like a wrong signature.
+    ///
+    /// Call it AFTER <see cref="HasMatchingSignatureAsync"/>: the magic bytes decide which
+    /// structure the file is walked as.
+    /// </summary>
+    public static async Task<Stream?> WithoutMetadataAsync(
+        Stream content,
+        string contentType,
+        CancellationToken cancellationToken = default)
+    {
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, cancellationToken);
+
+        var stripped = ImageMetadata.Strip(buffer.ToArray(), contentType);
+
+        return stripped is null ? null : new MemoryStream(stripped, writable: false);
+    }
 }

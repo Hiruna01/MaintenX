@@ -715,6 +715,9 @@ public class VerificationService : IVerificationService
         if (confirmed)
         {
             WorkflowTransitions.Move(workflow, WorkflowTrigger.RepairVerified);
+
+            // The repair held, so the report is Closed in the same save (ReportProgress).
+            await ReportProgress.AdvanceAsync(_db, workflow, WorkflowTrigger.RepairVerified, _logger, cancellationToken);
             workflow.Outcome = $"The reporter confirmed the repair on work order {check.WorkOrderId} held.";
             return null;
         }

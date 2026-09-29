@@ -23,6 +23,13 @@ const TONES = {
   WorkOrderRaised: 'blue',
   Closed: 'slate',
 
+  // ReportStage — the reporter's view. AwaitingApproval and Closed share their tone above.
+  BeingReviewed: 'blue',
+  WaitingOnYou: 'amber',
+  RepairPlanned: 'blue',
+  Repaired: 'green',
+  NotGoingAhead: 'slate',
+
   // WorkOrderStatus
   Draft: 'slate',
   AwaitingApproval: 'amber',

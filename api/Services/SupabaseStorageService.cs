@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 
@@ -48,7 +49,7 @@ public class SupabaseStorageService : IFileStorageService
         _logger = logger;
     }
 
-    public async Task<string?> UploadAsync(
+    public async Task<StorageUploadResult> UploadAsync(
         Stream content,
         string contentType,
         string folder,
@@ -70,7 +71,7 @@ public class SupabaseStorageService : IFileStorageService
         {
             _logger.LogWarning(
                 "Photo upload refused: Supabase Storage is not configured (Supabase:Url / Supabase:ServiceKey).");
-            return null;
+            return StorageUploadResult.Unavailable;
         }
 
         // Generated here, and the only name the object will ever have. See the interface.
@@ -98,6 +99,17 @@ public class SupabaseStorageService : IFileStorageService
             var http = _httpClientFactory.CreateClient(HttpClientName);
             using var response = await http.SendAsync(request, cancellationToken);
 
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                // Rate-limited, not broken: logged as such, so nobody goes looking for an
+                // outage, and the provider's Retry-After (if any) goes back to the client.
+                var retryAfter = response.Headers.RetryAfter?.ToString();
+                _logger.LogWarning(
+                    "Supabase Storage rate-limited an upload to {ObjectPath} (HTTP 429); Retry-After: {RetryAfter}.",
+                    objectPath, retryAfter ?? "not sent");
+                return new StorageUploadResult(StorageUploadOutcome.RateLimited, RetryAfter: retryAfter);
+            }
+
             if (!response.IsSuccessStatusCode)
             {
                 // Supabase's error text ("Bucket not found", "Invalid JWT") is what someone
@@ -106,7 +118,7 @@ public class SupabaseStorageService : IFileStorageService
                 _logger.LogWarning(
                     "Supabase Storage refused an upload to {ObjectPath}: HTTP {StatusCode} {Body}",
                     objectPath, (int)response.StatusCode, body.Length > 500 ? body[..500] : body);
-                return null;
+                return StorageUploadResult.Unavailable;
             }
         }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -114,14 +126,15 @@ public class SupabaseStorageService : IFileStorageService
             // HttpClient reports its own timeout as a cancellation. The `when` keeps a
             // genuinely cancelled request (the client hung up) a cancellation.
             _logger.LogWarning("Supabase Storage did not respond in time for {ObjectPath}.", objectPath);
-            return null;
+            return StorageUploadResult.Unavailable;
         }
         catch (HttpRequestException ex)
         {
             _logger.LogWarning(ex, "Could not reach Supabase Storage for {ObjectPath}.", objectPath);
-            return null;
+            return StorageUploadResult.Unavailable;
         }
 
-        return $"{baseUrl}/storage/v1/object/public/{bucket}/{objectPath}";
+        return new StorageUploadResult(
+            StorageUploadOutcome.Stored, $"{baseUrl}/storage/v1/object/public/{bucket}/{objectPath}");
     }
 }

@@ -1,4 +1,4 @@
-import { Boxes, CalendarClock, Layers, MapPin, MessageCircleQuestion, RefreshCw, UserRound } from 'lucide-react';
+import { Boxes, CalendarClock, Eye, Layers, MapPin, MessageCircleQuestion, RefreshCw, UserRound } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -10,6 +10,7 @@ import { Panel } from '../../../components/ui/Panel';
 import { Pill, StatusPill } from '../../../components/ui/Pill';
 import Skeleton from '../../../components/ui/Skeleton';
 import { EmptyState, ErrorState } from '../../../components/ui/States';
+import { humanize, toneFor } from '../../../components/ui/tones';
 import TagChip from '../../assets/components/TagChip';
 import useAuth from '../../auth/hooks/useAuth';
 import { DISPATCH_ROLES, MANAGER_ROLES, hasRole } from '../../auth/services/roles';
@@ -17,6 +18,7 @@ import RaiseWorkOrderPanel from '../../workorders/components/RaiseWorkOrderPanel
 import ClarificationList from '../components/ClarificationList';
 import ReasoningPanel from '../components/ReasoningPanel';
 import ReportPhoto from '../components/ReportPhoto';
+import ReportStatusControl from '../components/ReportStatusControl';
 import useReport from '../hooks/useReport';
 import { latestAgentRunState } from '../services/agentSteps';
 import { roomLabel } from '../services/reportsApi';
@@ -161,6 +163,12 @@ function ReportBody({ report, isManager, canDispatch, onRefresh }) {
         <div className={styles.headerPills}>
           <span className={styles.reportId}>Report #{report.id}</span>
           <StatusPill status={report.status} />
+          {/* The stage the REPORTER is shown on the phone, derived by the API — no cost, no technician. */}
+          {report.stage ? (
+            <Pill tone={toneFor(report.stage)} icon={Eye}>
+              Reporter sees: {humanize(report.stage)}
+            </Pill>
+          ) : null}
           {unanswered > 0 ? (
             <Pill tone="amber" icon={MessageCircleQuestion}>
               {unanswered} unanswered
@@ -231,6 +239,9 @@ function ReportBody({ report, isManager, canDispatch, onRefresh }) {
               </Fact>
             </dl>
           </Panel>
+
+          {/* FacilitiesManager only, like the PATCH policy — an Admin is refused there too. */}
+          {canDispatch ? <ReportStatusControl report={report} onChanged={onRefresh} /> : null}
         </aside>
       </div>
     </>

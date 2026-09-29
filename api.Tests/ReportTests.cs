@@ -9,7 +9,9 @@ using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace api.Tests;
 
@@ -259,6 +261,130 @@ public class ReportTests : IClassFixture<ApiFactory>
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
         var queuedId = await queue.DequeueAsync(timeout.Token);
         Assert.Equal(workflow.Id, queuedId);
+    }
+
+    [Fact]
+    public async Task CreateReport_WhenItsWorkflowCannotBeSaved_FilesNothing_SoNoReportIsLeftWithoutARun()
+    {
+        var (_, reporterId) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+        var description = $"Projector flickers, then goes dark {Guid.NewGuid():N}";
+
+        var queue = _factory.Services.GetRequiredService<IWorkflowQueue>();
+        await DrainAsync(queue);
+
+        // The real ReportService and WorkflowService on ONE context, as DI gives them, with the
+        // workflow's insert — the second of the two saves — made to fail.
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var sp = scope.ServiceProvider;
+            using var failingDb = ContextWith(sp.GetRequiredService<AppDbContext>(), new FailWorkflowInsert());
+
+            var service = new ReportService(
+                failingDb,
+                new WorkflowService(failingDb, NullLogger<WorkflowService>.Instance),
+                queue,
+                sp.GetRequiredService<IClarificationService>(),
+                sp.GetRequiredService<IFileStorageService>());
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.CreateAsync(new CreateReportDto(description, roomId), reporterId));
+        }
+
+        // The report's own save was rolled back with it: no report that no agent will ever
+        // process, and nothing handed to the runner.
+        using var verify = _factory.Services.CreateScope();
+        var db = verify.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.False(await db.Reports.AnyAsync(r => r.Description == description));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queue.DequeueAsync(timeout.Token).AsTask());
+    }
+
+    // ---------------------------------------------------------------------------------
+    // ReportProgress — what a workflow move means for its report, and what the reporter sees
+    // ---------------------------------------------------------------------------------
+
+    [Fact]
+    public void ReportProgress_TheTriggersThatMoveAReport_AreExactlyThese()
+    {
+        // Pinned literally, like WorkflowTransitions' table: a changed rule must change this.
+        var expected = new[]
+        {
+            (WorkflowTrigger.Diagnosed, ReportStatus.Diagnosed),
+            (WorkflowTrigger.WorkOrderAutoApproved, ReportStatus.WorkOrderRaised),
+            (WorkflowTrigger.WorkOrderNeedsApproval, ReportStatus.WorkOrderRaised),
+            (WorkflowTrigger.ManagerRejected, ReportStatus.Closed),
+            (WorkflowTrigger.RepairVerified, ReportStatus.Closed)
+        };
+
+        Assert.Equal(
+            expected.OrderBy(p => p.Item1).ToList(),
+            ReportProgress.All.Select(p => (p.Trigger, p.To)).OrderBy(p => p.Item1).ToList());
+
+        // And every other trigger moves no report — approval included: the order was raised.
+        foreach (var trigger in Enum.GetValues<WorkflowTrigger>().Except(expected.Select(p => p.Item1)))
+        {
+            Assert.Null(ReportProgress.ImpliedBy(trigger));
+        }
+    }
+
+    [Theory]
+    // A Closed report: rejected reads NotGoingAhead, anything else Closed — whatever the run says.
+    [InlineData(ReportStatus.Closed, WorkflowState.Closed, true, ReportStage.NotGoingAhead)]
+    [InlineData(ReportStatus.Closed, WorkflowState.Closed, false, ReportStage.Closed)]
+    [InlineData(ReportStatus.Closed, WorkflowState.Diagnosing, false, ReportStage.Closed)]
+    // Otherwise the latest run decides; a failed or busy run is "being reviewed".
+    [InlineData(ReportStatus.Submitted, WorkflowState.Submitted, false, ReportStage.BeingReviewed)]
+    [InlineData(ReportStatus.AwaitingClarification, WorkflowState.AwaitingClarification, false, ReportStage.WaitingOnYou)]
+    [InlineData(ReportStatus.Clarified, WorkflowState.Diagnosing, false, ReportStage.BeingReviewed)]
+    [InlineData(ReportStatus.Diagnosed, WorkflowState.Strategizing, false, ReportStage.BeingReviewed)]
+    [InlineData(ReportStatus.Clarified, WorkflowState.Failed, false, ReportStage.BeingReviewed)]
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.AwaitingManagerApproval, false, ReportStage.AwaitingApproval)]
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.WorkOrderRaised, false, ReportStage.RepairPlanned)]
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.InProgress, false, ReportStage.RepairPlanned)]
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.Completed, false, ReportStage.Repaired)]
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.AwaitingVerification, false, ReportStage.Repaired)]
+    // A reopened repair is diagnosed again: back to being reviewed.
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.Diagnosing, false, ReportStage.BeingReviewed)]
+    // The run ended but the report's own close was skipped by the lifecycle.
+    [InlineData(ReportStatus.Clarified, WorkflowState.Closed, true, ReportStage.NotGoingAhead)]
+    [InlineData(ReportStatus.WorkOrderRaised, WorkflowState.Closed, false, ReportStage.Repaired)]
+    public void ReportProgress_StageFor_ReadsTheReportThenItsLatestRun(
+        ReportStatus status, WorkflowState workflow, bool rejected, ReportStage expected)
+    {
+        Assert.Equal(expected, ReportProgress.StageFor(status, workflow, rejected));
+    }
+
+    [Theory]
+    [InlineData(ReportStatus.Submitted, ReportStage.BeingReviewed)]
+    [InlineData(ReportStatus.AwaitingClarification, ReportStage.WaitingOnYou)]
+    [InlineData(ReportStatus.Diagnosed, ReportStage.BeingReviewed)]
+    [InlineData(ReportStatus.WorkOrderRaised, ReportStage.RepairPlanned)]
+    [InlineData(ReportStatus.Closed, ReportStage.Closed)]
+    public void ReportProgress_StageFor_AReportWithNoRun_FollowsItsOwnStatus(ReportStatus status, ReportStage expected)
+    {
+        Assert.Equal(expected, ReportProgress.StageFor(status, latestWorkflow: null, latestOrderRejected: false));
+    }
+
+    [Fact]
+    public async Task ListAndDetail_CarryTheReportersStage_AndNoCostEstimateOrTechnician()
+    {
+        var (reporter, _) = await CreateAuthenticatedClientAsync();
+        var roomId = await CreateRoomAsync();
+        var reportId = await FileReportAsync(reporter, roomId, "Stage check: the lectern microphone is dead.");
+
+        var page = await reporter.GetFromJsonAsync<JsonElement>("/api/reports?page=1&pageSize=100", JsonOptions);
+        var row = page.GetProperty("items").EnumerateArray().Single(i => i.GetProperty("id").GetInt32() == reportId);
+        var detail = await reporter.GetFromJsonAsync<JsonElement>($"/api/reports/{reportId}", JsonOptions);
+
+        // By NAME, and the same answer in both places.
+        Assert.Equal("BeingReviewed", row.GetProperty("stage").GetString());
+        Assert.Equal("BeingReviewed", detail.GetProperty("stage").GetString());
+
+        // What a reporter reads about progress says nothing about money or who is sent.
+        var names = row.EnumerateObject().Select(p => p.Name.ToLowerInvariant()).ToList();
+        Assert.DoesNotContain(names, n => n.Contains("cost") || n.Contains("estimate") || n.Contains("technician"));
     }
 
     [Fact]
@@ -803,6 +929,43 @@ public class ReportTests : IClassFixture<ApiFactory>
             "/api/workflows?page=1&pageSize=100", JsonOptions);
 
         return Assert.Single(workflows!.Items.Where(w => w.ReportId == reportId)).Id;
+    }
+
+    /// <summary>
+    /// A second context on the same database, with an interceptor — the same helper as
+    /// VerificationSweepTests. SQLite shares the held-open connection; PostgreSQL reconnects.
+    /// </summary>
+    private static AppDbContext ContextWith(AppDbContext db, IInterceptor interceptor)
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>();
+
+        if (db.Database.IsNpgsql())
+        {
+            options.UseNpgsql(db.Database.GetConnectionString());
+        }
+        else
+        {
+            options.UseSqlite(db.Database.GetDbConnection());
+        }
+
+        return new AppDbContext(options.AddInterceptors(interceptor).Options);
+    }
+
+    /// <summary>Stands in for the database refusing the workflow's insert, after the report's has succeeded.</summary>
+    private sealed class FailWorkflowInsert : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            var addingWorkflow = eventData.Context!.ChangeTracker.Entries<AgentWorkflow>()
+                .Any(e => e.State == EntityState.Added);
+
+            return addingWorkflow
+                ? throw new InvalidOperationException("Simulated failure saving the workflow.")
+                : base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
     }
 
     /// <summary>Registers an asset in a room, so the assetId filter has something to match.</summary>

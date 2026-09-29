@@ -136,29 +136,32 @@ public class WorkflowEndToEndTests : IDisposable
         // 1. A new report on the same equipment.
         var reportId = await scene.FileReportAsync();
         var workflowId = await WorkflowIdForAsync(scene, reportId);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, workflowId, WorkflowState.Submitted);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, ReportStage.BeingReviewed, workflowId, WorkflowState.Submitted);
 
         // 2. The runner: nothing to ask, so clarifier, diagnostic and strategist in one call.
+        //    Submitted jumps straight to Diagnosed — the lifecycle allows it for a clear report.
         await RunAgentAsync(workflowId, AsksNothing);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, workflowId, WorkflowState.Strategizing);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Diagnosed, ReportStage.BeingReviewed, workflowId, WorkflowState.Strategizing);
 
-        // 3. Raised over the threshold on the SAME asset: it waits for a manager.
+        // 3. Raised over the threshold on the SAME asset: it waits for a manager. The report
+        //    says an order is raised; the reporter is told it awaits approval, never the cost.
         var orderId = await RaiseAsync(scene, reportId, 42_000m, WorkOrderStatus.AwaitingApproval);
-        Assert.Equal(WorkflowState.AwaitingManagerApproval, (await WorkflowAsync(scene, workflowId)).CurrentState);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.AwaitingApproval, workflowId, WorkflowState.AwaitingManagerApproval);
         Assert.Equal(await OrderAssetAsync(scene, firstOrderId), await OrderAssetAsync(scene, orderId));
 
-        // 4. The manager approves.
+        // 4. The manager approves. The report was already WorkOrderRaised; approval moves the
+        //    reporter's stage, not the report's status.
         var approved = await scene.Manager.PostAsync($"/api/workorders/{orderId}/approve", null);
         Assert.Equal(HttpStatusCode.NoContent, approved.StatusCode);
         Assert.Equal(WorkOrderStatus.Approved, await OrderStatusAsync(scene, orderId));
-        Assert.Equal(WorkflowState.WorkOrderRaised, (await WorkflowAsync(scene, workflowId)).CurrentState);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.RepairPlanned, workflowId, WorkflowState.WorkOrderRaised);
 
         // 5-6. Assigned, then completed — as a temporary fix, this time.
         await AssignAsync(scene, orderId);
         await CompleteAsync(scene, orderId, ServiceOutcome.TemporaryFix,
             "cleaned vents + filter, unit still very hot after 25min, fan rattling. temporary fix.");
         Assert.Equal(WorkOrderStatus.Completed, await OrderStatusAsync(scene, orderId));
-        Assert.Equal(WorkflowState.Completed, (await WorkflowAsync(scene, workflowId)).CurrentState);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.Repaired, workflowId, WorkflowState.Completed);
         Assert.Equal(VerificationStatus.Pending, (await CheckForAsync(scene, orderId)).Status);
 
         // 7. The sweep, once the delay has passed.
@@ -175,11 +178,17 @@ public class WorkflowEndToEndTests : IDisposable
         Assert.Equal(WorkflowState.Diagnosing, reopened.CurrentState);
         Assert.Equal(orderId, reopened.ReopenedWorkOrderId);
 
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.BeingReviewed, workflowId, WorkflowState.Diagnosing);
+
         // 9. The runner diagnoses AGAIN — sent as a reopen, not to the clarifier — and the
-        //    strategist proposes again: Strategizing once more, for a manager to act on.
+        //    strategist proposes again: Strategizing once more, for a manager to act on. The
+        //    report stays WorkOrderRaised: the lifecycle has no way back to Diagnosed, so the
+        //    second diagnosis's move is skipped and logged, never forced.
         await RunAgentAsync(workflowId, Rediagnosed);
         Assert.True(_factory.Agent.Requests[^1].Reopened);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, workflowId, WorkflowState.Strategizing);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.BeingReviewed, workflowId, WorkflowState.Strategizing);
+        Assert.Contains(_factory.Logs.Entries, e =>
+            e.Message.Contains($"report {reportId} to Diagnosed") && e.Message.Contains("does not allow"));
 
         // Five agent runs: the first call's three, then the re-diagnosis's two — appended, so
         // both diagnoses are there to compare. Between them, the human pause: the gate
@@ -200,6 +209,48 @@ public class WorkflowEndToEndTests : IDisposable
         var first = await WorkflowAsync(scene, firstWorkflowId);
         Assert.Equal(WorkflowState.Closed, first.CurrentState);
         Assert.Equal(4, first.Steps.Count);
+    }
+
+    [Fact]
+    public async Task AManagerRejectingTheOrder_ClosesTheReport_AndTheReporterIsToldItIsNotGoingAhead()
+    {
+        var scene = await _factory.SceneAsync();
+
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowIdForAsync(scene, reportId);
+        await RunAgentAsync(workflowId, AsksNothing);
+
+        var orderId = await RaiseAsync(scene, reportId, 42_000m, WorkOrderStatus.AwaitingApproval);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.AwaitingApproval, workflowId, WorkflowState.AwaitingManagerApproval);
+
+        var rejected = await scene.Manager.PostAsJsonAsync(
+            $"/api/workorders/{orderId}/reject", new RejectWorkOrderDto("Out of budget this term."), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, rejected.StatusCode);
+
+        // The run is Closed and no order can be raised from it, so the report is Closed in the
+        // same save — and reads NotGoingAhead, not Closed, because the order was refused.
+        await AssertStatesAsync(scene, reportId, ReportStatus.Closed, ReportStage.NotGoingAhead, workflowId, WorkflowState.Closed);
+    }
+
+    [Fact]
+    public async Task AReportAManagerAlreadyClosed_StaysClosed_WhenTheRunDiagnosesIt()
+    {
+        var scene = await _factory.SceneAsync();
+
+        var reportId = await scene.FileReportAsync();
+        var workflowId = await WorkflowIdForAsync(scene, reportId);
+
+        // Closed as a duplicate while its run is still queued.
+        var closed = await scene.Manager.PatchAsJsonAsync(
+            $"/api/reports/{reportId}/status", new UpdateReportStatusDto(ReportStatus.Closed), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, closed.StatusCode);
+
+        // The run still moves; the report does not. Closed is terminal, and a move the
+        // lifecycle refuses is skipped and logged rather than forced.
+        await RunAgentAsync(workflowId, AsksNothing);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Closed, ReportStage.Closed, workflowId, WorkflowState.Strategizing);
+        Assert.Contains(_factory.Logs.Entries, e =>
+            e.Message.Contains($"report {reportId} to Diagnosed") && e.Message.Contains("is Closed"));
     }
 
     [Fact]
@@ -241,11 +292,11 @@ public class WorkflowEndToEndTests : IDisposable
         // 1. The report, and the workflow raised with it.
         var reportId = await scene.FileReportAsync();
         var workflowId = await WorkflowIdForAsync(scene, reportId);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, workflowId, WorkflowState.Submitted);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, ReportStage.BeingReviewed, workflowId, WorkflowState.Submitted);
 
         // 2. The clarifier asks: human pause 1.
         await RunAgentAsync(workflowId, Asks);
-        await AssertStatesAsync(scene, reportId, ReportStatus.AwaitingClarification, workflowId, WorkflowState.AwaitingClarification);
+        await AssertStatesAsync(scene, reportId, ReportStatus.AwaitingClarification, ReportStage.WaitingOnYou, workflowId, WorkflowState.AwaitingClarification);
 
         // 3. The reporter answers.
         var questions = await scene.Reporter.GetFromJsonAsync<List<ClarificationQuestionDto>>(
@@ -255,15 +306,16 @@ public class WorkflowEndToEndTests : IDisposable
             new SubmitAnswersRequest(new[] { new SubmittedAnswer(Assert.Single(questions!).Id, "Yes") }),
             JsonOptions);
         Assert.Equal(HttpStatusCode.NoContent, answered.StatusCode);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Clarified, workflowId, WorkflowState.Diagnosing);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Clarified, ReportStage.BeingReviewed, workflowId, WorkflowState.Diagnosing);
 
-        // 4. The runner resumes at the diagnostic, then the strategist.
+        // 4. The runner resumes at the diagnostic, then the strategist. The diagnostic running
+        //    moves the report to Diagnosed in the same save as the workflow's move.
         await RunAgentAsync(workflowId, Resumed);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Clarified, workflowId, WorkflowState.Strategizing);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Diagnosed, ReportStage.BeingReviewed, workflowId, WorkflowState.Strategizing);
 
         // 5. Raised UNDER the threshold: approved on the spot, no manager decision.
         var orderId = await RaiseAsync(scene, reportId, 500m, WorkOrderStatus.Approved);
-        Assert.Equal(WorkflowState.WorkOrderRaised, (await WorkflowAsync(scene, workflowId)).CurrentState);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.RepairPlanned, workflowId, WorkflowState.WorkOrderRaised);
 
         // 6. Assigned — which changes who, not the status.
         await AssignAsync(scene, orderId);
@@ -282,20 +334,17 @@ public class WorkflowEndToEndTests : IDisposable
         var check = await CheckForAsync(scene, orderId);
         Assert.Equal(VerificationStatus.AwaitingReporterResponse, check.Status);
 
-        // 9. The reporter says it held: Verified, and the workflow is Closed.
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.Repaired, workflowId, WorkflowState.AwaitingVerification);
+
+        // 9. The reporter says it held: Verified, the workflow is Closed, and so is the report.
         await ConfirmAsync(scene, check.Id, confirmed: true);
         Assert.Equal(VerificationStatus.Confirmed, (await CheckForAsync(scene, orderId)).Status);
-        await AssertStatesAsync(scene, reportId, ReportStatus.Clarified, workflowId, WorkflowState.Closed);
+        await AssertStatesAsync(scene, reportId, ReportStatus.Closed, ReportStage.Closed, workflowId, WorkflowState.Closed);
 
         return (workflowId, orderId);
     }
 
-    /// <summary>
-    /// What the runner does when it dequeues the id. The report's own status is asserted
-    /// alongside the workflow's on purpose: only clarification moves it (Submitted →
-    /// AwaitingClarification → Clarified); nothing after that does, by design — see
-    /// ReportStatus in CLAUDE.md.
-    /// </summary>
+    /// <summary>What the runner does when it dequeues the id.</summary>
     private async Task RunAgentAsync(int workflowId, string reply)
     {
         _factory.Agent.Replies.Enqueue(
@@ -358,11 +407,22 @@ public class WorkflowEndToEndTests : IDisposable
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
 
+    /// <summary>
+    /// The report's status, the stage its REPORTER is shown — on the detail and on their list
+    /// row, which must agree — and the workflow's state, asserted together after every step:
+    /// the report moves with its workflow (ReportProgress), never on its own.
+    /// </summary>
     private static async Task AssertStatesAsync(
-        StateMachineScene scene, int reportId, ReportStatus report, int workflowId, WorkflowState workflow)
+        StateMachineScene scene, int reportId, ReportStatus report, ReportStage stage, int workflowId, WorkflowState workflow)
     {
         var detail = await scene.Reporter.GetFromJsonAsync<JsonElement>($"/api/reports/{reportId}", JsonOptions);
         Assert.Equal(report.ToString(), detail.GetProperty("status").GetString());
+        Assert.Equal(stage.ToString(), detail.GetProperty("stage").GetString());
+
+        var page = await scene.Reporter.GetFromJsonAsync<JsonElement>("/api/reports?page=1&pageSize=100", JsonOptions);
+        var row = page.GetProperty("items").EnumerateArray().Single(i => i.GetProperty("id").GetInt32() == reportId);
+        Assert.Equal(stage.ToString(), row.GetProperty("stage").GetString());
+
         Assert.Equal(workflow, (await WorkflowAsync(scene, workflowId)).CurrentState);
     }
 

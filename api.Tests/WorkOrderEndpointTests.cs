@@ -10,6 +10,7 @@ using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace api.Tests;
@@ -419,7 +420,8 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
                 TimeProvider.System,
                 sp.GetRequiredService<SchedulingSettings>(),
                 sp.GetRequiredService<IAssetService>(),
-                sp.GetRequiredService<IFileStorageService>());
+                sp.GetRequiredService<IFileStorageService>(),
+                NullLogger<WorkOrderService>.Instance);
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteAsync(
                 order.Id, technicianId,

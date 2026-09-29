@@ -299,9 +299,31 @@ public class WorkOrdersController : ControllerBase
                        + "The work order is unchanged. Try again, or complete it without one."
             }),
 
+            CompletionPhotoOutcome.StorageRateLimited => StorageBusy(result.RetryAfter),
+
             // Unreachable, and deliberately loud rather than a quiet 500.
             _ => throw new InvalidOperationException($"Unhandled photo outcome '{result.Outcome}'.")
         };
+    }
+
+    /// <summary>
+    /// A rate-limited upload: a 503 like any storage failure, with the provider's Retry-After
+    /// passed on when it sent one (the same shape as the report photo's).
+    /// </summary>
+    private ObjectResult StorageBusy(string? retryAfter)
+    {
+        if (retryAfter is not null)
+        {
+            Response.Headers.RetryAfter = retryAfter;
+        }
+
+        return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+        {
+            Status = StatusCodes.Status503ServiceUnavailable,
+            Title = "Photo storage is busy",
+            Detail = "Photo storage is receiving too many uploads right now. The photo has not "
+                   + "been attached and the work order is unchanged. Try again shortly."
+        });
     }
 
     /// <summary>The three file failures are all 400s against the photo field.</summary>

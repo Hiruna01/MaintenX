@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 
 import AssetCreatePage from '../features/assets/pages/AssetCreatePage';
 import AssetDetailPage from '../features/assets/pages/AssetDetailPage';
@@ -23,22 +23,36 @@ import WorkflowsPage from '../features/workflows/pages/WorkflowsPage';
 import ApprovalsPage from '../features/workorders/pages/ApprovalsPage';
 import WorkOrderDetailPage from '../features/workorders/pages/WorkOrderDetailPage';
 import WorkOrdersPage from '../features/workorders/pages/WorkOrdersPage';
+import HomeRoute from './HomeRoute';
 import NotFoundPage from './NotFoundPage';
 import ProtectedRoute from './ProtectedRoute';
+import RolePanelGuard from './RolePanelGuard';
 
 /** Every route in the app. <BrowserRouter> is one level up, in main.jsx. */
 export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* The landing page for a visitor, the dashboard for someone signed in. */}
+      <Route path="/" element={<HomeRoute />} />
 
       {/* Signed in, any role. */}
       <Route element={<ProtectedRoute />}>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
-        {/* Reading the registry is every role's business, as it is on the API. */}
-        <Route path="/assets" element={<AssetsPage />} />
-        <Route path="/assets/:id" element={<AssetDetailPage />} />
+        {/* Reading the registry is every role's business, as it is on the API. Registering and
+            editing are Admin only and open as slide-overs ON TOP of the list and the detail —
+            nested routes rendered into each page's <Outlet />, so the URLs still work when
+            opened directly. The wrong role gets "not authorised" in the panel, never the form. */}
+        <Route path="/assets" element={<AssetsPage />}>
+          <Route element={<RolePanelGuard allowedRoles={ADMIN_ROLES} />}>
+            <Route path="new" element={<AssetCreatePage />} />
+          </Route>
+        </Route>
+        <Route path="/assets/:id" element={<AssetDetailPage />}>
+          <Route element={<RolePanelGuard allowedRoles={ADMIN_ROLES} />}>
+            <Route path="edit" element={<AssetEditPage />} />
+          </Route>
+        </Route>
         {/* Open to every role, like GET /api/reports/{id}: the API decides WHICH reports a
             caller may read, and a Reporter opening someone else's gets its 403 rendered. */}
         <Route path="/reports/:id" element={<ReportDetailPage />} />
@@ -46,13 +60,6 @@ export function AppRoutes() {
             checks on their own reports and gives a manager every one. */}
         <Route path="/verifications" element={<VerificationsPage />} />
         <Route path="/verifications/:id" element={<VerificationDetailPage />} />
-      </Route>
-
-      {/* Changing the registry is Admin only. A Reporter is never shown these links, and
-          reaching one by URL renders "not authorised" — the API would answer 403 anyway. */}
-      <Route element={<ProtectedRoute allowedRoles={ADMIN_ROLES} />}>
-        <Route path="/assets/new" element={<AssetCreatePage />} />
-        <Route path="/assets/:id/edit" element={<AssetEditPage />} />
       </Route>
 
       {/* Signed in as a manager. A Reporter gets the "not authorised" page, not a blank one. */}

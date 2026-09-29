@@ -294,7 +294,8 @@ and 14 service records.
     verified to fail with the asset fallback removed.
   - **It never reaches `AwaitingManagerApproval` itself.** It leaves the workflow in
     `Strategizing` with the proposal, and a manager raising the order moves it on through
-    the approval gate. A diagnostic or strategist that safe-failed still moves the workflow
+    the approval gate — from the web report page's `RaiseWorkOrderPanel` (see Reports under
+    FRONTEND). A run parked in `Strategizing` is waiting on that person, not stuck. A diagnostic or strategist that safe-failed still moves the workflow
     on — the failure is on its step, and missing advice is not a reason to stop a manager
     acting. One ABSENT from the reply (the graph broke its promise) → `Failed`.
   - Anything else dequeued — waiting on a person, a revision re-queued in `Strategizing` —
@@ -835,7 +836,12 @@ component ever checked it against the room.
   yes, because an intermittent fault has not had time to come back — and a confirmation
   that means nothing is worse than no confirmation, because it enters the metrics as a
   success. `DueAt` is measured **from completion, not from now**, so a check raised late by
-  a backfill still falls due when it should have.
+  a backfill still falls due when it should have. It is **stamped when the check is raised**:
+  changing `DelayDays` later moves no existing check, and there is no same-day setting
+  (startup refuses less than 1). A demo of the answer on a fresh repair means backdating that
+  check's `DueAt` and its workflow's `CompletedAt` in a dev database — as test data, the way
+  `WorkflowTestData` does — then running the sweep. Only the reporter can answer; a manager
+  is a 403.
 - `VerificationSettings` also carries `SweepIntervalMinutes` (default 60) and
   `ResponseWindowDays` (default 3). All from configuration, never literals; startup refuses
   a non-positive value for any of them.
@@ -888,7 +894,11 @@ The interval is `Verification:SweepIntervalMinutes` (or `VERIFICATION_SWEEP_INTE
 **do not put `Verification:*` values in the committed `appsettings.json`** — Program.cs reads
 that key before the env-var name, so a value there silently overrides Render's. **It is not optional**: Render's
 free tier sleeps idle services and a demo cannot wait an hour for a timer. A static
-`SemaphoreSlim` in the service stops the button and the timer running at once.
+`SemaphoreSlim` in the service stops the button and the timer running at once. **The
+button is "Run sweep now" on the web Verifications page** (`RunSweepButton`,
+FacilitiesManager only); `describeSweepResult` turns the API's counts into one sentence and
+adds nothing up, and the summary, tab counts and list remount (a `key` bump) while the
+filters, held above them, survive.
 
 - **Step 0 — the workflows.** `Completed` workflows whose `CompletedAt` is at least
   `DelayDays` old → `AwaitingVerification`, through `WorkflowTransitions` (`VerificationDue`)
@@ -1093,7 +1103,11 @@ only to learn that it ran.
 ## AGENT SERVICE — Python, `agent/`
 
 FastAPI + LangGraph. Modules are flat inside `agent/`; run it from that directory
-(`uvicorn main:app`, `pytest`).
+(`uvicorn main:app`, `pytest`). **There is no `app/` package** — `uvicorn app.main:app` (what
+the README once said) fails in a way that looks like a network fault: with `--reload` the
+watcher keeps port 8000 bound after its worker dies on the import, so the API's call hangs
+and the workflow fails with "Operation timed out (localhost:8000)" rather than "connection
+refused". `curl localhost:8000/health` timing out is the tell.
 
 ```
 agent/main.py          FastAPI app — POST /run, GET /health
@@ -1450,6 +1464,9 @@ flakiness to retry away.
     side of the threshold, a Technician's 403, reject / request-revision, assign, the
     completion transaction, visibility, the cost sort, and the slot endpoints' wiring
     (including a slot taken between offer and booking).
+  - `ApprovalQueueTests` also pins the report detail's raise offer: `LatestWorkflow
+    .CanRaiseWorkOrder` in every state against what `POST /api/workorders` then answers, and
+    `Proposal` read like the queue's. `ReportTests` pins `CreateReportDto.AssetId`.
   - `ApprovalTests` — the gate's edge cases: cost == threshold for every strategy,
     `EscalateReplacement` at any cost, no token → 401 on every decision, a decision not
     reversed by the opposite one.
@@ -1475,33 +1492,53 @@ flakiness to retry away.
 
 ---
 
-## FRONTEND — follow the SE3090 Lab 02 structure exactly
+## FRONTEND — Lab 02 structure, redesigned presentation
 
 React 18 + Vite. Run everything from `web/`: `npm run dev`, `npm run lint` (oxlint),
 `npm run build`.
 
 ```
-web/src/components/                    shared reusable UI
+web/src/components/ui/                 the design system — tokens, primitives, shared styles
+web/src/components/shell/              AppShell (sidebar frame), Sidebar, BrandMark
 web/src/hooks/                         shared hooks — useFetch, useDebounce
 web/src/services/                      apiClient (base URL + JWT), tokenStore
 web/src/features/<name>/components/
 web/src/features/<name>/hooks/
 web/src/features/<name>/services/
 web/src/features/<name>/pages/
-web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-authorised
+web/src/features/<name>/<name>.module.css   that feature's styles
+web/src/routes/                        AppRoutes, ProtectedRoute, RolePanelGuard, 404 / not-authorised
 ```
+
+The folder split is still the lab's (UI / hooks / services); the **presentation** was
+redesigned and is no longer bound by the lab's "plain CSS, no component library" rule — see
+Styling below. **What did not change in the redesign is every data and logic rule in this
+section**: the hooks, services, `validate()` functions, API calls and the rules about what the
+client may and may not compute are exactly as they were.
 
 - **JavaScript (`.jsx`), not TypeScript.**
 - **React 18, pinned.** `npm create vite@latest` now scaffolds React 19, so `react` and
-  `react-dom` are pinned to `^18.3.1` after scaffolding. Do not let a reinstall drift them.
+  `react-dom` are pinned to `^18.3.1` after scaffolding. Do not let a reinstall drift them —
+  and check a new dependency supports React 18 before adding it.
 - **Data fetching goes through the `useFetch` hook** returning `{ data, isLoading, error }`,
-  and **every page renders all three states**. A blank screen while loading is a bug. Keep
-  the `active` flag in its cleanup — a response arriving after unmount must never set state.
+  and **every page renders all three states** — skeletons shaped like the content while
+  loading, `ErrorState` on failure, `EmptyState` when there is nothing. A blank screen while
+  loading is a bug. Keep the `active` flag in its cleanup — a response arriving after unmount
+  must never set state. There is still no refetch in the hook: **a refresh remounts the
+  component with a new `key`** (report detail, work order detail, the approval queue, the
+  asset detail after an edit).
 - **Search inputs use the `useDebounce` hook.**
 - **Forms use controlled inputs** with a `validate()` function returning per-field errors.
 - **Components never call `fetch`.** API calls live in a feature's `services/`; a page reads
   data through `useFetch`, or through a feature hook that wraps it (`useWorkflows`). This is
   the lab's separation of UI, hooks and services.
+- **The client computes no business rule.** Warranty, repeat failure, overdue, the approval
+  threshold, counts and rates are all read from the API and only formatted and coloured here.
+  Display arithmetic on instants ("3 days ago", "ran 41 s") is fine; deciding anything is not.
+- **Status tab counts are the API's `totalCount`**, one page-of-one request per tab
+  (`useAssetStatusCounts`, `useReportStatusCounts`, `useWorkOrderStatusCounts`,
+  `useVerificationStatusCounts`), under the other filters currently applied. Never a tally of
+  the page already fetched.
 - **The workflow page compares diagnoses** (`DiagnosisComparison`): `WorkflowDetailDto
   .Diagnoses` is every diagnostic agent-run step read by `AgentAnalysis.ToDiagnosis` — the
   approval queue's reader — each rendered by the approval queue's own `DiagnosisPanel`,
@@ -1510,8 +1547,39 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
   `GET /api/workflows` takes only `state`, `page` and `pageSize` — and the UI says so under
   the box rather than implying a server-side search. If a `q` parameter is ever added to the
   API, move the filter into the query string; do not leave both.
+- **The workflow lifecycle rail and the list's meter are display only** (`services/lifecycle.js`):
+  they show where the current state sits in §8's order. Every other stage is drawn neutral,
+  because a run can skip clarification and the rail must not claim a stage happened. The state
+  machine is `WorkflowTransitions` in C#, not this file.
 - **State:** `useState` locally; **Context** for app-wide auth/session.
   **No Redux, no Zustand, no TanStack Query — this is a locked ADR decision.**
+
+### The shell and the dashboard
+
+- **Signed in, every page sits in `AppShell`**: a left sidebar (grouped Overview / Estate /
+  Operations / Insight, the signed-in user and sign-out at the bottom; a drawer below 900 px).
+  The sidebar's links and their role lists are the ones the old top bar had — **a link a role
+  would only be refused on is never offered**.
+- `CANVAS_ROUTES` in `AppShell.jsx` lists the redesigned routes, which lay their own panels on
+  the grey canvas. Anything not listed sits on one white stage. A new redesigned route must be
+  added there.
+- **Signed out, `/` (the landing page) and `/login` fill the screen on their own**
+  (`FULL_SCREEN_ROUTES` in `App.jsx`); any other signed-out render (a 404) uses the plain
+  `.app__main` container in `index.css`.
+- **`/` is `HomeRoute`**: the landing page (`features/landing/`) for a visitor, `/dashboard`
+  for someone signed in, and the session-check spinner while a stored token is being
+  verified — so a returning user is never flashed the landing page. The landing page is
+  static and calls no API; its only action is **Sign in → `/login`** (there is no sign-up).
+  Its rule numbers (5 days, Rs 15k, 2 questions, 15 min, 90 days) are the API's defaults
+  quoted as copy in `landingFacts.js` — **if a default changes, change that line**. The hero
+  sticker is a real `QRCodeSVG` of `PRJ-MAB101-01`, so it scans in a demo. The mock it was
+  built from is the "MaintenX Landing Page" design canvas.
+- **The dashboard is role-aware and reads only existing GET endpoints** (`dashboardApi.js`
+  builds every path with the owning feature's own builder). FacilitiesManager: approval queue,
+  key metrics, work orders by status, latest reports, repeat failures. Admin: the registry by
+  status, metrics, reports. Technician: their jobs. Reporter: checks awaiting their answer and
+  their own reports. Each panel has its own three states. An unknown role gets the Reporter's
+  view — the narrowest — never the estate.
 
 ### Auth on the client
 
@@ -1522,24 +1590,35 @@ web/src/routes/                        AppRoutes, ProtectedRoute, 404 / not-auth
 - **The client mirrors the API's 401 vs 403 distinction**, and they are different answers to
   the user. A 401 on a request that carried a token is a session expiry: drop the token and
   send them to `/login` with a notice. A 401 on a request that carried none (login) is just a
-  failed sign-in. A valid session with the wrong role renders a clear "not authorised" page —
-  never a blank screen, never a silent redirect.
+  failed sign-in. The login page shows the two as different banners (amber "Session
+  expired", red "Could not sign in"). A valid session with the wrong role renders a clear
+  "not authorised" page — never a blank screen, never a silent redirect.
+- **There is no sign-up and no third-party sign-in on the login page**, deliberately: accounts
+  are issued, and a self-registration would have to choose a role. A "Continue with Google"
+  button would be a control that does nothing.
 - **Access token only, no refresh**, the same scope decision as the API: exactly one value to
   store, nothing to rotate.
 - **Enums are matched by NAME, never by ordinal.** `features/auth/services/roles.js`,
   `WORKFLOW_STATES` in the workflows service, `ASSET_STATUSES` / `SERVICE_OUTCOMES` in
-  `assetsApi.js`, `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js` and
+  `assetsApi.js`, `REPORT_STATUSES` / `ANSWER_TYPES` / `REPORT_SORTS` in `reportsApi.js`,
   `WORK_ORDER_STATUSES` / `STRATEGIES` / `WORK_ORDER_SORTS` in `workOrdersApi.js` and
-  `VERIFICATION_STATUSES` / `VERIFICATION_SORTS` in `verificationApi.js` hold the same strings the API sends and accepts, so a member inserted into a C# enum cannot
-  silently shift the client's meaning.
-- **Navigation is role-based**: a Reporter must not see manager links. The route guard would
-  refuse them anyway, but offering a link that leads to "not authorised" is a bad interface.
+  `VERIFICATION_STATUSES` / `VERIFICATION_SORTS` in `verificationApi.js` hold the same strings
+  the API sends and accepts, so a member inserted into a C# enum cannot silently shift the
+  client's meaning. Colours are keyed by the same names (`components/ui/tones.js`).
 
 ### Routing
 
 `BrowserRouter` in `main.jsx`, every route in `routes/AppRoutes.jsx`, `NavLink` for
-navigation, `ProtectedRoute` for the guards, and a catch-all `*` route. `ProtectedRoute`
+navigation, `ProtectedRoute` for the guards, `HomeRoute` for `/`, and a catch-all `*` route. `ProtectedRoute`
 remembers where the user was heading and sends them back there after sign-in.
+
+**Register and edit asset are slide-overs that ARE routes.** `/assets/new` is a child of
+`/assets` and `/assets/:id/edit` a child of `/assets/:id`; each page renders an `<Outlet />`,
+so the panel opens over the list or the detail and the URL still works when opened directly
+(Back closes it). The role check for them is `RolePanelGuard`, not `ProtectedRoute`: the wrong
+role gets "not authorised" **inside the panel**, never the form. `useRoutePanel` plays the
+exit animation before navigating away, and asks the form's guard first — a dirty form gets
+"Discard unsaved changes?" rather than closing.
 
 ### The asset registry — `features/assets/`
 
@@ -1552,29 +1631,36 @@ anyone else.
 
 - **The search is server-side**, unlike the workflows list: `GET /api/assets` takes `search`,
   so the debounced value goes into the query string and matches name **or** tag across every
-  page, not just the one fetched.
+  page, not just the one fetched. Status is a tab row with counts.
 - **Only Name and Installed are sortable, and only ascending.** Those are the two members of
-  `AssetSort` and the API takes no direction. Do not make the other columns clickable by
-  sorting the fetched page in the browser: it would reorder page 1 on its own while page 2
-  came back in a different order, and look like a server sort while not being one. A new sort
-  is a new `AssetSort` member first.
+  `AssetSort` and the API takes no direction. Do not sort the fetched page in the browser: it
+  would reorder page 1 on its own while page 2 came back in a different order, and look like
+  a server sort while not being one. A new sort is a new `AssetSort` member first.
 - The list DTO carries `assetCategoryId` and `roomId`, not names. The names come from
   `useAssetLookups`, which fetches `GET /api/assetcategories` and `GET /api/rooms` whole —
   both are short and unpaginated — and the same lists feed the filter and form pickers.
-- **The warranty badge reads `isUnderWarranty` from the failure summary; it never compares
+- **A plain click on a row opens the quick look** (`AssetQuickLook`, a slide-over with the
+  same two requests as the detail page); Cmd/Ctrl-click on the name is a real link to
+  `/assets/:id`.
+- **`AssetLabel` is the QR sticker, drawn as printed.** Its QR code encodes the asset tag and
+  **nothing else** — the payload the phone's scanner sends to `by-tag` — so a label printed
+  from the detail page ("Print label", which prints that card alone) scans like one the
+  registry issued. The register form shows it live; the edit form shows it locked.
+- **`WarrantyPill` reads `isUnderWarranty` from the failure summary; it never compares
   `warrantyExpiresOn` with today.** Warranty dates are a deterministic business rule, so the
-  rule lives in C# and the client only colours the answer — green under warranty, grey
-  otherwise. A null expiry reads "No warranty recorded" rather than "expired": the same grey,
-  a different fact. **The failure-summary panel likewise displays every figure and recomputes
-  none** — a second copy of a rule in JavaScript is a second answer waiting to disagree.
+  rule lives in C# and the client only colours the answer. A null expiry reads "No warranty
+  recorded" rather than "ended": the same grey, a different fact. **`SummaryCard` likewise
+  displays every figure and recomputes none** — a second copy of a rule in JavaScript is a
+  second answer waiting to disagree.
 - The detail page makes **two requests with their own states**: the asset is the page, and a
   failed summary is an error in its panel while the history — the evidence the summary was
   computed from — still renders.
-- **The service history is rendered in the order the API sends it, oldest first, and every
-  technician note verbatim**: no truncation, no "read more", no tidying, `white-space:
+- **`HistoryFeed` renders the service history in the order the API sends it, oldest first,
+  every technician note verbatim**: no truncation, no "read more", no tidying, `white-space:
   pre-wrap`. The fault the history is evidence of is spread across several terse notes, and a
   note cut to its first line can drop exactly the clause that matters. Same reason the seed
-  notes are left untidy.
+  notes are left untidy. `startIndex` / `total` keep "Visit n of m" true when only part of it
+  is shown (the quick look shows the latest one).
 - **Never `new Date("2026-07-03")` on a `DateOnly`.** It parses as UTC midnight and renders as
   the previous day anywhere west of Greenwich — the exact bug the API made these `DateOnly`
   to avoid. Use `formatDateOnly` in `assetsApi.js`, which reads the parts and builds a local
@@ -1582,6 +1668,7 @@ anyone else.
 - **The edit form shows the tag locked and does not send it** — `UpdateAssetDto` has no field
   for it. The create form has no status field — a new asset is `Active`. A 409 from create is
   always a tag already in use, so it is shown under the tag field, not as a page error.
+  Saving an edit closes the panel and the detail page reloads (a `state.refresh` bump).
 - `validate()` and the empty form values live in `services/assetValidation.js`, not in
   `AssetForm.jsx`: oxlint's `only-export-components` rule wants a component file to export
   only components. Its limits mirror the DataAnnotations on the input DTOs.
@@ -1589,7 +1676,7 @@ anyone else.
   `DefaultWarrantyMonths` — a data-entry convenience and nothing more. The Admin sees the date
   and can change it; the stored date is what every warranty decision reads.
 - There is **no Retire button**. Retiring is choosing `Retired` in the edit form's status
-  picker; `DELETE /api/assets/{id}` does the same thing and is not called by the client yet.
+  control; `DELETE /api/assets/{id}` does the same thing and is not called by the client yet.
 
 ### Reports — `features/reports/`
 
@@ -1600,36 +1687,34 @@ opening someone else's gets the API's 403 rendered as "Not your report", distinc
 404. **The client keeps no second copy of the visibility rule.**
 
 - **The search is server-side** (`search` matches the description), debounced, alongside
-  `status` by NAME and a `dateFrom` / `dateTo` range. The dates go to the API as the
-  `YYYY-MM-DD` an `<input type="date">` produces — never through `new Date()` — and the hint
-  says they are **UTC days, both ends inclusive**, because that is how `ReportService`
-  compares them against `CreatedAt`. From-after-To is flagged under the filters.
-- **Only Status and Reported are sortable** — the two members of `ReportSort`, with no
-  direction. Status groups alphabetically by the stored name, not by lifecycle position; the
-  header's title says so. Same rule as the asset table: no browser-side sorting of a page.
+  `status` by NAME (tabs with counts) and a `dateFrom` / `dateTo` range (`DateRange`). The
+  dates go to the API as the `YYYY-MM-DD` an `<input type="date">` produces — never through
+  `new Date()` — and the hint says they are **UTC days, both ends inclusive**, because that
+  is how `ReportService` compares them against `CreatedAt`. From-after-To is flagged.
+- **Only Newest and Status sort** — the two members of `ReportSort`, with no direction.
+  Status groups alphabetically by the stored name, not by lifecycle position. Same rule as the
+  asset list: no browser-side sorting of a page.
 - The list shows `unansweredQuestionCount` as "N unanswered" — a count the API computed, not
-  the questions. The description is clamped to two lines in the list only; the detail page
-  shows it verbatim with `pre-wrap`.
+  the questions — and the latest repair check (`verification`) when there is one. The
+  description is clamped to two lines in the list only; the detail page shows it verbatim.
 - The detail page shows the report, its photo (a URL that does not load says so and offers
   the link, never a broken-image icon), the clarification questions with their answers —
   **read-only**; answering is the reporter's job, from the phone — and the agent reasoning.
 - **An empty question list says which of three things it means**: not clarified yet, the
   clarifier's last run failed, or it ran and needed nothing (`latestAgentRunState`). "No
   questions" after a failed run would read as a clean report when nothing was ever asked.
-- **Refresh remounts the detail with a new `key`** — a fresh mount is a fresh `useFetch`.
-  There is no refetch in the shared hook and none is needed; this is how a manager watches a
-  background run progress.
 
-#### The agent reasoning panel — the execution summary an evaluator reads hardest
+#### The agent reasoning — the execution summary an evaluator reads hardest
 
-Every `AgentStep` for the report, **in the order the API sends it** (oldest first), split
-where the `WorkflowId` changes and numbered across the whole trail. Each row is readable
-first: agent name, agent run vs tool call, the tool name, a plain outcome pill, the duration
-in ms, and **one sentence saying what happened** ("Called get_room for id 3 — found MAB101 ·
-Lecture Hall A."). A failed step shows its `ErrorMessage` as a **Reason** in the row, not
-behind a toggle. The stored `ValidationResult`, `ToolCallsJson` and `PayloadJson` are behind
-**"Show raw"**, verbatim — the audit trail is never the first thing a reader has to parse,
-and never hidden either.
+`ReasoningPanel` on the report and the workflow page's audit trail are **one component**,
+`features/workflows/components/AuditTrail.jsx`, so a step reads the same in both places. On a
+report it is split where the `WorkflowId` changes. Every `AgentStep` **in the order the API
+sends it** (oldest first); each row is readable first: agent name, agent run vs tool call, the
+tool name, a plain outcome pill, the duration, and **one sentence saying what happened**
+("Called get_room for id 3 — found MAB101 · Lecture Hall A."). A failed step shows its
+`ErrorMessage` as a **Reason** in the row, not behind a toggle. The stored `ValidationResult`,
+`ToolCallsJson` and `PayloadJson` are behind **"Show raw"**, verbatim — the audit trail is
+never the first thing a reader has to parse, and never hidden either.
 
 - **All step interpretation lives in `services/agentSteps.js`**, pure functions, so the
   components stay presentational. Two shapes arrive: the runner's one agent-run row
@@ -1644,18 +1729,27 @@ and never hidden either.
   the question it was asked — null and empty are different answers, and painting that red
   would say the system broke when it did its job. `RejectedUnknownTool`, `SafeFailure` and
   `CallFailed` are the failures.
-- The step counts in the panel header are tallies of the rows for orientation, not a rule
-  anything acts on. **Durations are not summed**: an agent run's time already includes the
-  tool calls it made.
-- The clarifier's questions appear twice on the page on purpose — as rows in Clarification
-  (the working copy) and verbatim inside the agent-run step (the audit copy), with
-  `answer_type` shown as the agent wrote it. Same split as CLARIFICATION above.
+- The step counts are tallies of the rows for orientation, not a rule anything acts on.
+  **Durations are not summed**: an agent run's time already includes the tool calls it made.
+- The clarifier's questions appear twice on the page on purpose — as cards in Clarification
+  (the working copy) and inside the agent-run step (the audit copy). Same split as
+  CLARIFICATION above.
 - **Diagnostic and strategist steps get one sentence each** from `describeStep` — "Diagnosed
   2 possible causes; most likely: …" and "Proposed escalate replacement at Rs 45,000 —
   advice; approval is decided by the API." The full rendering of both is the approval
   queue's (`features/workorders/`); here they are audit rows like any other.
 - There is **no status control** on the detail page yet: `PATCH /api/reports/{id}/status`
   exists and nothing on the client calls it.
+- **The detail page is where a FacilitiesManager raises the work order** (`RaiseWorkOrderPanel`,
+  in `features/workorders/`). `Strategizing` is a human pause: the runner never raises one.
+  The panel shows only when `ReportDetailDto.LatestWorkflow.CanRaiseWorkOrder` is true —
+  `WorkflowTransitions.CanRaiseWorkOrder` (read off the table: `Strategizing` or `Failed`) and
+  the report not `Closed` — and only for `DISPATCH_ROLES`. It starts from
+  `ReportDetailDto.Proposal` (`AgentAnalysis.ToProposal`, the approval queue's reader) and the
+  report's asset, picks the asset from the report's room (`useRoomAssets`), and sends no
+  status: the notice after it says where the API's gate put the order. Pinned by
+  `ReportDetail_OffersRaisingAnOrder_ExactlyWhenTheApiWouldAcceptOne` (every state, the offer
+  against the POST's answer), verified to fail with `Failed` dropped from the rule.
 
 ### Work orders — `features/workorders/`
 
@@ -1666,16 +1760,16 @@ and never hidden either.
 them both. Which orders a caller sees is the API's rule; the client keeps no copy of it.
 
 - **The board searches server-side** (`search` debounced 400 ms — asset tag or fault),
-  filters by status by NAME and, **for a manager only**, by technician from
-  `GET /api/users?role=Technician`. Only Estimate and Raised sort — the two `WorkOrderSort`
-  members, no direction, never a browser-side sort of the page.
+  filters by status by NAME (tabs with counts) and, **for a manager only**, by technician
+  from `GET /api/users?role=Technician`. Only Newest and Highest estimate sort — the two
+  `WorkOrderSort` members, no direction, never a browser-side sort of the page.
 - **`ApprovalsPage` is the screen an evaluator reads hardest.** One card per order, and a
   manager decides without opening anything else: the report verbatim, **the cost against
   the threshold in one sentence** ("Rs 45,000 — above the Rs 15,000 approval threshold"),
   the agent's proposal **beside the order as raised** (a differing row is marked, and the
   mark decides nothing), the diagnosis with its evidence verbatim, and the asset registry's
-  own `FailureSummaryPanel`, `WarrantyBadge` and `ServiceTimeline` — reused, not copied, so
-  the history reads exactly as on the asset page.
+  own `SummaryCard`, `WarrantyPill` and `HistoryFeed` — reused, not copied, so the history
+  reads exactly as on the asset page. The decision bar is pinned to the bottom of each card.
 - **The sentence is chosen by the API's booleans** (`describeApprovalBasis`); nothing in
   JavaScript compares an estimate with the threshold. `formatMoney` formats and nothing
   else — the client never adds, rounds or compares money to decide anything.
@@ -1687,11 +1781,16 @@ them both. Which orders a caller sees is the API's rule; the client keeps no cop
   only for the Technician it is assigned to. Unassigned, the slot finder checks the room
   alone and offers **no Book button** — a booking is time in somebody's diary. A slot is
   booked by sending it back exactly as offered; a 409 is shown against that slot.
+- **`JobProgress` is read off facts already on the order** (status, assigned technician,
+  booked slots) and moves nothing. The detail also shows `WorkOrderDetailDto.Diagnosis`
+  through the same `DiagnosisPanel` as the queue.
 - Slots are **instants** (UTC with a `Z`), so `new Date()` is correct for them — unlike a
   `DateOnly`. The search's dates are campus-local `YYYY-MM-DD` strings and never go through
-  `Date`.
-- The outcome picker reuses `SERVICE_OUTCOMES` from `assetsApi.js`; the completion form has
-  **no default outcome**, for the reason `CompleteWorkOrderDto.Outcome` is `[Required]`.
+  `Date`. Grouping the offered slots under a day heading is display only.
+- The outcome control reuses `SERVICE_OUTCOMES` from `assetsApi.js` and has **no default** —
+  no segment starts selected — for the reason `CompleteWorkOrderDto.Outcome` is `[Required]`.
+  `Segmented` gives the first option the tab stop when nothing is chosen, so a required
+  choice with no default is still reachable from the keyboard.
 
 ### Verification — `features/verification/`
 
@@ -1705,33 +1804,57 @@ two roles `GET /api/analytics/metrics` names** — and a Reporter never sees the
   `reopen` / `escalate`) mirrors the stored `AgentOutcome` strings — there is no C# enum for
   it, deliberately** (it is the model's opinion). An unknown value renders raw and grey.
 - **The list searches server-side** (asset tag, debounced 400 ms), filters status by NAME and
-  `DueAt` by a UTC-day range, sorts `DueAt` / `Status` only. **An overdue row is the API's
-  `isOverdue`** — a flag and a red edge, never a date compared in the browser.
-- **The detail** shows the technician's note verbatim, the reporter's answer (null is "not
-  answered", never "no"), the agent's outcome, reason and evidence **as advice**, and — when
-  the repair did not hold (`Reopened` / `Escalated`, or the agent said `reopen` /
-  `escalate`) — **what it looped back to**: the original report and the follow-up work
-  orders, with "none raised yet" and "not shown to a reporter" said differently.
-- **The metrics page computes nothing.** One request feeds three `MetricsPanel`s — loading,
-  error, **"Not enough data yet"** and data — so no chart area is ever blank. **A trend month
-  with no answered checks plots as a gap, not 0%** (`trendChartRows`): the API's 0 means
-  "nothing to divide by", and a point at 0 would read as a month every repair held. Every
+  `DueAt` by a UTC-day range, sorts `DueAt` / `Status` only. Each row leads with the report's
+  description, because a reporter does not know the tag. **An overdue row is the API's
+  `isOverdue`** — a pill and a red edge, never a date compared in the browser.
+- **A FacilitiesManager's list opens with `VerificationSummary`**, every figure from
+  `GET /api/analytics/verification` (FacilitiesManager only, so only their page asks). Its
+  failure is one line; the list still renders.
+- **The detail reads as three voices, in order** (`ClaimChain`): the technician's note
+  verbatim, the reporter's answer (null is "not answered", never "no"; Pending, waiting and
+  Expired each say why), and the agent's outcome, reason and evidence **labelled advice**.
+  The status is stated as set from the reporter's answer. When the repair did not hold
+  (`Reopened` / `Escalated`, or the agent said `reopen` / `escalate`) it shows **what it
+  looped back to**: the original report and the follow-up work orders, with "none raised
+  yet" and "not shown to a reporter" said differently.
+- **The metrics page computes nothing.** One request feeds the headline numbers and every
+  `MetricsPanel` — loading, error, **"Not enough data yet"** and data — so no chart area is
+  ever blank. **A trend month with no answered checks plots as a gap, not 0%**
+  (`trendChartRows`): the API's 0 means "nothing to divide by", and a point at 0 would read
+  as a month every repair held. The category bars are drawn at the API's percentage. Every
   rate sits beside its counts; a null median reads "—", never "0 h".
 
 ### Styling and configuration
 
-- **Plain CSS or CSS modules. No Tailwind, no component library.** Presentation is not what
-  this project is marked on, and it costs time the team does not have. **recharts** (2.x,
-  React 18 compatible) is the one chart dependency, used by the metrics page only; it is
-  styled with the same `var(--…)` tokens and is not a licence for a UI kit.
-- **Colours, radii and shadows are tokens on `:root` in `index.css`** — `--success`,
-  `--warn`, `--neutral`, `--info` and their `-bg` / `-border` pairs back every status,
-  outcome and warranty pill. A new pill picks from them rather than introducing a literal, and
-  its modifier class is the enum NAME (`asset-status--UnderMaintenance`,
-  `report-status--AwaitingClarification`), never an ordinal. The one exception is
-  `step-outcome--ok|neutral|failed`, keyed by tone because `ValidationResult` is not an enum.
-- The reports list and filters **reuse the asset catalogue's `.asset-table` /
-  `.asset-filters` classes** rather than copying them, so the two lists stay one design.
+- **The design system is `components/ui/`.** `tokens.css` holds every colour, radius, shadow
+  and font as `--mx-*` custom properties (canvas `#EEF0F3`, ink `#15171C`, iris `#5B50E8`
+  used only for the active link, focus and links, and six pill tones). Primitives: `MxButton`
+  (pill; `to` renders a router `Link`), `Pill` / `StatusPill`, `Panel` / `Well`, `PageHeader`,
+  `Segmented`, `SelectMenu`, `DateRange`, `SlideOver`, `Skeleton`, `EmptyState` /
+  `ErrorState`, `Pager`, `Notice`; shared styles in `ui.module.css`, `form.module.css` and
+  `rows.module.css`. **Use these before writing a new control**, and pick colours from the
+  tokens rather than a literal.
+- **A status's colour comes from `tones.js`, keyed by the enum NAME** — never an ordinal, never
+  a colour chosen in a component. A new enum member needs a line there or it renders slate.
+- **Styles are CSS modules**, one per feature (`<name>.module.css`) beside the shared ones.
+  **No Tailwind**: its global reset would restyle the screens still on `index.css`
+  (the plain signed-out container, not-authorised, not-found), which is where the old global
+  styles and `--accent`-style tokens still live.
+- **Libraries in use**: `lucide-react` (icons), `@radix-ui/react-dialog` / `-select`
+  (the slide-over and pickers — focus trap, Esc, keyboard; `-tooltip` is installed but not
+  used yet), `qrcode.react` (the
+  asset label), `clsx`, self-hosted fonts via `@fontsource-variable/hanken-grotesk` (UI) and
+  `@fontsource/jetbrains-mono` (tags, dates, counts, money), and **recharts** (2.x) on the
+  metrics page. Radix portals render outside the shell, so portalled content sets its own
+  font and carries `data-mx-portal` for the reduced-motion rule.
+- **A Radix popup animates on `[data-state='open']` only, with `animation: none` on
+  `closed`.** Select 2.3 and Dialog keep content mounted on close until an exit animation
+  ends, holding `pointer-events: none` on `<body>` meanwhile. One animation on both states
+  reads as an exit still running, the `animationend` it waits for already fired, and the
+  whole page freezes after a pick — which `.selectContent` did until it was split. A new
+  popup needs either that split or a real exit animation, like `.sheet` / `.overlay`.
+- **Quality floor**: every page responsive down to phone width, visible focus rings,
+  `prefers-reduced-motion` respected (animations collapse to 1 ms).
 - Only `VITE_`-prefixed keys reach the browser, so **nothing secret belongs in `web/.env`**.
   New keys go in `web/.env.example` with an empty value and a one-line comment, same rule as
   the root file. `VITE_API_BASE_URL` points at the ASP.NET Core API — the client talks to
@@ -1757,11 +1880,15 @@ usage strings, see QR scanning and Reports below. Run everything from `mobile/`:
   until `android:usesCleartextTraffic="true"` is set on the debug manifest.
 
 ```
-mobile/lib/core/       env, api_client, token_storage, infrastructure providers
+mobile/lib/core/       env, api_client, token_storage, infrastructure providers,
+                       app_theme (the design tokens and the one ThemeData)
 mobile/lib/router/     go_router with the redirect guard
 mobile/lib/widgets/    LoadingView, EmptyView, ErrorView, AppFormField, AppDropdownField,
-                       StatusPill (the five web pill tones, shared by every chip)
+                       StatusPill (the five web pill tones, shared by every chip),
+                       surfaces (MxCard, MxWell, MxIconTile, MxRoundButton, MxBrandMark,
+                       Skeleton)
 mobile/lib/features/<name>/   screens, that feature's API class and its providers
+mobile/assets/fonts/   Hanken Grotesk TTFs + OFL.txt
 ```
 
 - **Screens never call `http`.** A screen calls a feature API class (`AuthApi`,
@@ -1782,6 +1909,50 @@ mobile/lib/features/<name>/   screens, that feature's API class and its provider
   `features/verification/verification.dart` hold the same strings the API sends and accepts.
   `AgentOutcomes` beside it mirrors the stored `AgentOutcome` strings — no C# enum, as on the
   web.
+
+### Styling — the web client's tokens, one accent
+
+All twelve screens are redesigned on this system. New screens start from it: a large
+`headlineMedium` title under a back arrow, content on white `MxCard`s over the canvas (or grey
+`MxWell`s on a white form screen), and a form's action pinned in `MxActionBar`.
+
+- **`core/app_theme.dart` is the design system**: `MxColors` are the web client's `--mx-*`
+  tokens (canvas `#EEF0F3`, ink `#15171C`, well `#F4F5F7`, iris `#5B50E8`), `MxRadii`, and
+  `AppTheme.light()`. Pick colours from `MxColors`, never a literal; build with `surfaces.dart`
+  before writing a new container.
+- **Iris means "waiting on YOU" and nothing else** — open clarification questions, a repair to
+  confirm — plus the focus ring. Black, white and greys carry everything else. A new use of
+  iris for decoration dilutes the one signal it exists for.
+- **Hanken Grotesk, bundled as static TTFs** (`pubspec.yaml` `fonts:`), not `google_fonts`,
+  which downloads at runtime — a test must never touch the network. Every `TextTheme` style
+  states its `letterSpacing`: Material's defaults (0.5 on `bodyLarge`) would otherwise merge in
+  and space the text out. Counts and dates use `MxType.tabular`.
+- **Icons are `lucide_icons_flutter`**, the web client's set. `qr_flutter` draws the login
+  screen's sticker — a real QR code of the seeded `PRJ-MAB101-01`.
+- **Home's counts are the API's `totalCount`**, one page-of-one request each
+  (`features/home/home_counts.dart`), like the web dashboard. Each has its own loading and
+  error state; Home re-reads them when the route returns to `/`, because it stays mounted under
+  every screen it opens.
+- **The room is chosen from a bottom sheet**, not a dropdown; its search box narrows the list
+  already fetched, nothing more.
+- **Shared layout pieces in `surfaces.dart`**: `MxJoined` (the round arrow joining two panels
+  read top to bottom — what's wrong → where, reported → repaired), `MxActionBar` (a form's one
+  action pinned under it), `MxPager`, `MxPanelLabel`, `MxDashedTile` (an optional photo).
+- **The scanner is the one dark screen**: white chrome over the live picture, the picture
+  dimmed outside a rounded window with corner marks (`_ViewfinderPainter`), and a floating white
+  card with the instruction. Once a result or a camera error covers the picture it is an
+  ordinary white page, so the app bar switches with it.
+- **The asset's service history is a timeline** — a rail joining the visits oldest first, each
+  dot in its outcome's colour. The order is the API's, and every note is still verbatim. A form's submit sits in `MxActionBar`,
+  so widget tests that tap a control further down the form `ensureVisible` it first.
+- **Every "waiting on you" row ends in the same iris band** (a report's open questions, a
+  repair to confirm), and the two answer forms open with an iris "Waiting on you" tag. The
+  clarification form's "n of m answered" and ticked numbers are display only — `validate()`
+  is still the rule.
+- Motion: one entrance, the login sticker settling into its tilt, skipped under
+  `MediaQuery.disableAnimations`, as is the `Skeleton` pulse.
+- **Deferred, now unblocked:** a floating bottom tab bar. It changes the navigation shell for
+  every screen, so it waited until all twelve were redesigned; they now are.
 
 ### The token lives in flutter_secure_storage — this is the point, not a detail
 
@@ -1873,6 +2044,22 @@ QR code (a poster's URL) demonstrates the unknown-tag path.
 
 `/report` files one, `/reports` lists them (`MyReportsScreen`), and
 `/reports/:id/clarifications` answers the agent's questions (`ClarificationScreen`).
+
+**The report form scans the equipment's sticker** (optional, first on the form):
+`/report/scan` is `ScanAssetScreen(pickForReport: true)`, the same scanner and lookup, which
+POPS with the `AssetDetail` instead of opening its page. The form takes the room from it and
+sends `assetId`; choosing a different room drops the asset, because the API refuses one
+outside the report's room. No scan, no `assetId` key at all.
+
+**Filing goes straight to the questions, not the list.** The clarifier runs in the API's
+background runner after the 201, so its questions do not exist yet when the report does.
+`SubmitReportScreen` opens `/reports/:id/clarifications?waiting=1`, where `ClarifierWait`
+polls `GET /api/reports/{id}` every 2 s and the form opens in place the moment the questions
+exist; "nothing to ask", a failed run, repeated poll failures and a 3-minute limit are each
+their own state, and "Go to my reports" is always offered. `readClarifierProgress` reads the
+clarifier's latest **agent-run** step (`"[]"` tool calls) — and a run whose payload asked
+while the report has no rows yet is still **running**: the runner saves the step before the
+rows. Display only, like the web's `latestAgentRunState`.
 
 **`ClarificationScreen` is a FORM, never a message thread** — the single easiest way to lose
 marks on this project. Each question is one bounded control chosen by its `AnswerType` NAME:
@@ -1978,7 +2165,7 @@ It returns **201** with the created report and raises the agent workflow as a si
 comes from `IWorkflowQueue`, not from a 202. The room picker reads `GET /api/rooms`.
 
 The reporter is taken from the JWT `sub` claim and **`CreateReportDto` has no `ReporterId`
-field**, so a client cannot file a report as someone else. The description is capped at
+field** (an optional `AssetId` is sent only after a sticker scan), so a client cannot file a report as someone else. The description is capped at
 1000 characters on both sides, matching `AgentWorkflow.Objective`, which it becomes
 verbatim; the 10-character floor mirrors the Flutter form's own `validate()`.
 
@@ -2094,9 +2281,13 @@ what the agent asks for when it needs more detail and a clear report does not ne
   rewrite the description, room or asset would be an edit wearing a workflow action's name;
   those are the reporter's account of the fault.
 
-QR scanning on the report form is a disabled button marked `TODO(qr)` — visible rather than
-hidden, so the finished shape of the form stays obvious. The photo button is live; see
-Reports below.
+**A report can name its equipment when filed.** `CreateReportDto.AssetId` is optional (a
+default-null trailing parameter) and must be an asset registered in `RoomId` —
+`IReportService.AssetIsInRoomAsync`, asked by the controller first so the 400 names
+`AssetId`, and again in `CreateAsync`. The phone's report form sets it from a scanned sticker
+(see Reports below), and the runner already sends `Report.AssetId` to the agents, so the
+first diagnosis reads that machine's history. Pinned in `ReportTests`, the room check
+verified to fail with it removed.
 
 #### `POST /api/reports/{id}/photo` — Supabase Storage, only the URL in Postgres
 

@@ -92,11 +92,19 @@ public interface IReportService
 
     /// <summary>
     /// Creates a report for <paramref name="reporterId"/> and raises the agent workflow
-    /// for it. Returns null when the referenced room does not exist (a 400 for the caller).
+    /// for it. Returns null when the referenced room does not exist, or when an AssetId is
+    /// given that is not an asset registered in that room (a 400 for the caller, who calls
+    /// <see cref="AssetIsInRoomAsync"/> first to tell the two apart).
     ///
     /// <paramref name="reporterId"/> is a parameter rather than a DTO field because it
     /// comes from the caller's token, not from anything the caller sent as data.
     /// </summary>
+    /// <summary>
+    /// Whether <paramref name="assetId"/> is an asset registered in <paramref name="roomId"/>.
+    /// False for an unknown asset too — either way the report cannot name it.
+    /// </summary>
+    Task<bool> AssetIsInRoomAsync(int assetId, int roomId, CancellationToken cancellationToken = default);
+
     Task<ReportDto?> CreateAsync(
         CreateReportDto dto,
         int reporterId,

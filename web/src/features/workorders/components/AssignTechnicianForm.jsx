@@ -1,13 +1,15 @@
+import { UserRoundCheck } from 'lucide-react';
 import { useState } from 'react';
 
-import Button from '../../../components/Button';
+import MxButton from '../../../components/ui/Button';
+import form from '../../../components/ui/form.module.css';
 import { assignTechnician } from '../services/workOrdersApi';
+import styles from '../workorders.module.css';
 import TechnicianSelect from './TechnicianSelect';
 
 /**
  * Hands the order to a technician — or to a different one. FacilitiesManager only, and only
- * rendered for one. It books no time: choosing when is the slot finder's job, and the API
- * keeps the two apart for the same reason (see AssignTechnicianDto).
+ * rendered for one. It books no time: choosing when is the slot finder's job.
  *
  * Whether the chosen user really is a Technician, and whether the order can be assigned from
  * where it is, are the API's checks — a 400 or 409 comes back here as its own message.
@@ -44,23 +46,30 @@ export function AssignTechnicianForm({ order, onAssigned }) {
   }
 
   return (
-    <form className="inline-form" onSubmit={handleSubmit} noValidate>
-      <label htmlFor="assign-technician">{current ? 'Reassign to' : 'Assign to'}</label>
-      <div className="inline-form__row">
+    <form className={styles.inlineForm} onSubmit={handleSubmit} noValidate>
+      <div className={form.field} style={{ flex: 1 }}>
+        <label htmlFor="assign-technician" className={form.label}>
+          {current ? 'Reassign to' : 'Assign to'}
+        </label>
         <TechnicianSelect
           id="assign-technician"
+          block
           value={technicianId}
-          onChange={setTechnicianId}
-          emptyLabel="Choose a technician…"
+          onChange={(value) => {
+            setTechnicianId(value);
+            setError(null);
+          }}
+          placeholder="Choose a technician…"
           disabled={isSubmitting}
           invalid={Boolean(error)}
+          describedBy={error ? 'assign-technician-error' : undefined}
         />
-        <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? 'Assigning…' : current ? 'Reassign' : 'Assign'}
-        </Button>
       </div>
+      <MxButton type="submit" variant="primary" icon={UserRoundCheck} disabled={isSubmitting}>
+        {isSubmitting ? 'Assigning…' : current ? 'Reassign' : 'Assign'}
+      </MxButton>
       {error ? (
-        <p className="form__error" role="alert">
+        <p className={form.error} id="assign-technician-error" role="alert" style={{ flexBasis: '100%' }}>
           {error}
         </p>
       ) : null}

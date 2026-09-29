@@ -397,7 +397,8 @@ void main() {
       await pump(tester, _detail());
 
       expect(find.text('Ceiling Projector'), findsOneWidget);
-      expect(find.text('MAB101 · Lecture Hall A · Floor 1'), findsOneWidget);
+      expect(find.text('Lecture Hall A'), findsOneWidget);
+      expect(find.text('MAB101, floor 1'), findsOneWidget);
       expect(find.text(formatSlot('2026-09-28T03:30:00Z', '2026-09-28T05:00:00Z')), findsOneWidget);
       expect(find.text('Cooling fan 80mm, thermal paste'), findsOneWidget);
       // Verbatim, newline and all.

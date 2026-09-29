@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../widgets/app_form_field.dart';
 import '../../widgets/empty_view.dart';
 import '../../widgets/error_view.dart';
 import '../../widgets/loading_view.dart';
+import '../../widgets/surfaces.dart';
 import '../assets/asset.dart';
 import '../reports/report_photo.dart';
 import 'completion.dart';
@@ -168,9 +171,19 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
   @override
   Widget build(BuildContext context) {
     final id = widget.workOrderId;
+    final appBar = AppBar(
+      leading: Navigator.canPop(context)
+          ? IconButton(
+              tooltip: 'Back',
+              icon: const Icon(LucideIcons.arrowLeft),
+              onPressed: () => Navigator.maybePop(context),
+            )
+          : null,
+    );
     if (id == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Complete job')),
+        backgroundColor: MxColors.surface,
+        appBar: appBar,
         body: const ErrorView(title: 'Not a job', message: 'This link does not point at a job.'),
       );
     }
@@ -178,8 +191,10 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
     final order = ref.watch(workOrderDetailProvider(id));
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Complete job')),
+      backgroundColor: MxColors.surface,
+      appBar: appBar,
       body: SafeArea(
+        top: false,
         child: order.when(
           loading: () => const LoadingView(message: 'Loading job…'),
           error: (error, _) => ErrorView(
@@ -188,13 +203,18 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
             onRetry: () => ref.invalidate(workOrderDetailProvider(id)),
           ),
           data: (detail) => detail.isCompletable || !_isEditing
-              ? _form(detail)
+              ? Column(
+                  children: [
+                    Expanded(child: _form(detail)),
+                    MxActionBar(children: _actions(detail.id, Theme.of(context))),
+                  ],
+                )
               // Already finished (or not yet approved): nothing to complete, and not an error.
               : EmptyView(
-                  icon: Icons.task_alt,
+                  icon: LucideIcons.circleCheck,
                   message: 'This job is ${WorkOrderStatuses.label(detail.status).toLowerCase()}'
                       ' — there is nothing to complete.',
-                  action: TextButton(
+                  action: OutlinedButton(
                     onPressed: () => context.go(JobDetailScreen.location(id)),
                     child: const Text('Back to the job'),
                   ),
@@ -206,20 +226,67 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
 
   Widget _form(WorkOrderDetail detail) {
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    final help = theme.textTheme.bodySmall;
 
     return ListView(
-      padding: const EdgeInsets.all(24),
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
       children: [
-        Text('${detail.assetTag} · ${detail.room.code}', style: theme.textTheme.titleMedium),
-        Text(detail.assetName, style: muted),
-        const SizedBox(height: 20),
+        Text('Close the job', style: theme.textTheme.headlineMedium),
+        const SizedBox(height: 6),
+        Text(
+          'What the visit came to, what it cost and what you did. This cannot be undone.',
+          style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
+        ),
+        const SizedBox(height: 18),
+
+        // The machine this is for, so nobody closes the wrong job.
+        MxWell(
+          radius: MxRadii.lg,
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              const MxIconTile(icon: LucideIcons.qrCode, background: MxColors.surface),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      detail.assetTag,
+                      style: theme.textTheme.titleMedium?.copyWith(fontFeatures: MxType.tabular),
+                    ),
+                    Text('${detail.assetName}, ${detail.room.code}', style: help),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 22),
 
         if (_submitError != null) ...[
-          Text(_submitError!, style: TextStyle(color: theme.colorScheme.error)),
-          const SizedBox(height: 16),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(top: 2),
+                child: Icon(LucideIcons.circleAlert, size: 16, color: MxColors.red),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _submitError!,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.red),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
         ],
 
+        const MxPanelLabel('Outcome'),
+        const SizedBox(height: 8),
         AppDropdownField<String>(
           label: 'Outcome',
           value: _outcome,
@@ -237,7 +304,10 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
             });
           },
         ),
+        const SizedBox(height: 6),
 
+        const MxPanelLabel('Cost'),
+        const SizedBox(height: 8),
         AppFormField(
           label: 'Actual cost (Rs)',
           controller: _costController,
@@ -246,14 +316,17 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           enabled: _isEditing,
         ),
+        const SizedBox(height: 6),
 
+        const MxPanelLabel('What you did'),
+        const SizedBox(height: 6),
         Padding(
-          padding: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.only(bottom: 10),
           child: Text(
             'Write what was wrong and what you did. This note is saved word for word in the '
             "asset's service history, where the next diagnosis reads it — at least "
             '$minResolutionNoteLength characters.',
-            style: muted,
+            style: help,
           ),
         ),
         AppFormField(
@@ -265,25 +338,27 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
           maxLength: maxResolutionNoteLength,
           enabled: _isEditing,
         ),
+        const SizedBox(height: 10),
 
-        if (_photo != null) _PhotoPreview(photo: _photo!, uploaded: _photoUploaded),
-        if (_photoError != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(_photoError!, style: TextStyle(color: theme.colorScheme.error)),
+        // A photo can be changed after a failed upload too — a 400 for the file itself is
+        // fixed by choosing a different one, not by retrying this one.
+        if (_photo == null)
+          MxDashedTile(
+            icon: LucideIcons.camera,
+            title: 'Add completion photo',
+            subtitle: 'Optional. Evidence the work was done.',
+            onTap: _isEditing || _phase == _Phase.uploadFailed ? _pickPhoto : null,
+          )
+        else
+          _PhotoPreview(
+            photo: _photo!,
+            uploaded: _photoUploaded,
+            onChange: _isEditing || _phase == _Phase.uploadFailed ? _pickPhoto : null,
           ),
-        OutlinedButton.icon(
-          // A photo can be changed after a failed upload too — a 400 for the file itself is
-          // fixed by choosing a different one, not by retrying this one.
-          onPressed: _isEditing || _phase == _Phase.uploadFailed ? _pickPhoto : null,
-          icon: const Icon(Icons.photo_camera_outlined),
-          label: Text(_photo == null ? 'Add completion photo' : 'Change photo'),
-        ),
-        const SizedBox(height: 4),
-        Text('Optional — evidence the work was done.', style: muted),
-
-        const SizedBox(height: 24),
-        ..._actions(detail.id, theme),
+        if (_photoError != null) ...[
+          const SizedBox(height: 10),
+          Text(_photoError!, style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.red)),
+        ],
       ],
     );
   }
@@ -291,19 +366,76 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
   List<Widget> _actions(int id, ThemeData theme) {
     switch (_phase) {
       case _Phase.editing:
-        return [FilledButton(onPressed: () => _submit(id), child: const Text('Complete job'))];
+        return [
+          FilledButton(
+            onPressed: () => _submit(id),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(LucideIcons.circleCheck, size: 18),
+                SizedBox(width: 8),
+                Text('Complete job'),
+              ],
+            ),
+          ),
+        ];
 
       case _Phase.completing:
-        return [const FilledButton(onPressed: null, child: Text('Completing…'))];
+        return [
+          FilledButton(
+            onPressed: null,
+            style: FilledButton.styleFrom(
+              disabledBackgroundColor: MxColors.ink2,
+              disabledForegroundColor: Colors.white,
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                    strokeCap: StrokeCap.round,
+                  ),
+                ),
+                SizedBox(width: 12),
+                Text('Completing…'),
+              ],
+            ),
+          ),
+        ];
 
       case _Phase.uploading:
         final percent = (_uploadProgress * 100).round();
         return [
-          LinearProgressIndicator(value: _uploadProgress < 1 ? _uploadProgress : null),
-          const SizedBox(height: 8),
-          Text(
-            _uploadProgress < 1 ? 'Uploading photo… $percent%' : 'Saving photo…',
-            style: theme.textTheme.bodyMedium,
+          MxWell(
+            radius: MxRadii.lg,
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(LucideIcons.cloudUpload, size: 18),
+                    const SizedBox(width: 10),
+                    Text(
+                      _uploadProgress < 1 ? 'Uploading photo… $percent%' : 'Saving photo…',
+                      style: theme.textTheme.titleSmall?.copyWith(fontFeatures: MxType.tabular),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(99),
+                  child: LinearProgressIndicator(
+                    minHeight: 6,
+                    value: _uploadProgress < 1 ? _uploadProgress : null,
+                  ),
+                ),
+              ],
+            ),
           ),
         ];
 
@@ -311,35 +443,48 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
         return [
           // The job is NOT completed — said first, so nobody walks away thinking it is.
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: theme.colorScheme.errorContainer,
-              borderRadius: BorderRadius.circular(8),
+              color: MxColors.redBg,
+              border: Border.all(color: MxColors.redLine),
+              borderRadius: BorderRadius.circular(MxRadii.md),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.error_outline, color: theme.colorScheme.onErrorContainer),
-                const SizedBox(width: 8),
+                const Icon(LucideIcons.imageOff, size: 18, color: MxColors.red),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Text(
                     'The job has not been completed yet — the photo could not be uploaded. '
                     '${_uploadError ?? ''}',
-                    style: TextStyle(color: theme.colorScheme.onErrorContainer),
+                    style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.red),
                   ),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 12),
-          FilledButton(onPressed: () => _uploadPhoto(id), child: const Text('Retry upload')),
-          const SizedBox(height: 8),
-          OutlinedButton(
-            onPressed: () {
-              setState(() => _photo = null);
-              _complete(id);
-            },
-            child: const Text('Complete without photo'),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    setState(() => _photo = null);
+                    _complete(id);
+                  },
+                  child: const Text('Complete without photo'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton(
+                  onPressed: () => _uploadPhoto(id),
+                  style: FilledButton.styleFrom(minimumSize: const Size(0, 50)),
+                  child: const Text('Retry upload'),
+                ),
+              ),
+            ],
           ),
         ];
     }
@@ -347,20 +492,22 @@ class _CompleteJobScreenState extends ConsumerState<CompleteJobScreen> {
 }
 
 class _PhotoPreview extends StatelessWidget {
-  const _PhotoPreview({required this.photo, required this.uploaded});
+  const _PhotoPreview({required this.photo, required this.uploaded, required this.onChange});
 
   final PickedPhoto photo;
   final bool uploaded;
+  final VoidCallback? onChange;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+    return MxWell(
+      radius: MxRadii.lg,
+      padding: const EdgeInsets.all(12),
       child: Row(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(MxRadii.md),
             child: Image.memory(
               photo.bytes,
               width: 72,
@@ -369,19 +516,27 @@ class _PhotoPreview extends StatelessWidget {
               errorBuilder: (context, _, __) => Container(
                 width: 72,
                 height: 72,
-                color: theme.colorScheme.surfaceContainerHighest,
-                child: Icon(Icons.image_outlined, color: theme.colorScheme.outline),
+                color: MxColors.wellDeep,
+                child: const Icon(LucideIcons.image, color: MxColors.mute),
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
           Expanded(
-            child: Text(
-              'Photo · ${photo.contentType == 'image/png' ? 'PNG' : 'JPEG'} · ${photo.sizeLabel}'
-              '${uploaded ? '\nAttached to the job' : ''}',
-              style: theme.textTheme.bodyMedium,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${photo.contentType == 'image/png' ? 'PNG' : 'JPEG'}, ${photo.sizeLabel}',
+                  style: theme.textTheme.titleSmall?.copyWith(fontFeatures: MxType.tabular),
+                ),
+                if (uploaded)
+                  Text('Attached to the job', style: theme.textTheme.bodySmall),
+              ],
             ),
           ),
+          if (onChange != null)
+            TextButton(onPressed: onChange, child: const Text('Change photo')),
         ],
       ),
     );

@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../widgets/error_view.dart';
 import '../../widgets/loading_view.dart';
 import '../../widgets/status_pill.dart';
+import '../../widgets/surfaces.dart';
 import '../assets/asset_detail_screen.dart';
 import '../reports/report.dart' show formatTimestamp;
 import 'complete_job_screen.dart';
@@ -35,9 +38,18 @@ class JobDetailScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final id = workOrderId;
+    final appBar = AppBar(
+      leading: Navigator.canPop(context)
+          ? IconButton(
+              tooltip: 'Back',
+              icon: const Icon(LucideIcons.arrowLeft),
+              onPressed: () => Navigator.maybePop(context),
+            )
+          : null,
+    );
     if (id == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Job')),
+        appBar: appBar,
         body: const ErrorView(title: 'Not a job', message: 'This link does not point at a job.'),
       );
     }
@@ -45,8 +57,9 @@ class JobDetailScreen extends ConsumerWidget {
     final order = ref.watch(workOrderDetailProvider(id));
 
     return Scaffold(
-      appBar: AppBar(title: Text(order.valueOrNull?.assetTag ?? 'Job #$id')),
+      appBar: appBar,
       body: SafeArea(
+        top: false,
         // All three states of the request are rendered explicitly.
         child: order.when(
           loading: () => const LoadingView(message: 'Loading job…'),
@@ -60,14 +73,37 @@ class JobDetailScreen extends ConsumerWidget {
             message: error is ApiException ? error.message : 'Could not reach the API.',
             onRetry: () => ref.invalidate(workOrderDetailProvider(id)),
           ),
-          data: (detail) => RefreshIndicator(
-            onRefresh: () => ref.refresh(workOrderDetailProvider(id).future),
-            child: _JobDetail(
-              detail: detail,
-              isMine: detail.assignedTechnicianId != null &&
-                  detail.assignedTechnicianId == ref.watch(currentUserIdProvider),
-            ),
-          ),
+          data: (detail) {
+            final canComplete = detail.isCompletable &&
+                detail.assignedTechnicianId != null &&
+                detail.assignedTechnicianId == ref.watch(currentUserIdProvider);
+
+            return Column(
+              children: [
+                Expanded(
+                  child: RefreshIndicator(
+                    color: MxColors.ink,
+                    backgroundColor: MxColors.surface,
+                    onRefresh: () => ref.refresh(workOrderDetailProvider(id).future),
+                    child: _JobDetail(detail: detail),
+                  ),
+                ),
+                // Offered only on live work assigned to the signed-in user; the API is the
+                // rule either way.
+                if (canComplete)
+                  MxActionBar(
+                    color: MxColors.canvas,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: () => context.go(CompleteJobScreen.location(detail.id)),
+                        icon: const Icon(LucideIcons.circleCheck, size: 18),
+                        label: const Text('Complete job'),
+                      ),
+                    ],
+                  ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -75,133 +111,193 @@ class JobDetailScreen extends ConsumerWidget {
 }
 
 class _JobDetail extends StatelessWidget {
-  const _JobDetail({required this.detail, required this.isMine});
+  const _JobDetail({required this.detail});
 
   final WorkOrderDetail detail;
-  final bool isMine;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    final muted = theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite);
+    final body = theme.textTheme.bodyLarge?.copyWith(height: 1.45);
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
       children: [
         // The machine.
-        Row(
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
             WorkOrderStatusChip(status: detail.status),
-            const SizedBox(width: 8),
-            Flexible(
-              child: StatusPill(
-                label: WorkOrderStrategies.label(detail.strategy),
-                tone: PillTone.neutral,
-              ),
-            ),
+            StatusPill(label: WorkOrderStrategies.label(detail.strategy), tone: PillTone.neutral),
           ],
         ),
-        const SizedBox(height: 12),
-        Text(detail.assetName, style: theme.textTheme.titleLarge),
+        const SizedBox(height: 14),
+        Text(detail.assetName, style: theme.textTheme.headlineMedium),
+        const SizedBox(height: 4),
         Text(
-          [detail.assetTag, if (detail.makeAndModel != null) detail.makeAndModel!].join(' · '),
-          style: muted,
+          [detail.assetTag, if (detail.makeAndModel != null) detail.makeAndModel!].join(', '),
+          style: muted?.copyWith(fontFeatures: MxType.tabular),
         ),
+        const SizedBox(height: 14),
         Align(
           alignment: Alignment.centerLeft,
-          child: TextButton.icon(
+          child: OutlinedButton.icon(
             onPressed: () => context.go(AssetDetailScreen.location(detail.assetId)),
-            icon: const Icon(Icons.history),
+            style: OutlinedButton.styleFrom(
+              backgroundColor: MxColors.surface,
+              minimumSize: const Size(0, 42),
+            ),
+            icon: const Icon(LucideIcons.history, size: 16),
             label: const Text('Service history'),
           ),
         ),
+        const SizedBox(height: 20),
 
-        _Section(
-          icon: Icons.place_outlined,
-          title: 'Where',
-          child: Text(
-            '${detail.room.code} · ${detail.room.name} · Floor ${detail.room.floor}',
-            style: theme.textTheme.bodyLarge,
-          ),
-        ),
-
-        _Section(
-          icon: Icons.event_outlined,
-          title: 'When',
-          child: detail.scheduledSlots.isEmpty
-              ? Text(
-                  'No visit booked yet. The facilities manager books a time once the job is '
-                  'assigned.',
-                  style: muted,
-                )
-              : Column(
+        // Where and when, together: the two facts that get someone to the job.
+        MxCard(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            children: [
+              _FactRow(
+                icon: LucideIcons.mapPin,
+                label: 'Where',
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    for (final slot in detail.scheduledSlots)
-                      Text(slot.label, style: theme.textTheme.bodyLarge),
+                    Text(detail.room.name, style: theme.textTheme.titleMedium),
+                    Text(
+                      '${detail.room.code}, floor ${detail.room.floor}',
+                      style: theme.textTheme.bodySmall?.copyWith(fontFeatures: MxType.tabular),
+                    ),
                   ],
                 ),
+              ),
+              const Divider(indent: 72, endIndent: 18),
+              _FactRow(
+                icon: LucideIcons.calendarClock,
+                label: 'When',
+                child: detail.scheduledSlots.isEmpty
+                    ? Text(
+                        'No visit booked yet. The facilities manager books a time once the job '
+                        'is assigned.',
+                        style: muted,
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final slot in detail.scheduledSlots)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Text(
+                                slot.label,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontFeatures: MxType.tabular,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
+            ],
+          ),
         ),
+        const SizedBox(height: 12),
 
         _Section(
-          icon: Icons.report_outlined,
+          icon: LucideIcons.messageSquareText,
           title: 'What was reported',
-          child: SelectableText(detail.reportDescription, style: theme.textTheme.bodyLarge),
+          child: SelectableText(detail.reportDescription, style: body),
         ),
+        const SizedBox(height: 12),
 
         _Section(
-          icon: Icons.build_outlined,
-          title: 'Parts required',
+          icon: LucideIcons.package,
+          title: 'Parts to bring',
           child: detail.partsRequired == null || detail.partsRequired!.trim().isEmpty
               ? Text('None listed.', style: muted)
-              : SelectableText(detail.partsRequired!, style: theme.textTheme.bodyLarge),
+              : SelectableText(detail.partsRequired!, style: body),
         ),
+        const SizedBox(height: 12),
 
         _Section(
-          icon: Icons.psychology_outlined,
+          icon: LucideIcons.sparkles,
           title: 'Diagnosis',
+          trailing: const StatusPill(label: 'Advice', tone: PillTone.neutral),
           child: _DiagnosisPanel(diagnosis: detail.diagnosis),
         ),
 
-        if (detail.status == WorkOrderStatuses.completed) _CompletedPanel(detail: detail),
-
-        if (detail.isCompletable && isMine) ...[
-          const SizedBox(height: 24),
-          FilledButton.icon(
-            onPressed: () => context.go(CompleteJobScreen.location(detail.id)),
-            icon: const Icon(Icons.task_alt),
-            label: const Text('Complete job'),
-          ),
+        if (detail.status == WorkOrderStatuses.completed) ...[
+          const SizedBox(height: 12),
+          _CompletedPanel(detail: detail),
         ],
       ],
     );
   }
 }
 
-class _Section extends StatelessWidget {
-  const _Section({required this.icon, required this.title, required this.child});
+/// An icon tile, a small label and the fact itself — one row of the where/when card.
+class _FactRow extends StatelessWidget {
+  const _FactRow({required this.icon, required this.label, required this.child});
 
   final IconData icon;
-  final String title;
+  final String label;
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(top: 20),
-      child: Column(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          MxIconTile(icon: icon, size: 40),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                MxPanelLabel(label),
+                const SizedBox(height: 4),
+                child,
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A white card with a labelled heading.
+class _Section extends StatelessWidget {
+  const _Section({
+    required this.icon,
+    required this.title,
+    required this.child,
+    this.trailing,
+  });
+
+  final IconData icon;
+  final String title;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return MxCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              Icon(icon, size: 18, color: theme.colorScheme.primary),
-              const SizedBox(width: 6),
-              Text(title, style: theme.textTheme.titleSmall),
+              Expanded(child: MxPanelLabel(title, icon: icon)),
+              if (trailing != null) trailing!,
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 10),
           child,
         ],
       ),
@@ -219,7 +315,7 @@ class _DiagnosisPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline);
+    final muted = theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite);
     final d = diagnosis;
 
     // Null is not empty: never asked is a different fact from asked-and-failed.
@@ -242,10 +338,13 @@ class _DiagnosisPanel extends StatelessWidget {
     }
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('Advice from the diagnostic agent, not a decision.', style: muted),
-        const SizedBox(height: 8),
+        Text(
+          'Advice from the diagnostic agent, not a decision.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 12),
         for (var i = 0; i < d.hypotheses.length; i++)
           _HypothesisCard(
             hypothesis: d.hypotheses[i],
@@ -253,23 +352,33 @@ class _DiagnosisPanel extends StatelessWidget {
           ),
         if (d.recommendedNextAction != null) ...[
           const SizedBox(height: 4),
-          Text.rich(TextSpan(children: [
-            const TextSpan(text: 'Suggested next step: '),
-            TextSpan(
-              text: d.recommendedNextAction,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-          ])),
+          Row(
+            children: [
+              const Icon(LucideIcons.cornerDownRight, size: 16, color: MxColors.graphite),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text.rich(TextSpan(children: [
+                  const TextSpan(text: 'Suggested next step: '),
+                  TextSpan(
+                    text: d.recommendedNextAction,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ])),
+              ),
+            ],
+          ),
         ],
         if (d.reasoningSummary != null && d.reasoningSummary!.isNotEmpty) ...[
-          const SizedBox(height: 6),
-          SelectableText(d.reasoningSummary!, style: theme.textTheme.bodyMedium),
+          const SizedBox(height: 10),
+          SelectableText(d.reasoningSummary!, style: muted),
         ],
       ],
     );
   }
 }
 
+/// One possible cause and the evidence behind it, verbatim. The most likely one gets an ink
+/// edge; the rest sit flat.
 class _HypothesisCard extends StatelessWidget {
   const _HypothesisCard({required this.hypothesis, required this.isPrimary});
 
@@ -285,31 +394,40 @@ class _HypothesisCard extends StatelessWidget {
       _ => PillTone.neutral,
     };
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: [
-                StatusPill(label: '${hypothesis.confidence} confidence', tone: tone),
-                if (isPrimary) const StatusPill(label: 'Most likely', tone: PillTone.info),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(hypothesis.cause, style: theme.textTheme.titleSmall),
-            const SizedBox(height: 4),
-            for (final item in hypothesis.evidence)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: SelectableText('• $item', style: theme.textTheme.bodyMedium),
-              ),
-          ],
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: MxColors.well,
+        borderRadius: BorderRadius.circular(MxRadii.md),
+        border: Border.all(
+          color: isPrimary ? MxColors.ink : Colors.transparent,
+          width: 1.4,
         ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            children: [
+              StatusPill(label: '${hypothesis.confidence} confidence', tone: tone),
+              if (isPrimary) const StatusPill(label: 'Most likely', tone: PillTone.neutral),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(hypothesis.cause, style: theme.textTheme.titleSmall?.copyWith(fontSize: 15)),
+          const SizedBox(height: 6),
+          for (final item in hypothesis.evidence)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: SelectableText(
+                '• $item',
+                style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.ink2),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -325,36 +443,49 @@ class _CompletedPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final url = detail.completionPhotoUrl;
+    final meta = theme.textTheme.bodySmall?.copyWith(fontFeatures: MxType.tabular);
 
     return _Section(
-      icon: Icons.task_alt,
+      icon: LucideIcons.circleCheck,
       title: 'What was done',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (detail.resolutionNote != null)
-            SelectableText(detail.resolutionNote!, style: theme.textTheme.bodyLarge),
-          const SizedBox(height: 6),
-          Text(
-            'Completed ${formatTimestamp(detail.completedAt)} · '
-            'Cost ${formatMoney(detail.actualCost)}',
-            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+            SelectableText(
+              detail.resolutionNote!,
+              style: theme.textTheme.bodyLarge?.copyWith(height: 1.45),
+            ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text('Completed ${formatTimestamp(detail.completedAt)}', style: meta),
+              ),
+              Text(
+                formatMoney(detail.actualCost),
+                style: theme.textTheme.titleSmall?.copyWith(fontFeatures: MxType.tabular),
+              ),
+            ],
           ),
           if (url != null) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             ClipRRect(
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(MxRadii.md),
               child: Image.network(
                 url,
                 height: 200,
+                width: double.infinity,
                 fit: BoxFit.cover,
                 // A URL that does not load says so and shows the link, never a broken image.
-                errorBuilder: (context, _, __) => Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('The photo could not be loaded.', style: theme.textTheme.bodyMedium),
-                    SelectableText(url, style: theme.textTheme.bodySmall),
-                  ],
+                errorBuilder: (context, _, __) => MxWell(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('The photo could not be loaded.', style: theme.textTheme.bodyMedium),
+                      SelectableText(url, style: theme.textTheme.bodySmall),
+                    ],
+                  ),
                 ),
               ),
             ),

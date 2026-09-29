@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// Mirrors the API's `AnswerType` enum, by NAME — and that is the whole list.
 ///
 /// Every clarification comes back through a toggle, a picker over a fixed list, or a capped
@@ -112,4 +114,59 @@ Map<int, String> validateClarificationAnswers(
   }
 
   return errors;
+}
+
+/// Where the clarifier has got to on one report, read off `GET /api/reports/{id}`. Display
+/// only — it picks which screen to draw while the reporter waits and decides nothing. The
+/// web's `latestAgentRunState` reads the same rows for the same reason.
+enum ClarifierProgress {
+  /// Not finished yet: no clarifier run recorded, or its questions are still being written.
+  running,
+
+  /// Questions are waiting for the form.
+  asked,
+
+  /// The clarifier ran and needed nothing — a normal, common answer.
+  nothingToAsk,
+
+  /// The run could not produce questions. The report is still filed; nobody is asked.
+  failed,
+}
+
+/// The name `WorkflowRunner` records the clarifier's run under
+/// (`AgentRunResponse.ClarifierAgentName`).
+const String clarifierAgentName = 'clarifier';
+
+/// Reads [ClarifierProgress] from a `ReportDetailDto`.
+///
+/// Questions on the report are the answer on their own. Otherwise it is the latest
+/// clarifier AGENT RUN — `ToolCallsJson` `"[]"`; the clarifier's tool calls carry the same
+/// name — that says. The runner saves that step BEFORE it writes the question rows, so a
+/// step whose payload holds questions while the report has none yet is still [running]:
+/// the rows are a moment behind, and reading it as "nothing to ask" would send the reporter
+/// away from a form that is about to exist.
+ClarifierProgress readClarifierProgress(Map<String, dynamic> report) {
+  final questions = (report['clarificationQuestions'] as List<dynamic>?) ?? const [];
+  if (questions.isNotEmpty) return ClarifierProgress.asked;
+
+  final steps = (report['agentSteps'] as List<dynamic>?) ?? const [];
+  Map<String, dynamic>? latestRun;
+  for (final step in steps.cast<Map<String, dynamic>>()) {
+    if (step['agentName'] == clarifierAgentName && step['toolCallsJson'] == '[]') {
+      latestRun = step;
+    }
+  }
+  if (latestRun == null) return ClarifierProgress.running;
+  if (latestRun['validationResult'] != 'Ok') return ClarifierProgress.failed;
+
+  try {
+    final payload = jsonDecode(latestRun['payloadJson'] as String? ?? '');
+    final asked = payload is Map<String, dynamic> ? payload['questions'] : null;
+    if (asked is List) {
+      return asked.isEmpty ? ClarifierProgress.nothingToAsk : ClarifierProgress.running;
+    }
+  } on FormatException {
+    // Unreadable: keep waiting. The screen's own time limit ends the wait either way.
+  }
+  return ClarifierProgress.running;
 }

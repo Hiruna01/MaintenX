@@ -1,8 +1,11 @@
+import { Search } from 'lucide-react';
 import { useState } from 'react';
 
-import Button from '../../../components/Button';
+import MxButton from '../../../components/ui/Button';
+import form from '../../../components/ui/form.module.css';
 import { addDaysToDateOnly, todayDateOnly } from '../services/workOrdersApi';
 import { DURATION_MAX, DURATION_MIN, validateSlotSearch } from '../services/workOrderValidation';
+import styles from '../workorders.module.css';
 import SlotResults from './SlotResults';
 
 /**
@@ -14,8 +17,7 @@ import SlotResults from './SlotResults';
  *
  * With a technician assigned, the search asks for times THEY are free too — the same
  * technician the booking will be re-checked against. Without one it checks the room only,
- * which is what a manager wants before choosing who to send, and offers no Book button:
- * a booking is time in somebody's diary.
+ * and offers no Book button: a booking is time in somebody's diary.
  */
 export function SlotFinder({ order, onBooked }) {
   const technician = order.assignedTechnician;
@@ -51,12 +53,16 @@ export function SlotFinder({ order, onBooked }) {
   }
 
   return (
-    <div className="slot-finder">
-      <form className="slot-finder__form" onSubmit={handleSubmit} noValidate>
-        <label className="slot-finder__field">
-          <span>Job length (minutes)</span>
+    <div className={styles.slotFinder}>
+      <form className={styles.slotForm} onSubmit={handleSubmit} noValidate>
+        <div className={form.field}>
+          <label htmlFor="slot-duration" className={form.label}>
+            Job length (min)
+          </label>
           <input
+            id="slot-duration"
             type="number"
+            className={`${form.input} ${form.mono}`}
             min={DURATION_MIN}
             max={DURATION_MAX}
             step="15"
@@ -64,36 +70,46 @@ export function SlotFinder({ order, onBooked }) {
             onChange={(event) => handleChange('durationMinutes', event.target.value)}
             aria-invalid={errors.durationMinutes ? 'true' : undefined}
           />
-          {errors.durationMinutes ? <span className="form__error">{errors.durationMinutes}</span> : null}
-        </label>
+          {errors.durationMinutes ? <p className={form.error}>{errors.durationMinutes}</p> : null}
+        </div>
 
-        <label className="slot-finder__field">
-          <span>First day</span>
+        <div className={form.field}>
+          <label htmlFor="slot-from" className={form.label}>
+            First day
+          </label>
           <input
+            id="slot-from"
             type="date"
+            className={`${form.input} ${form.mono}`}
             value={values.fromDate}
             onChange={(event) => handleChange('fromDate', event.target.value)}
             aria-invalid={errors.fromDate ? 'true' : undefined}
           />
-          {errors.fromDate ? <span className="form__error">{errors.fromDate}</span> : null}
-        </label>
+          {errors.fromDate ? <p className={form.error}>{errors.fromDate}</p> : null}
+        </div>
 
-        <label className="slot-finder__field">
-          <span>Last day</span>
+        <div className={form.field}>
+          <label htmlFor="slot-to" className={form.label}>
+            Last day
+          </label>
           <input
+            id="slot-to"
             type="date"
+            className={`${form.input} ${form.mono}`}
             value={values.toDate}
             min={values.fromDate || undefined}
             onChange={(event) => handleChange('toDate', event.target.value)}
             aria-invalid={errors.toDate ? 'true' : undefined}
           />
-          {errors.toDate ? <span className="form__error">{errors.toDate}</span> : null}
-        </label>
+          {errors.toDate ? <p className={form.error}>{errors.toDate}</p> : null}
+        </div>
 
-        <Button type="submit">Find free slots</Button>
+        <MxButton type="submit" icon={Search} className={styles.slotSubmit}>
+          Find free slots
+        </MxButton>
       </form>
 
-      <p className="slot-finder__hint">
+      <p className={styles.slotHint}>
         {technician
           ? `Checks the room's timetable and ${technician.fullName}'s other visits. `
           : 'Checks the room’s timetable only — assign a technician before booking. '}
@@ -101,13 +117,7 @@ export function SlotFinder({ order, onBooked }) {
       </p>
 
       {search ? (
-        <SlotResults
-          key={search.key}
-          orderId={order.id}
-          query={search.query}
-          canBook={Boolean(technician)}
-          onBooked={onBooked}
-        />
+        <SlotResults key={search.key} orderId={order.id} query={search.query} canBook={Boolean(technician)} onBooked={onBooked} />
       ) : null}
     </div>
   );

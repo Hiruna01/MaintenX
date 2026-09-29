@@ -1,99 +1,106 @@
+import { History, MapPin, Repeat, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import FailureSummaryPanel from '../../assets/components/FailureSummaryPanel';
-import ServiceTimeline from '../../assets/components/ServiceTimeline';
-import WarrantyBadge from '../../assets/components/WarrantyBadge';
-import { formatDateTime } from '../services/workOrdersApi';
+import { timeAgo } from '../../../components/ui/format';
+import { Panel } from '../../../components/ui/Panel';
+import { Pill } from '../../../components/ui/Pill';
+import { EmptyState } from '../../../components/ui/States';
+import HistoryFeed from '../../assets/components/HistoryFeed';
+import SummaryCard from '../../assets/components/SummaryCard';
+import TagChip from '../../assets/components/TagChip';
+import WarrantyPill from '../../assets/components/WarrantyPill';
+import { formatMoney } from '../services/workOrdersApi';
+import styles from '../workorders.module.css';
 import ApprovalBasisStatement from './ApprovalBasisStatement';
 import DecisionControls from './DecisionControls';
 import DiagnosisPanel from './DiagnosisPanel';
 import ProposalComparison from './ProposalComparison';
+import StrategyPill from './StrategyPill';
 
 /**
  * One order waiting on a manager, with everything needed to decide it on this card: what
  * was reported, what it costs against the threshold, what the agent proposed and why, what
- * it diagnosed, and the machine's own history to check both against. Nothing here needs
- * another page opened — the links are there to go deeper, not to find the basics.
+ * it diagnosed, and the machine's own history to check both against.
  *
- * Presentational apart from the decision controls: every figure is the API's. The service
- * history and failure summary are the asset registry's own components, so the history reads
- * here exactly as it does on the asset page — oldest first, every note verbatim.
+ * Presentational apart from the decision controls: every figure is the API's. The history
+ * and failure summary are the asset registry's own components, so they read here exactly as
+ * on the asset page — oldest first, every note verbatim.
  */
-export function ApprovalCard({ item, onDecided }) {
+export function ApprovalCard({ item, onDecided, index }) {
   const { workOrder, asset, failureSummary, diagnosis, proposal } = item;
   const headingId = `approval-${workOrder.id}-heading`;
 
   return (
-    <article className="approval-card" aria-labelledby={headingId}>
-      <header className="approval-card__head">
-        <div className="approval-card__tags">
-          <span className="asset-tag asset-tag--large">Work order #{workOrder.id}</span>
-          <Link to={`/assets/${asset.id}`} className="asset-tag">
-            {asset.assetTag}
-          </Link>
-          <WarrantyBadge
-            isUnderWarranty={failureSummary.isUnderWarranty}
-            warrantyExpiresOn={asset.warrantyExpiresOn}
-          />
-          {failureSummary.isRepeatFailure ? <span className="repeat-flag">Repeat failure</span> : null}
+    <article className={styles.caseCard} aria-labelledby={headingId} style={{ animationDelay: `${Math.min(index, 4) * 70}ms` }}>
+      <header className={styles.caseHead}>
+        <div className={styles.caseIdentity}>
+          <div className={styles.caseTags}>
+            <Link to={`/assets/${asset.id}`} className={styles.chipLink}>
+              <TagChip tag={asset.assetTag} />
+            </Link>
+            <span className={styles.caseId}>WO #{workOrder.id}</span>
+            <StrategyPill strategy={workOrder.strategy} />
+            <WarrantyPill isUnderWarranty={failureSummary.isUnderWarranty} warrantyExpiresOn={asset.warrantyExpiresOn} />
+            {failureSummary.isRepeatFailure ? (
+              <Pill tone="red" icon={Repeat}>
+                Repeat failure
+              </Pill>
+            ) : null}
+          </div>
+
+          <h2 id={headingId} className={styles.caseTitle}>
+            {asset.name}
+          </h2>
+
+          <p className={styles.caseMeta}>
+            <span>
+              <MapPin aria-hidden="true" size={13} /> {asset.room.code} · {asset.room.name}
+            </span>
+            <span>Waiting {timeAgo(workOrder.createdAt).replace(' ago', '')}</span>
+            <Link to={`/reports/${workOrder.reportId}`}>Report #{workOrder.reportId}</Link>
+            <Link to={`/workorders/${workOrder.id}`}>Full order</Link>
+          </p>
         </div>
 
-        <h2 id={headingId}>
-          {asset.name}
-          <span className="approval-card__room">
-            {asset.room.code} · {asset.room.name}
-          </span>
-        </h2>
-
-        <p className="approval-card__meta">
-          Raised {formatDateTime(workOrder.createdAt)} ·{' '}
-          <Link to={`/reports/${workOrder.reportId}`}>Report #{workOrder.reportId}</Link> ·{' '}
-          <Link to={`/workorders/${workOrder.id}`}>Full order</Link>
-        </p>
-
-        {/* The reporter's own words, verbatim. */}
-        <blockquote className="report-hero__description">{workOrder.reportDescription}</blockquote>
+        <div className={styles.caseCost}>
+          <span className={styles.caseCostValue}>{formatMoney(workOrder.estimatedCost)}</span>
+          <span className={styles.caseCostLabel}>estimate</span>
+        </div>
       </header>
+
+      {/* The reporter's own words, verbatim. */}
+      <blockquote className={styles.fault}>{workOrder.reportDescription}</blockquote>
 
       <ApprovalBasisStatement estimatedCost={workOrder.estimatedCost} basis={workOrder.approvalBasis} />
 
       {workOrder.revisionNote ? (
-        <p className="approval-card__revision">
-          <strong>Sent back before:</strong> {workOrder.revisionNote}
+        <p className={styles.revision}>
+          <RotateCcw aria-hidden="true" />
+          <span>
+            <strong>Sent back before:</strong> {workOrder.revisionNote}
+          </span>
         </p>
       ) : null}
 
-      <div className="approval-card__grid">
-        <div className="approval-card__column">
+      <div className={styles.caseGrid}>
+        <div className={styles.column}>
           <ProposalComparison proposal={proposal} order={workOrder} reportId={workOrder.reportId} />
           <DiagnosisPanel diagnosis={diagnosis} reportId={workOrder.reportId} />
         </div>
 
-        <div className="approval-card__column">
-          <FailureSummaryPanel summary={failureSummary} headingId={`approval-${workOrder.id}-summary`} />
-
-          <section className="approval-panel" aria-label="Service history">
-            <header className="approval-panel__head">
-              <h3>Service history</h3>
-              <span className="approval-panel__source">Oldest first · notes verbatim</span>
-            </header>
-
+        <div className={styles.column}>
+          <SummaryCard summary={failureSummary} />
+          <Panel eyebrow="Service history" count={asset.serviceHistory.length || null} actions={<span className={styles.source}>Oldest first · verbatim</span>}>
             {asset.serviceHistory.length === 0 ? (
-              <p className="approval-panel__empty">
-                No service visits on record — this machine has never been worked on.
-              </p>
+              <EmptyState compact icon={History} title="No service visits on record" body="This machine has never been worked on." />
             ) : (
-              <ServiceTimeline records={asset.serviceHistory} />
+              <HistoryFeed records={asset.serviceHistory} />
             )}
-          </section>
+          </Panel>
         </div>
       </div>
 
-      <DecisionControls
-        orderId={workOrder.id}
-        estimatedCost={workOrder.estimatedCost}
-        onDecided={onDecided}
-      />
+      <DecisionControls orderId={workOrder.id} estimatedCost={workOrder.estimatedCost} onDecided={onDecided} />
     </article>
   );
 }

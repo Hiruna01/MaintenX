@@ -325,6 +325,9 @@ void main() {
         initialLocation: '/verifications/7',
       );
 
+      // The claim comes first; the question is below it, as on a phone.
+      await tester.ensureVisible(find.text('No, still broken'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('No, still broken'));
       await tester.enterText(find.byType(TextField), 'Cut out twice on Monday.');
       await tester.tap(find.text('Submit answer'));
@@ -383,6 +386,8 @@ void main() {
         initialLocation: '/verifications/7',
       );
 
+      await tester.ensureVisible(find.text("Yes, it's fixed"));
+      await tester.pumpAndSettle();
       await tester.tap(find.text("Yes, it's fixed"));
       await tester.tap(find.text('Submit answer'));
       await tester.pumpAndSettle();

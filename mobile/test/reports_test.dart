@@ -13,8 +13,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:maintenx_mobile/core/api_client.dart';
 import 'package:maintenx_mobile/core/providers.dart';
 import 'package:maintenx_mobile/core/token_storage.dart';
+import 'package:maintenx_mobile/features/assets/asset.dart';
+import 'package:maintenx_mobile/features/assets/scan_asset_screen.dart';
 import 'package:maintenx_mobile/features/reports/clarification.dart';
 import 'package:maintenx_mobile/features/reports/clarification_screen.dart';
+import 'package:maintenx_mobile/features/reports/clarifier_wait.dart';
 import 'package:maintenx_mobile/features/reports/my_reports_screen.dart';
 import 'package:maintenx_mobile/features/reports/report_photo.dart';
 import 'package:maintenx_mobile/features/reports/reports_api.dart';
@@ -153,6 +156,40 @@ Future<void> _pumpRouted(
   );
   await tester.pumpAndSettle();
 }
+
+/// A `ReportDetailDto` as the wait polls it: the questions written so far and the agent
+/// steps recorded so far.
+Map<String, dynamic> _detail({
+  List<Map<String, dynamic>> questions = const [],
+  List<Map<String, dynamic>> steps = const [],
+}) =>
+    {
+      'id': 42,
+      'status': questions.isEmpty ? 'Submitted' : 'AwaitingClarification',
+      'description': 'Projector cuts out mid lecture',
+      'clarificationQuestions': questions,
+      'agentSteps': steps,
+    };
+
+/// The clarifier's agent-run step, in the shape WorkflowRunner records it.
+Map<String, dynamic> _clarifierRun({
+  int asked = 0,
+  String validationResult = 'Ok',
+  String toolCallsJson = '[]',
+}) =>
+    {
+      'id': 1,
+      'workflowId': 9,
+      'agentName': 'clarifier',
+      'toolCallsJson': toolCallsJson,
+      'validationResult': validationResult,
+      'payloadJson': jsonEncode({
+        'questions': [
+          for (var i = 0; i < asked; i++)
+            {'question_text': 'Q$i?', 'answer_type': 'yes_no', 'options': null},
+        ],
+      }),
+    };
 
 void main() {
   group('ReportsApi', () {
@@ -418,6 +455,172 @@ void main() {
     });
   });
 
+  group('readClarifierProgress', () {
+    test('nothing recorded yet is still running', () {
+      expect(readClarifierProgress(_detail()), ClarifierProgress.running);
+    });
+
+    test('questions on the report are asked', () {
+      expect(readClarifierProgress(_detail(questions: _form())), ClarifierProgress.asked);
+    });
+
+    test('a run that asked, whose rows are not written yet, is still running', () {
+      // The runner saves the step before the question rows. Reading this as "nothing to
+      // ask" would send the reporter away from a form about to exist.
+      expect(
+        readClarifierProgress(_detail(steps: [_clarifierRun(asked: 2)])),
+        ClarifierProgress.running,
+      );
+    });
+
+    test('a run that asked nothing is nothing to ask', () {
+      expect(
+        readClarifierProgress(_detail(steps: [_clarifierRun()])),
+        ClarifierProgress.nothingToAsk,
+      );
+    });
+
+    test('a failed run is failed, whichever way it failed', () {
+      for (final result in ['SafeFailure', 'CallFailed']) {
+        expect(
+          readClarifierProgress(_detail(steps: [_clarifierRun(validationResult: result)])),
+          ClarifierProgress.failed,
+        );
+      }
+    });
+
+    test("the clarifier's tool calls are not its answer", () {
+      final toolCall = _clarifierRun(toolCallsJson: '[{"tool":"get_room"}]');
+      expect(readClarifierProgress(_detail(steps: [toolCall])), ClarifierProgress.running);
+    });
+  });
+
+  group('ClarificationScreen, straight after filing', () {
+    Future<List<String>> pump(
+      WidgetTester tester,
+      Future<http.Response> Function(int poll) onPoll,
+    ) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final calls = <String>[];
+      var polls = 0;
+      final router = GoRouter(
+        initialLocation: ClarificationScreen.location(42, waitForQuestions: true),
+        routes: [
+          GoRoute(
+            path: MyReportsScreen.path,
+            builder: (_, __) => const Text('REPORT LIST'),
+            routes: [
+              GoRoute(
+                path: ClarificationScreen.subPath,
+                builder: (_, state) => ClarificationScreen(
+                  reportId: int.tryParse(state.pathParameters['id']!),
+                  waitForQuestions:
+                      state.uri.queryParameters[ClarificationScreen.waitingParam] == '1',
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            apiClientProvider.overrideWithValue(_client((request) async {
+              calls.add('${request.method} ${request.url.path}');
+              return onPoll(++polls);
+            })),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+      // The spinner never settles, so time is moved on by hand rather than pumpAndSettle.
+      await tester.pump();
+      return calls;
+    }
+
+    testWidgets('it waits for the clarifier, then the form opens in place', (tester) async {
+      final calls = await pump(
+        tester,
+        (poll) async => _json(poll < 3 ? _detail() : _detail(questions: _form())),
+      );
+
+      expect(find.text('Report filed'), findsOneWidget);
+      expect(find.text('Checking your report…'), findsOneWidget);
+      expect(find.byType(SegmentedButton<String>), findsNothing);
+
+      await tester.pump(ClarifierWait.pollEvery);
+      await tester.pump(ClarifierWait.pollEvery);
+      await tester.pump(const Duration(milliseconds: 300));
+
+      // The form, without going anywhere near the list.
+      expect(find.text('A few quick questions'), findsOneWidget);
+      expect(find.byType(SegmentedButton<String>), findsOneWidget);
+      expect(find.text('REPORT LIST'), findsNothing);
+      expect(calls, List.filled(3, 'GET /api/reports/42'));
+
+      // And it stops asking once it has them.
+      await tester.pump(ClarifierWait.pollEvery * 3);
+      expect(calls, hasLength(3));
+    });
+
+    testWidgets('a clarifier that needed nothing says so and stops', (tester) async {
+      final calls = await pump(
+        tester,
+        (poll) async => _json(poll < 2 ? _detail() : _detail(steps: [_clarifierRun()])),
+      );
+
+      await tester.pump(ClarifierWait.pollEvery);
+      await tester.pump();
+
+      expect(find.textContaining('No questions needed'), findsOneWidget);
+      await tester.pump(ClarifierWait.pollEvery * 3);
+      expect(calls, hasLength(2));
+
+      await tester.tap(find.text('Go to my reports'));
+      await tester.pumpAndSettle();
+      expect(find.text('REPORT LIST'), findsOneWidget);
+    });
+
+    testWidgets('the reporter can leave while it is still checking', (tester) async {
+      await pump(tester, (_) async => _json(_detail()));
+
+      await tester.tap(find.text('Go to my reports'));
+      await tester.pumpAndSettle();
+      expect(find.text('REPORT LIST'), findsOneWidget);
+    });
+
+    testWidgets('one dropped poll is ignored; repeated failures say the report IS filed',
+        (tester) async {
+      final calls = await pump(tester, (_) async => _problem(500, 'Server error.'));
+
+      await tester.pump(ClarifierWait.pollEvery);
+      expect(find.byType(ErrorView), findsNothing);
+
+      await tester.pump(ClarifierWait.pollEvery);
+      await tester.pump();
+      expect(calls, hasLength(ClarifierWait.maxConsecutiveErrors));
+      expect(find.byType(ErrorView), findsOneWidget);
+      expect(find.textContaining('Your report has been filed.'), findsOneWidget);
+    });
+
+    testWidgets('it gives up after its time limit and points at My reports', (tester) async {
+      await pump(tester, (_) async => _json(_detail()));
+
+      await tester.pump(ClarifierWait.slowAfter);
+      expect(find.textContaining('taking longer than usual'), findsOneWidget);
+
+      for (var i = 0; i < 100; i++) {
+        await tester.pump(ClarifierWait.pollEvery);
+      }
+      expect(find.textContaining('the questions will be waiting in My reports'), findsOneWidget);
+    });
+  });
+
   group('MyReportsScreen', () {
     Future<List<Uri>> pump(WidgetTester tester, MockClientHandler respond) async {
       final requests = <Uri>[];
@@ -523,6 +726,117 @@ void main() {
     });
   });
 
+  group('SubmitReportScreen scan', () {
+    const hallA = {'id': 1, 'buildingId': 1, 'name': 'Lecture Hall A', 'code': 'MAB-101', 'floor': 1};
+    const seminar = {'id': 2, 'buildingId': 1, 'name': 'Seminar Room 1', 'code': 'MAB-201', 'floor': 2};
+
+    // What GET /api/assets/by-tag answers for a sticker in Seminar Room 1.
+    final scanned = AssetDetail.fromJson({
+      'id': 7,
+      'assetTag': 'PRJ-MAB201-01',
+      'name': 'Seminar Room 1 Projector',
+      'category': {'id': 2, 'name': 'Projector', 'defaultWarrantyMonths': 24},
+      'room': seminar,
+      'manufacturer': 'Epson',
+      'model': 'EB-L630U',
+      'installedOn': '2023-02-10',
+      'warrantyExpiresOn': null,
+      'status': 'Active',
+      'serviceHistory': <Object>[],
+    });
+
+    Future<List<Map<String, dynamic>>> pump(WidgetTester tester) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+
+      final filed = <Map<String, dynamic>>[];
+      await _pumpRouted(
+        tester,
+        initialLocation: SubmitReportScreen.path,
+        client: _client((request) async {
+          if (request.url.path == '/api/rooms') return _json([hallA, seminar]);
+          filed.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return _json({'id': 42}, 201);
+        }),
+        routes: [
+          GoRoute(path: SubmitReportScreen.path, builder: (_, __) => const SubmitReportScreen()),
+          // The scanner stands in as a screen that "reads" one sticker: a test has no camera,
+          // and the real scanner's pick mode is pinned in assets_test.dart.
+          GoRoute(
+            path: ScanAssetScreen.reportPath,
+            builder: (context, _) => TextButton(
+              onPressed: () => Navigator.of(context).pop(scanned),
+              child: const Text('READ STICKER'),
+            ),
+          ),
+          GoRoute(
+            path: '/reports/:id/clarifications',
+            builder: (_, __) => const Text('QUESTIONS'),
+          ),
+        ],
+      );
+      return filed;
+    }
+
+    Future<void> scan(WidgetTester tester) async {
+      await tester.tap(find.text("Scan the equipment's sticker"));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('READ STICKER'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a scanned sticker names the equipment, fills in its room, and is filed with it',
+        (tester) async {
+      final filed = await pump(tester);
+
+      await scan(tester);
+      expect(find.text('Seminar Room 1 Projector'), findsOneWidget);
+      expect(find.text('PRJ-MAB201-01'), findsOneWidget);
+      // The room came from the asset — no room was chosen by hand.
+      expect(find.text('Seminar Room 1'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'Projector will not power on');
+      await tester.tap(find.text('Submit report'));
+      await tester.pumpAndSettle();
+
+      expect(filed, [
+        {'description': 'Projector will not power on', 'roomId': 2, 'assetId': 7},
+      ]);
+      expect(find.text('QUESTIONS'), findsOneWidget);
+    });
+
+    testWidgets('without a scan no assetId is sent at all', (tester) async {
+      final filed = await pump(tester);
+
+      await tester.enterText(find.byType(TextField), 'Projector will not power on');
+      await tester.tap(find.text('Choose a room'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Lecture Hall A').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Submit report'));
+      await tester.pumpAndSettle();
+
+      expect(filed, [
+        {'description': 'Projector will not power on', 'roomId': 1},
+      ]);
+    });
+
+    testWidgets('choosing a different room drops the scanned equipment', (tester) async {
+      await pump(tester);
+      await scan(tester);
+
+      await tester.tap(find.text('Seminar Room 1'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Lecture Hall A').last);
+      await tester.pumpAndSettle();
+
+      // The API would refuse an asset outside the report's room.
+      expect(find.text('Seminar Room 1 Projector'), findsNothing);
+      expect(find.text("Scan the equipment's sticker"), findsOneWidget);
+    });
+  });
+
   group('SubmitReportScreen photo', () {
     const room = {'id': 1, 'buildingId': 1, 'name': 'Lecture Hall A', 'code': 'MAB-101', 'floor': 1};
 
@@ -543,16 +857,26 @@ void main() {
         routes: [
           GoRoute(path: SubmitReportScreen.path, builder: (_, __) => const SubmitReportScreen()),
           GoRoute(path: MyReportsScreen.path, builder: (_, __) => const Text('REPORT LIST')),
+          // Filing opens the report's questions — waiting for them — not the list.
+          GoRoute(
+            path: '/reports/:id/clarifications',
+            builder: (_, state) => Text(
+              'QUESTIONS FOR ${state.pathParameters['id']}, '
+              'waiting=${state.uri.queryParameters[ClarificationScreen.waitingParam]}',
+            ),
+          ),
         ],
       );
     }
 
     Future<void> fillAndAttach(WidgetTester tester) async {
       await tester.enterText(find.byType(TextField), 'Projector cuts out mid lecture');
-      await tester.tap(find.byType(DropdownButtonFormField<int>));
+      // The room is chosen from a bottom sheet listing every room, not a dropdown.
+      await tester.tap(find.text('Choose a room'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('MAB-101 — Lecture Hall A').last);
+      await tester.tap(find.text('Lecture Hall A').last);
       await tester.pumpAndSettle();
+      expect(find.text('Lecture Hall A'), findsOneWidget);
 
       await tester.tap(find.text('Add photo'));
       await tester.pumpAndSettle();
@@ -583,7 +907,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(calls, ['GET /api/rooms', 'POST /api/reports', 'POST /api/reports/42/photo']);
-      expect(find.text('REPORT LIST'), findsOneWidget);
+      expect(find.text('QUESTIONS FOR 42, waiting=1'), findsOneWidget);
     });
 
     testWidgets('upload progress is shown, then "saving" while the API stores it',
@@ -610,7 +934,7 @@ void main() {
 
       stored.complete(_json({'photoUrl': 'https://storage.test/x.jpg'}, 201));
       await tester.pumpAndSettle();
-      expect(find.text('REPORT LIST'), findsOneWidget);
+      expect(find.text('QUESTIONS FOR 42, waiting=1'), findsOneWidget);
     });
 
     testWidgets('a failed upload says the report IS filed, and retry does not file it again',
@@ -646,7 +970,7 @@ void main() {
 
       expect(reportPosts, 1);
       expect(photoPosts, 2);
-      expect(find.text('REPORT LIST'), findsOneWidget);
+      expect(find.text('QUESTIONS FOR 42, waiting=1'), findsOneWidget);
     });
 
     testWidgets('a photo the API would refuse is refused when picked', (tester) async {

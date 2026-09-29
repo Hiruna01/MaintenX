@@ -1,0 +1,51 @@
+%% System architecture: every runtime component and every connection between them.
+%% Each edge is labelled with protocol and authentication, read from the code:
+%%   JWT bearer ............ api/Program.cs (AddJwtBearer), web/src/services/apiClient.js, mobile/lib/core/api_client.dart
+%%   Npgsql credentials .... api/Program.cs (ConnectionStrings:DefaultConnection / DATABASE_URL)
+%%   service-role key ...... api/Services/SupabaseStorageService.cs (Authorization: Bearer + apikey)
+%%   service account ....... api/Services/GoogleCalendarClient.cs (CredentialFactory.FromJson<ServiceAccountCredential>, calendar.readonly)
+%%   /run (no auth) ........ api/Services/AgentClient.cs, agent/main.py
+%%   shared-secret header .. agent/tools.py (X-Agent-Secret), api/Middleware/AgentSecretFilter.cs
+%%   LLM bearer key ........ agent/llm_client.py (_http_responder)
+%% Export: npx @mermaid-js/mermaid-cli -i system-architecture.mmd -o system-architecture.png -s 3 -b white
+
+flowchart LR
+    subgraph CLIENTS["Untrusted clients: hold only a user's JWT"]
+        direction TB
+        FL["Flutter app<br/>(mobile/)<br/>Reporter · Technician"]
+        RE["React SPA<br/>(web/)<br/>Manager · Admin · Reporter"]
+    end
+
+    subgraph BOUNDARY["Trust boundary: the only client-facing entry point is the API"]
+        direction TB
+        API["ASP.NET Core Web API (.NET 8)<br/>(api/)<br/>controllers · services · WorkflowRunner<br/>VerificationSweepService · TimetableSyncWorker"]
+        PG[("PostgreSQL 16<br/>(Supabase-hosted or local)")]
+        AG["Python agent service<br/>FastAPI + LangGraph (agent/)<br/>no database credentials"]
+    end
+
+    subgraph EXTERNAL["Third-party services"]
+        direction TB
+        SB[("Supabase Storage<br/>public bucket")]
+        GC["Google Calendar API<br/>'Campus Timetable'"]
+        LLM["LLM provider<br/>OpenAI-compatible<br/>/chat/completions"]
+    end
+
+    FL -- "HTTPS REST (JSON, multipart photo)<br/>JWT bearer: Authorization header" --> API
+    RE -- "HTTPS REST (JSON)<br/>JWT bearer: Authorization header" --> API
+
+    API -- "TCP · Npgsql / EF Core<br/>connection-string credentials" --> PG
+    API -- "HTTPS REST: object upload<br/>service-role key (Bearer + apikey)" --> SB
+    API -- "HTTPS: Calendar v3 events.list<br/>service account, calendar.readonly" --> GC
+    API -- "HTTP POST /run (JSON)<br/>NO authentication: network placement only" --> AG
+    AG -- "HTTP POST /api/internal/tools/{toolName}<br/>shared-secret header X-Agent-Secret" --> API
+    AG -- "HTTPS POST /chat/completions<br/>Bearer LLM_API_KEY" --> LLM
+
+    FL -. "HTTPS GET public object URL<br/>(display a stored photo, no credential)" .-> SB
+    RE -. "HTTPS GET public object URL<br/>(display a stored photo, no credential)" .-> SB
+
+    classDef client fill:#EEF0F3,stroke:#15171C,color:#15171C
+    classDef core fill:#E8E6FC,stroke:#5B50E8,color:#15171C
+    classDef ext fill:#FFFFFF,stroke:#6B7280,color:#15171C,stroke-dasharray: 4 3
+    class FL,RE client
+    class API,PG,AG core
+    class SB,GC,LLM ext

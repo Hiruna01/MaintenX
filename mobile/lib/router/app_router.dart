@@ -63,6 +63,13 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: SubmitReportScreen.subPath,
             builder: (context, state) => const SubmitReportScreen(),
+            routes: [
+              // The report form's scanner: pops back to the form with the asset it found.
+              GoRoute(
+                path: ScanAssetScreen.reportSubPath,
+                builder: (context, state) => const ScanAssetScreen(pickForReport: true),
+              ),
+            ],
           ),
           GoRoute(
             path: MyReportsScreen.subPath,
@@ -73,6 +80,8 @@ final routerProvider = Provider<GoRouter>((ref) {
                 // A non-numeric id becomes null and the screen renders an error, not a crash.
                 builder: (context, state) => ClarificationScreen(
                   reportId: int.tryParse(state.pathParameters['id'] ?? ''),
+                  waitForQuestions:
+                      state.uri.queryParameters[ClarificationScreen.waitingParam] == '1',
                 ),
               ),
             ],

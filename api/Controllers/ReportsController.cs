@@ -183,6 +183,16 @@ public class ReportsController : ControllerBase
             return Unauthorized();
         }
 
+        // Asked first so the 400 names the right field: CreateAsync returns null for an
+        // unknown room and for an asset that is not in it alike.
+        if (dto.AssetId is int assetId
+            && !await _reportService.AssetIsInRoomAsync(assetId, dto.RoomId, cancellationToken))
+        {
+            ModelState.AddModelError(
+                nameof(dto.AssetId), $"Asset {assetId} is not registered in room {dto.RoomId}.");
+            return ValidationProblem(ModelState);
+        }
+
         var created = await _reportService.CreateAsync(dto, reporterId, cancellationToken);
 
         if (created is null)

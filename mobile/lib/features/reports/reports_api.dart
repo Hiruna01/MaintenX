@@ -35,14 +35,16 @@ class ReportsApi {
   /// ApiClient attaches, so a client cannot file a report as somebody else. Filing also
   /// raises the agent workflow on the server, but that happens in the background — this
   /// call returns as soon as the report is stored, not when the agent has finished.
-  Future<int> submit({required String description, required int roomId}) async {
+  ///
+  /// [assetId] is set only when the reporter scanned the equipment's sticker, and is left
+  /// out otherwise. The API refuses (400) an asset that is not registered in [roomId].
+  Future<int> submit({required String description, required int roomId, int? assetId}) async {
     final json = await _client.post(
       '/api/reports',
       body: {
         'description': description,
         'roomId': roomId,
-        // Hook: the QR scanner fills in an asset code. Not sent while it would always be
-        // null — see SubmitReportScreen.
+        if (assetId != null) 'assetId': assetId,
       },
     ) as Map<String, dynamic>;
 
@@ -108,6 +110,22 @@ class ReportsApi {
     return json
         .map((item) => ClarificationQuestion.fromJson(item as Map<String, dynamic>))
         .toList(growable: false);
+  }
+
+  /// GET /api/reports/{id}, read for one thing: whether the clarifier has finished with a
+  /// freshly filed report, and the questions if it asked any. Polled by the wait after
+  /// submitting — the clarifications list alone cannot tell "not asked yet" from "nothing
+  /// to ask", since both are an empty list.
+  Future<({ClarifierProgress progress, List<ClarificationQuestion> questions})>
+      clarifierProgress(int reportId) async {
+    final json = await _client.get('/api/reports/$reportId') as Map<String, dynamic>;
+
+    return (
+      progress: readClarifierProgress(json),
+      questions: ((json['clarificationQuestions'] as List<dynamic>?) ?? const [])
+          .map((item) => ClarificationQuestion.fromJson(item as Map<String, dynamic>))
+          .toList(growable: false),
+    );
   }
 
   /// POST /api/reports/{id}/clarifications -> 204.

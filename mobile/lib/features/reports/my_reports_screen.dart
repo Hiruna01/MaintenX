@@ -4,11 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../core/paged_result.dart';
 import '../../widgets/empty_view.dart';
 import '../../widgets/error_view.dart';
-import '../../widgets/loading_view.dart';
+import '../../widgets/surfaces.dart';
 import '../verification/confirm_fix_screen.dart';
 import '../verification/verification_status_chip.dart';
 import 'clarification_screen.dart';
@@ -89,38 +92,67 @@ class _MyReportsScreenState extends ConsumerState<MyReportsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My reports'),
+        leading: Navigator.canPop(context)
+            ? IconButton(
+                tooltip: 'Back',
+                icon: const Icon(LucideIcons.arrowLeft),
+                onPressed: () => Navigator.maybePop(context),
+              )
+            : null,
         actions: [
-          IconButton(
+          MxRoundButton(
             tooltip: 'Submit a report',
-            icon: const Icon(Icons.add),
+            icon: LucideIcons.plus,
+            background: MxColors.ink,
+            foreground: Colors.white,
             onPressed: () => context.go(SubmitReportScreen.path),
           ),
+          const SizedBox(width: 12),
         ],
       ),
       body: SafeArea(
+        top: false,
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+              child: Text('My reports', style: theme.textTheme.headlineMedium),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
               child: TextField(
                 controller: _searchController,
                 onChanged: _onSearchChanged,
                 textInputAction: TextInputAction.search,
                 decoration: InputDecoration(
                   hintText: 'Search descriptions',
-                  prefixIcon: const Icon(Icons.search),
-                  border: const OutlineInputBorder(),
-                  isDense: true,
+                  fillColor: MxColors.surface,
+                  prefixIcon: const Icon(LucideIcons.search, size: 18),
+                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(999)),
+                    borderSide: BorderSide.none,
+                  ),
+                  enabledBorder: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(999)),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(999)),
+                    borderSide: BorderSide(color: MxColors.iris, width: 1.6),
+                  ),
                   suffixIcon: ValueListenableBuilder(
                     valueListenable: _searchController,
                     builder: (context, value, _) => value.text.isEmpty
                         ? const SizedBox.shrink()
                         : IconButton(
                             tooltip: 'Clear search',
-                            icon: const Icon(Icons.clear),
+                            icon: const Icon(LucideIcons.x, size: 18),
                             onPressed: () {
                               _searchController.clear();
                               _onSearchChanged('');
@@ -131,7 +163,6 @@ class _MyReportsScreenState extends ConsumerState<MyReportsScreen> {
               ),
             ),
             _StatusFilter(selected: _status, onSelected: _setStatus),
-            const Divider(height: 1),
             // Only the list switches state; the search box and the filter stay put, so a
             // failed or empty result can be searched out of.
             Expanded(child: _results()),
@@ -145,7 +176,7 @@ class _MyReportsScreenState extends ConsumerState<MyReportsScreen> {
     final page = ref.watch(reportsPageProvider(_query));
 
     return page.when(
-      loading: () => const LoadingView(message: 'Loading your reports…'),
+      loading: () => const _ReportListSkeleton(),
       error: (error, _) => ErrorView(
         title: 'Could not load your reports',
         message: error is ApiException ? error.message : 'Could not reach the API.',
@@ -157,23 +188,26 @@ class _MyReportsScreenState extends ConsumerState<MyReportsScreen> {
         if (result.items.isEmpty) {
           return _isFiltered
               ? EmptyView(
-                  icon: Icons.search_off,
+                  icon: LucideIcons.searchX,
                   message: 'No reports match your search or filter.',
-                  action: TextButton(
+                  action: OutlinedButton(
                     onPressed: _clearFilters,
                     child: const Text('Clear filters'),
                   ),
                 )
               : EmptyView(
+                  icon: LucideIcons.fileText,
                   message: 'You have not reported anything yet.\n'
                       'Reports you submit will appear here.',
-                  action: FilledButton.tonal(
+                  action: FilledButton(
                     onPressed: () => context.go(SubmitReportScreen.path),
                     child: const Text('Submit a report'),
                   ),
                 );
         }
         return RefreshIndicator(
+          color: MxColors.ink,
+          backgroundColor: MxColors.surface,
           onRefresh: () => ref.refresh(reportsPageProvider(_query).future),
           child: _list(result),
         );
@@ -182,33 +216,50 @@ class _MyReportsScreenState extends ConsumerState<MyReportsScreen> {
   }
 
   Widget _list(PagedResult<ReportListItem> result) {
+    final theme = Theme.of(context);
     return ListView(
       // Always scrollable, so pull-to-refresh works on a short list — which is how a
       // reporter checks whether the agent has asked them anything yet.
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
       children: [
-        for (final report in result.items) _ReportCard(report: report),
+        for (final report in result.items) ...[
+          _ReportCard(report: report),
+          const SizedBox(height: 12),
+        ],
         if (result.totalPages > 1)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Row(
               children: [
-                IconButton(
+                MxRoundButton(
                   tooltip: 'Previous page',
-                  icon: const Icon(Icons.chevron_left),
+                  icon: LucideIcons.chevronLeft,
                   onPressed: result.hasPrevious ? () => setState(() => _page--) : null,
                 ),
                 Expanded(
-                  child: Text(
-                    'Page ${result.page} of ${result.totalPages} · '
-                    '${result.totalCount} reports',
-                    textAlign: TextAlign.center,
+                  child: Column(
+                    children: [
+                      Text(
+                        'Page ${result.page} of ${result.totalPages}',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontFeatures: MxType.tabular,
+                        ),
+                      ),
+                      Text(
+                        '${result.totalCount} reports',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontFeatures: MxType.tabular,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                IconButton(
+                MxRoundButton(
                   tooltip: 'Next page',
-                  icon: const Icon(Icons.chevron_right),
+                  icon: LucideIcons.chevronRight,
                   onPressed: result.hasNext ? () => setState(() => _page++) : null,
                 ),
               ],
@@ -229,10 +280,10 @@ class _StatusFilter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 52,
+      height: 64,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
         children: [
           ChoiceChip(
             label: const Text('All'),
@@ -262,81 +313,137 @@ class _ReportCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
     final waiting = report.isWaitingOnReporter;
     final count = report.unansweredQuestionCount;
     final verification = report.verification;
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        // Only a report with something behind it goes anywhere: open questions, or a repair
-        // check — which is either a question waiting on the reporter or the status of what
-        // their answer did. Every other row is a status to read, and a tap that led to an
-        // empty page would be worse than no tap. Pushed rather than gone to, so back comes
-        // here and not to the pending list the check screen is nested under.
-        onTap: waiting
-            ? () => context.go(ClarificationScreen.location(report.id))
-            : verification != null
-                ? () => context.push(ConfirmFixScreen.location(verification.id))
-                : null,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  ReportStatusChip(status: report.status),
-                  const Spacer(),
-                  Text(formatTimestamp(report.createdAt), style: muted),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Text(
-                report.description,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyLarge,
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  Icon(Icons.place_outlined, size: 16, color: theme.colorScheme.outline),
-                  const SizedBox(width: 4),
-                  Expanded(child: Text(report.roomName, style: muted)),
-                ],
-              ),
-              if (waiting) ...[
+    return MxCard(
+      padding: EdgeInsets.zero,
+      // Only a report with something behind it goes anywhere: open questions, or a repair
+      // check — which is either a question waiting on the reporter or the status of what
+      // their answer did. Every other row is a status to read, and a tap that led to an
+      // empty page would be worse than no tap. Pushed rather than gone to, so back comes
+      // here and not to the pending list the check screen is nested under.
+      onTap: waiting
+          ? () => context.go(ClarificationScreen.location(report.id))
+          : verification != null
+              ? () => context.push(ConfirmFixScreen.location(verification.id))
+              : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    ReportStatusChip(status: report.status),
+                    const Spacer(),
+                    Text(
+                      formatTimestamp(report.createdAt),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: MxColors.mute,
+                        fontFeatures: MxType.tabular,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  report.description,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w500,
+                    height: 1.4,
+                    letterSpacing: -0.1,
+                  ),
+                ),
                 const SizedBox(height: 10),
                 Row(
                   children: [
-                    Icon(Icons.help_outline, size: 18, color: theme.colorScheme.primary),
+                    const Icon(LucideIcons.mapPin, size: 14, color: MxColors.graphite),
                     const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '$count ${count == 1 ? 'question' : 'questions'} waiting on you',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    Text('Answer', style: TextStyle(color: theme.colorScheme.primary)),
-                    Icon(Icons.chevron_right, color: theme.colorScheme.primary),
+                    Expanded(child: Text(report.roomName, style: theme.textTheme.bodySmall)),
                   ],
                 ),
+                if (verification != null) ...[
+                  const SizedBox(height: 14),
+                  MxWell(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+                    child: ReportVerificationLine(verification: verification),
+                  ),
+                ],
               ],
-              if (verification != null) ...[
-                const SizedBox(height: 10),
-                const Divider(height: 1),
-                const SizedBox(height: 10),
-                ReportVerificationLine(verification: verification),
-              ],
-            ],
+            ),
           ),
-        ),
+          // The one thing in iris on this screen: this report is waiting on its reader.
+          if (waiting)
+            Container(
+              color: MxColors.irisSoft,
+              padding: const EdgeInsets.fromLTRB(18, 12, 12, 12),
+              child: Row(
+                children: [
+                  const Icon(LucideIcons.messageCircleQuestion, size: 18, color: MxColors.iris),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '$count ${count == 1 ? 'question' : 'questions'} waiting on you',
+                      style: theme.textTheme.titleSmall?.copyWith(color: MxColors.iris),
+                    ),
+                  ),
+                  Text(
+                    'Answer',
+                    style: theme.textTheme.labelLarge?.copyWith(color: MxColors.iris),
+                  ),
+                  const Icon(LucideIcons.chevronRight, size: 18, color: MxColors.iris),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Loading, shaped like the cards it stands in for.
+class _ReportListSkeleton extends StatelessWidget {
+  const _ReportListSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Loading your reports…',
+      child: ListView(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+        children: [
+          for (var i = 0; i < 3; i++) ...[
+            const MxCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Skeleton(width: 96, height: 22, radius: 99),
+                      Spacer(),
+                      Skeleton(width: 110, height: 12),
+                    ],
+                  ),
+                  SizedBox(height: 16),
+                  Skeleton(height: 14),
+                  SizedBox(height: 8),
+                  Skeleton(width: 200, height: 14),
+                  SizedBox(height: 14),
+                  Skeleton(width: 120, height: 12),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ],
       ),
     );
   }

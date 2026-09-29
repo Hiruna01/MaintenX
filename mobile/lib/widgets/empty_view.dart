@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
+import '../core/app_theme.dart';
 
 /// The "the request worked, there is just nothing to show" state. Distinct from an error
-/// on purpose: an empty list is not a failure and must not look like one.
+/// on purpose: an empty list is not a failure and must not look like one — grey, never red.
 class EmptyView extends StatelessWidget {
   const EmptyView({
     super.key,
     required this.message,
-    this.icon = Icons.inbox_outlined,
+    this.icon = LucideIcons.inbox,
     this.action,
   });
 
@@ -21,20 +24,32 @@ class EmptyView extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 40, color: theme.colorScheme.outline),
-            const SizedBox(height: 12),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: MxColors.surface,
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: MxColors.hairline),
+              ),
+              child: Icon(icon, size: 26, color: MxColors.graphite),
+            ),
+            const SizedBox(height: 18),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 300),
+              child: Text(
+                message,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
+              ),
             ),
             if (action != null) ...[
-              const SizedBox(height: 16),
+              const SizedBox(height: 20),
               action!,
             ],
           ],

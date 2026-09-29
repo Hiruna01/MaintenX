@@ -83,6 +83,55 @@ export function validateCompletion(values) {
   return errors;
 }
 
+/** CreateWorkOrderDto: PartsRequired [MaxLength(1000)]. */
+export const PARTS_REQUIRED_MAX = 1000;
+
+/**
+ * The raise form's starting values: the strategist's proposal where there is a readable one,
+ * and the report's own asset when it names one. A starting point for the manager and nothing
+ * more — every field can be changed, and an empty one stays empty rather than guessed.
+ */
+export function initialRaiseValues(report) {
+  const proposal = report.proposal;
+  const usable = proposal && proposal.validationResult === 'Ok' && proposal.outputReadable;
+
+  return {
+    assetId: report.asset ? String(report.asset.id) : '',
+    strategy: usable && proposal.strategy ? proposal.strategy : '',
+    estimatedCost:
+      usable && proposal.estimatedCost !== null && proposal.estimatedCost !== undefined
+        ? String(proposal.estimatedCost)
+        : '',
+    partsRequired: '',
+  };
+}
+
+export function validateRaiseWorkOrder(values) {
+  const errors = {};
+
+  // Required: nobody can be sent to repair a machine nobody has identified.
+  if (!values.assetId) errors.assetId = 'Choose the equipment this order is for.';
+
+  // Required: the strategy is an input to the approval gate, so it must be one chosen.
+  if (!values.strategy) errors.strategy = 'Choose how the work is to be approached.';
+
+  const cost = values.estimatedCost.trim();
+  if (cost === '') {
+    // Required: a missing estimate would be under any threshold.
+    errors.estimatedCost = 'Enter an estimate.';
+  } else if (!MONEY_PATTERN.test(cost)) {
+    errors.estimatedCost = 'Enter an amount in rupees, with at most two decimal places.';
+  } else if (Number(cost) > MAX_COST) {
+    errors.estimatedCost = 'That is more than any single repair could cost — check for a typo.';
+  }
+
+  if (values.partsRequired.trim().length > PARTS_REQUIRED_MAX) {
+    errors.partsRequired = `Keep it to ${PARTS_REQUIRED_MAX} characters or fewer.`;
+  }
+
+  return errors;
+}
+
 /**
  * The slot search. Only the input's shape is checked here — the 31-day cap and whether the
  * job fits in a working day are the API's rules, and its 400 says so when one is broken.

@@ -18,6 +18,11 @@ class AppFormField extends StatelessWidget {
     this.enabled = true,
     this.onChanged,
     this.maxLength,
+    this.suffixIcon,
+    this.textInputAction,
+    this.onSubmitted,
+    this.autofillHints,
+    this.fillColor,
   });
 
   final String label;
@@ -35,11 +40,24 @@ class AppFormField extends StatelessWidget {
   /// code units, so an emoji can pass one and fail the other.
   final int? maxLength;
 
+  /// Display-only extras: a trailing control (a show-password eye), the keyboard's action
+  /// key and what it does, and autofill hints for the platform's password manager.
+  final Widget? suffixIcon;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
+  final Iterable<String>? autofillHints;
+
+  /// The field's fill; the theme's grey when null. A field inside a grey panel is white.
+  final Color? fillColor;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.only(bottom: 14),
       child: TextField(
+        textInputAction: textInputAction,
+        onSubmitted: onSubmitted,
+        autofillHints: autofillHints,
         maxLength: maxLength,
         controller: controller,
         obscureText: obscureText,
@@ -51,7 +69,9 @@ class AppFormField extends StatelessWidget {
           labelText: label,
           hintText: hintText,
           errorText: errorText,
-          border: const OutlineInputBorder(),
+          suffixIcon: suffixIcon,
+          fillColor: fillColor,
+          // No border here: the filled field and its focus ring come from AppTheme.
           alignLabelWithHint: maxLines > 1,
         ),
       ),
@@ -70,6 +90,7 @@ class AppDropdownField<T> extends StatelessWidget {
     required this.onChanged,
     this.errorText,
     this.hintText,
+    this.fillColor,
   });
 
   final String label;
@@ -79,20 +100,24 @@ class AppDropdownField<T> extends StatelessWidget {
   final String? errorText;
   final String? hintText;
 
+  /// As on [AppFormField]: white inside a grey panel.
+  final Color? fillColor;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.only(bottom: 14),
       child: DropdownButtonFormField<T>(
         initialValue: value,
         items: items,
         onChanged: onChanged,
         isExpanded: true,
+        borderRadius: BorderRadius.circular(16),
         decoration: InputDecoration(
           labelText: label,
           hintText: hintText,
           errorText: errorText,
-          border: const OutlineInputBorder(),
+          fillColor: fillColor,
         ),
       ),
     );

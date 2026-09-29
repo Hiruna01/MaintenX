@@ -1,6 +1,9 @@
+import { CircleCheckBig } from 'lucide-react';
 import { useState } from 'react';
 
-import Button from '../../../components/Button';
+import MxButton from '../../../components/ui/Button';
+import form from '../../../components/ui/form.module.css';
+import Segmented from '../../../components/ui/Segmented';
 import { SERVICE_OUTCOMES } from '../../assets/services/assetsApi';
 import { completeWorkOrder, enumLabel } from '../services/workOrdersApi';
 import {
@@ -9,6 +12,7 @@ import {
   RESOLUTION_NOTE_MAX,
   validateCompletion,
 } from '../services/workOrderValidation';
+import styles from '../workorders.module.css';
 
 /**
  * The assigned technician closing the job: what it cost, how it ended, and what was done.
@@ -16,10 +20,10 @@ import {
  * Rendered only for the technician the order is assigned to, and the API checks that again
  * against the token. Completing appends a ServiceRecord to the asset's history in the same
  * transaction, and the note goes into it VERBATIM — it is what the diagnostic agent reads
- * next time this machine fails, so the form asks for it plainly and never tidies it.
+ * next time this machine fails.
  *
- * The outcome is a required choice with no default: a default would record a temporary fix
- * as resolved and erase the repeat-failure pattern the history exists to show.
+ * The outcome is a required choice with NO DEFAULT — no segment starts selected: a default
+ * would record a temporary fix as resolved and erase the repeat-failure pattern.
  */
 export function CompletionForm({ order, onCompleted }) {
   const [values, setValues] = useState(EMPTY_COMPLETION_VALUES);
@@ -29,6 +33,7 @@ export function CompletionForm({ order, onCompleted }) {
 
   function handleChange(name, value) {
     setValues((current) => ({ ...current, [name]: value }));
+    setErrors((current) => ({ ...current, [name]: undefined }));
   }
 
   async function handleSubmit(event) {
@@ -51,84 +56,91 @@ export function CompletionForm({ order, onCompleted }) {
   }
 
   return (
-    <form className="asset-form completion-form" onSubmit={handleSubmit} noValidate>
-      <div className="asset-form__grid">
-        <label className="asset-form__field">
-          <span>Actual cost (Rs)</span>
+    <form className={styles.completionForm} onSubmit={handleSubmit} noValidate>
+      <div className={form.field}>
+        <span className={form.label} id="completion-outcome-label">
+          How did it end?
+        </span>
+        <Segmented
+          label="Outcome"
+          value={values.outcome}
+          onChange={(value) => handleChange('outcome', value)}
+          options={SERVICE_OUTCOMES.map((outcome) => ({ value: outcome, label: enumLabel(outcome) }))}
+        />
+        {errors.outcome ? <p className={form.error}>{errors.outcome}</p> : null}
+      </div>
+
+      <div className={form.grid}>
+        <div className={form.field}>
+          <label htmlFor="completion-cost" className={form.label}>
+            Actual cost (Rs)
+          </label>
           <input
+            id="completion-cost"
             inputMode="decimal"
+            className={`${form.input} ${form.mono}`}
             value={values.actualCost}
             onChange={(event) => handleChange('actualCost', event.target.value)}
             aria-invalid={errors.actualCost ? 'true' : undefined}
             placeholder="e.g. 8500"
           />
-          {errors.actualCost ? <span className="form__error">{errors.actualCost}</span> : null}
-        </label>
+          {errors.actualCost ? <p className={form.error}>{errors.actualCost}</p> : null}
+        </div>
 
-        <label className="asset-form__field">
-          <span>Outcome</span>
-          <select
-            value={values.outcome}
-            onChange={(event) => handleChange('outcome', event.target.value)}
-            aria-invalid={errors.outcome ? 'true' : undefined}
-          >
-            <option value="">Choose how it ended…</option>
-            {SERVICE_OUTCOMES.map((outcome) => (
-              <option key={outcome} value={outcome}>
-                {enumLabel(outcome)}
-              </option>
-            ))}
-          </select>
-          {errors.outcome ? <span className="form__error">{errors.outcome}</span> : null}
-        </label>
+        <div className={form.field}>
+          <label htmlFor="completion-photo" className={form.label}>
+            Photo link <span className={form.optional}>Optional</span>
+          </label>
+          <input
+            id="completion-photo"
+            type="url"
+            className={form.input}
+            value={values.completionPhotoUrl}
+            maxLength={PHOTO_URL_MAX}
+            onChange={(event) => handleChange('completionPhotoUrl', event.target.value)}
+            aria-invalid={errors.completionPhotoUrl ? 'true' : undefined}
+            placeholder="https://…"
+          />
+          {errors.completionPhotoUrl ? <p className={form.error}>{errors.completionPhotoUrl}</p> : null}
+        </div>
       </div>
 
-      <label className="asset-form__field">
-        <span>What was done</span>
+      <div className={form.field}>
+        <label htmlFor="completion-note" className={form.label}>
+          What was done
+        </label>
         <textarea
-          rows={4}
+          id="completion-note"
+          rows={5}
+          className={form.textarea}
           value={values.resolutionNote}
           maxLength={RESOLUTION_NOTE_MAX}
           onChange={(event) => handleChange('resolutionNote', event.target.value)}
           aria-invalid={errors.resolutionNote ? 'true' : undefined}
+          placeholder="What you found, what you did, and whether it is a lasting fix."
         />
         {errors.resolutionNote ? (
-          <span className="form__error">{errors.resolutionNote}</span>
+          <p className={form.error}>{errors.resolutionNote}</p>
         ) : (
-          <span className="asset-form__hint">
-            Saved word for word in the asset&apos;s service history. {values.resolutionNote.length}/
-            {RESOLUTION_NOTE_MAX}
-          </span>
+          <p className={form.hint}>
+            <span>Saved word for word in the asset&apos;s service history.</span>
+            <span className={form.counter}>
+              {values.resolutionNote.length}/{RESOLUTION_NOTE_MAX}
+            </span>
+          </p>
         )}
-      </label>
-
-      <label className="asset-form__field">
-        <span>
-          Photo link <span className="asset-form__optional">optional</span>
-        </span>
-        <input
-          type="url"
-          value={values.completionPhotoUrl}
-          maxLength={PHOTO_URL_MAX}
-          onChange={(event) => handleChange('completionPhotoUrl', event.target.value)}
-          aria-invalid={errors.completionPhotoUrl ? 'true' : undefined}
-          placeholder="https://…"
-        />
-        {errors.completionPhotoUrl ? (
-          <span className="form__error">{errors.completionPhotoUrl}</span>
-        ) : null}
-      </label>
+      </div>
 
       {submitError ? (
-        <p className="form__error" role="alert">
+        <p className={form.submitError} role="alert">
           {submitError}
         </p>
       ) : null}
 
-      <div className="asset-form__actions">
-        <Button type="submit" disabled={isSubmitting}>
+      <div className={form.actions}>
+        <MxButton type="submit" variant="primary" icon={CircleCheckBig} disabled={isSubmitting}>
           {isSubmitting ? 'Completing…' : 'Complete work order'}
-        </Button>
+        </MxButton>
       </div>
     </form>
   );

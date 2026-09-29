@@ -1,16 +1,47 @@
+import { CalendarClock, CircleCheck, FileText, ListTree, RotateCcw, Timer } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
-import ErrorMessage from '../../../components/ErrorMessage';
-import Spinner from '../../../components/Spinner';
+import MxButton from '../../../components/ui/Button';
+import { formatDuration, formatInstant, timeAgo } from '../../../components/ui/format';
+import PageHeader from '../../../components/ui/PageHeader';
+import { Panel } from '../../../components/ui/Panel';
+import { StatusPill } from '../../../components/ui/Pill';
+import Skeleton from '../../../components/ui/Skeleton';
+import { EmptyState, ErrorState } from '../../../components/ui/States';
+import AuditTrail from '../components/AuditTrail';
 import DiagnosisComparison from '../components/DiagnosisComparison';
-import WorkflowSteps from '../components/WorkflowSteps';
+import LifecycleRail from '../components/LifecycleRail';
 import useWorkflow from '../hooks/useWorkflow';
 import { workflowStateLabel } from '../services/workflowsService';
+import styles from '../workflows.module.css';
 
-function formatDate(value) {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleString();
+function DetailSkeleton() {
+  return (
+    <div role="status" aria-label="Loading workflow">
+      <Skeleton width={160} height={12} style={{ marginBottom: 18 }} />
+      <Skeleton width="30%" height={40} style={{ marginBottom: 28 }} />
+      <div className={styles.detailGrid}>
+        <div className={styles.column}>
+          <Skeleton height={120} radius={20} />
+          <Skeleton height={130} radius={20} />
+          <Skeleton height={360} radius={20} />
+        </div>
+        <Skeleton height={300} radius={20} />
+      </div>
+    </div>
+  );
+}
+
+function Fact({ icon: Icon, label, children }) {
+  return (
+    <div className={styles.fact}>
+      <dt>
+        <Icon aria-hidden="true" strokeWidth={1.7} />
+        {label}
+      </dt>
+      <dd>{children}</dd>
+    </div>
+  );
 }
 
 /**
@@ -25,69 +56,58 @@ export function WorkflowDetailPage() {
   const { id } = useParams();
   const { data, isLoading, error } = useWorkflow(id);
 
+  if (isLoading) {
+    return (
+      <section className={styles.page}>
+        <DetailSkeleton />
+      </section>
+    );
+  }
+
+  if (error || !data) {
+    return (
+      <section className={styles.page}>
+        <PageHeader crumbs={[{ label: 'Workflows', to: '/workflows' }, { label: `#${id}` }]} title={`Workflow #${id}`} />
+        <Panel>
+          <ErrorState
+            title={error?.status === 404 ? 'Workflow not found' : 'Could not load this workflow'}
+            message={error?.status === 404 ? `There is no workflow with id ${id}.` : error?.message}
+            action={<MxButton to="/workflows">Back to all workflows</MxButton>}
+          />
+        </Panel>
+      </section>
+    );
+  }
+
+  const ran = data.startedAt && data.completedAt ? formatDuration(new Date(data.completedAt) - new Date(data.startedAt)) : null;
+
   return (
-    <section className="page">
-      <p className="page__back">
-        <Link to="/workflows">← All workflows</Link>
-      </p>
+    <section className={styles.page}>
+      <PageHeader
+        crumbs={[{ label: 'Workflows', to: '/workflows' }, { label: `#${data.id}` }]}
+        title={`Workflow #${data.id}`}
+        actions={
+          data.reportId ? (
+            <MxButton variant="primary" icon={FileText} to={`/reports/${data.reportId}`}>
+              Open report
+            </MxButton>
+          ) : null
+        }
+      >
+        <div className={styles.headerPills}>
+          <StatusPill status={data.currentState} label={workflowStateLabel(data.currentState)} />
+          <span className={styles.headerSub}>Created {timeAgo(data.createdAt)}</span>
+        </div>
+      </PageHeader>
 
-      <h1>Workflow {id}</h1>
+      <div className={styles.detailGrid}>
+        <div className={styles.column}>
+          <Panel eyebrow="Objective">
+            {/* The report's description, verbatim — it is what the run was asked to act on. */}
+            <blockquote className={styles.objective}>{data.objective}</blockquote>
+          </Panel>
 
-      {/* All three request states are rendered explicitly. A blank screen is a bug. */}
-      {isLoading ? <Spinner label="Loading workflow…" /> : null}
-
-      {!isLoading && error ? (
-        <ErrorMessage title="Could not load this workflow" message={error.message} />
-      ) : null}
-
-      {!isLoading && !error && data ? (
-        <>
-          <p className="page__lead">{data.objective}</p>
-
-          <dl className="detail">
-            <div className="detail__row">
-              <dt>State</dt>
-              <dd>
-                <span className={`state state--${data.currentState}`}>
-                  {workflowStateLabel(data.currentState)}
-                </span>
-              </dd>
-            </div>
-            <div className="detail__row">
-              <dt>Outcome</dt>
-              <dd>{data.outcome ?? '—'}</dd>
-            </div>
-            <div className="detail__row">
-              <dt>Report</dt>
-              <dd>
-                {data.reportId ? (
-                  <Link to={`/reports/${data.reportId}`}>Report #{data.reportId}</Link>
-                ) : (
-                  'Started without a report'
-                )}
-              </dd>
-            </div>
-            <div className="detail__row">
-              <dt>Started</dt>
-              <dd>{formatDate(data.startedAt)}</dd>
-            </div>
-            <div className="detail__row">
-              <dt>Completed</dt>
-              <dd>{formatDate(data.completedAt)}</dd>
-            </div>
-            {data.reopenedWorkOrderId ? (
-              <div className="detail__row">
-                <dt>Reopened</dt>
-                <dd>
-                  The repair on{' '}
-                  <Link to={`/workorders/${data.reopenedWorkOrderId}`}>
-                    work order #{data.reopenedWorkOrderId}
-                  </Link>{' '}
-                  did not hold
-                </dd>
-              </div>
-            ) : null}
-          </dl>
+          <LifecycleRail state={data.currentState} reopenedWorkOrderId={data.reopenedWorkOrderId} />
 
           {/* Only when the diagnostic has run: a workflow still waiting on its reporter has
               no diagnosis, and an empty panel would read as one that failed. */}
@@ -99,20 +119,57 @@ export function WorkflowDetailPage() {
             />
           ) : null}
 
-          <h2>Steps</h2>
+          <Panel eyebrow="Audit trail" count={data.steps.length || null} actions={<span className={styles.panelHint}>Oldest first</span>}>
+            {/* An empty trail is not a failure: a workflow only just queued has no steps yet. */}
+            {data.steps.length === 0 ? (
+              <EmptyState
+                icon={ListTree}
+                title="No steps recorded yet"
+                body="This workflow is queued and the background runner has not reached it."
+              />
+            ) : (
+              <AuditTrail steps={data.steps} />
+            )}
+          </Panel>
+        </div>
 
-          {/* An empty trail is not a failure and must not look like one: a workflow that
-              has only just been queued genuinely has no steps yet. */}
-          {data.steps.length === 0 ? (
-            <p className="empty">
-              No steps recorded yet. This workflow is queued and the background runner has
-              not reached it.
-            </p>
-          ) : (
-            <WorkflowSteps steps={data.steps} />
-          )}
-        </>
-      ) : null}
+        <aside className={styles.aside}>
+          <Panel eyebrow="Details">
+            <dl className={styles.facts}>
+              <Fact icon={CircleCheck} label="State">
+                <StatusPill status={data.currentState} label={workflowStateLabel(data.currentState)} />
+              </Fact>
+              <Fact icon={ListTree} label="Outcome">
+                {data.outcome ?? <span className={styles.muted}>Not recorded</span>}
+              </Fact>
+              <Fact icon={FileText} label="Report">
+                {data.reportId ? (
+                  <Link to={`/reports/${data.reportId}`}>Report #{data.reportId}</Link>
+                ) : (
+                  <span className={styles.muted}>Started without a report</span>
+                )}
+              </Fact>
+              <Fact icon={CalendarClock} label="Started">
+                <span className="mx-mono">{formatInstant(data.startedAt)}</span>
+              </Fact>
+              <Fact icon={CalendarClock} label="Completed">
+                <span className="mx-mono">{formatInstant(data.completedAt)}</span>
+              </Fact>
+              {ran ? (
+                <Fact icon={Timer} label="Ran for">
+                  <span className="mx-mono">{ran}</span>
+                </Fact>
+              ) : null}
+              {data.reopenedWorkOrderId ? (
+                <Fact icon={RotateCcw} label="Reopened">
+                  The repair on <Link to={`/workorders/${data.reopenedWorkOrderId}`}>work order #{data.reopenedWorkOrderId}</Link>{' '}
+                  did not hold
+                </Fact>
+              ) : null}
+            </dl>
+          </Panel>
+        </aside>
+      </div>
     </section>
   );
 }

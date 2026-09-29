@@ -276,14 +276,31 @@ public class ReportService : IReportService
         // Every step of every workflow raised for this report, oldest first. Id is monotonic
         // per insert, so it orders identically to CreatedAt but without ties inside the same
         // millisecond — the same ordering WorkflowService uses for a workflow's own steps.
-        var steps = await _db.AgentSteps
+        var stepRows = await _db.AgentSteps
             .AsNoTracking()
             .Where(s => s.Workflow!.ReportId == id)
             .OrderBy(s => s.Id)
+            .ToListAsync(cancellationToken);
+
+        var steps = stepRows
             .Select(s => new AgentStepDto(
                 s.Id, s.WorkflowId, s.AgentName, s.ToolCallsJson, s.DurationMs,
                 s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt))
-            .ToListAsync(cancellationToken);
+            .ToList();
+
+        // The newest strategist AGENT RUN — its tool calls carry the same name, and the
+        // difference is inside ToolCallsJson, so it is picked in memory (AgentAnalysis).
+        var proposalStep = stepRows.LastOrDefault(s =>
+            s.AgentName == AgentRunResponse.StrategistAgentName && AgentAnalysis.IsAgentRunStep(s));
+
+        // The same "latest" WorkOrderService.CreateAsync moves, so the offer and the move are
+        // about the same workflow.
+        var latestWorkflow = await _db.AgentWorkflows
+            .AsNoTracking()
+            .Where(w => w.ReportId == id)
+            .OrderByDescending(w => w.Id)
+            .Select(w => new { w.Id, w.CurrentState })
+            .FirstOrDefaultAsync(cancellationToken);
 
         return new ReportDetailDto(
             report.Id,
@@ -300,7 +317,15 @@ public class ReportService : IReportService
             report.CreatedAt,
             report.UpdatedAt,
             questions,
-            steps);
+            steps,
+            latestWorkflow is null
+                ? null
+                : new ReportWorkflowDto(
+                    latestWorkflow.Id,
+                    latestWorkflow.CurrentState,
+                    WorkflowTransitions.CanRaiseWorkOrder(latestWorkflow.CurrentState)
+                    && report.Status != ReportStatus.Closed),
+            proposalStep is null ? null : AgentAnalysis.ToProposal(proposalStep));
     }
 
     public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>
@@ -350,6 +375,9 @@ public class ReportService : IReportService
         return report is null ? null : ToDto(report);
     }
 
+    public Task<bool> AssetIsInRoomAsync(int assetId, int roomId, CancellationToken cancellationToken = default) =>
+        _db.Assets.AnyAsync(a => a.Id == assetId && a.RoomId == roomId, cancellationToken);
+
     public async Task<ReportDto?> CreateAsync(
         CreateReportDto dto,
         int reporterId,
@@ -364,6 +392,12 @@ public class ReportService : IReportService
             return null;
         }
 
+        // Checked here as well as by the controller, so the service is right on its own.
+        if (dto.AssetId is int assetId && !await AssetIsInRoomAsync(assetId, dto.RoomId, cancellationToken))
+        {
+            return null;
+        }
+
         // ReporterId is not checked the same way: it comes from a signed, unexpired token
         // this API issued, and there is no endpoint that deletes a user, so a token whose
         // subject has vanished cannot arise. If user deletion is ever added, this needs
@@ -372,6 +406,8 @@ public class ReportService : IReportService
         {
             ReporterId = reporterId,
             RoomId = dto.RoomId,
+            // Null unless the reporter scanned a sticker — see CreateReportDto.AssetId.
+            AssetId = dto.AssetId,
             Description = dto.Description,
             Status = ReportStatus.Submitted
         };

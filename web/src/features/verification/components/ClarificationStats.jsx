@@ -1,4 +1,16 @@
+import { Well } from '../../../components/ui/Panel';
 import { formatPercent } from '../services/verificationApi';
+import styles from '../verification.module.css';
+
+function Stat({ label, value, detail }) {
+  return (
+    <div className={styles.stat}>
+      <dt>{label}</dt>
+      <dd className={styles.statValue}>{value}</dd>
+      <dd className={styles.statDetail}>{detail}</dd>
+    </div>
+  );
+}
 
 /**
  * Clarification efficiency as four figures, each the API's, each with what it was counted from.
@@ -6,43 +18,33 @@ import { formatPercent } from '../services/verificationApi';
  */
 export function ClarificationStats({ clarification }) {
   const median = clarification.medianHoursToAnswer;
+  const noMedian = median === null || median === undefined;
 
   return (
-    <dl className="summary-panel__grid metrics-stats">
-      <div className="summary-stat">
-        <dt className="summary-stat__label">Needed no questions</dt>
-        <dd className="summary-stat__value">{formatPercent(clarification.noQuestionRate)}</dd>
-        <dd className="summary-stat__detail">
-          {clarification.reportsWithNoQuestions} of {clarification.reportsClarified} clarified reports
-        </dd>
-      </div>
-
-      <div className="summary-stat">
-        <dt className="summary-stat__label">Questions per report</dt>
-        <dd className="summary-stat__value">{Number(clarification.averageQuestionsPerReport).toFixed(2)}</dd>
-        <dd className="summary-stat__detail">
-          {clarification.questionsAsked} asked across {clarification.reportsWithQuestions} reports that needed any
-        </dd>
-      </div>
-
-      <div className="summary-stat">
-        <dt className="summary-stat__label">Answered</dt>
-        <dd className="summary-stat__value">{formatPercent(clarification.answerRate)}</dd>
-        <dd className="summary-stat__detail">
-          {clarification.questionsAnswered} of {clarification.questionsAsked} questions
-        </dd>
-      </div>
-
-      <div className="summary-stat">
-        <dt className="summary-stat__label">Median time to answer</dt>
-        <dd className="summary-stat__value">
-          {median === null || median === undefined ? '—' : `${Number(median).toLocaleString()} h`}
-        </dd>
-        <dd className="summary-stat__detail">
-          {median === null || median === undefined ? 'Nothing answered yet' : 'From asked to answered'}
-        </dd>
-      </div>
-    </dl>
+    <Well>
+      <dl className={styles.stats}>
+        <Stat
+          label="Needed no questions"
+          value={formatPercent(clarification.noQuestionRate)}
+          detail={`${clarification.reportsWithNoQuestions} of ${clarification.reportsClarified} clarified reports`}
+        />
+        <Stat
+          label="Questions per report"
+          value={Number(clarification.averageQuestionsPerReport).toFixed(2)}
+          detail={`${clarification.questionsAsked} asked across ${clarification.reportsWithQuestions} reports that needed any`}
+        />
+        <Stat
+          label="Answered"
+          value={formatPercent(clarification.answerRate)}
+          detail={`${clarification.questionsAnswered} of ${clarification.questionsAsked} questions`}
+        />
+        <Stat
+          label="Median time to answer"
+          value={noMedian ? '—' : `${Number(median).toLocaleString()} h`}
+          detail={noMedian ? 'Nothing answered yet' : 'From asked to answered'}
+        />
+      </dl>
+    </Well>
   );
 }
 

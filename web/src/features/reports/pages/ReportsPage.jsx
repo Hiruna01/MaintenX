@@ -1,31 +1,69 @@
+import { MessageSquareWarning, Search, SearchX, X } from 'lucide-react';
 import { useState } from 'react';
 
-import ErrorMessage from '../../../components/ErrorMessage';
-import Pagination from '../../../components/Pagination';
-import Spinner from '../../../components/Spinner';
+import MxButton from '../../../components/ui/Button';
+import DateRange from '../../../components/ui/DateRange';
+import PageHeader from '../../../components/ui/PageHeader';
+import Pager from '../../../components/ui/Pager';
+import { Panel } from '../../../components/ui/Panel';
+import Segmented from '../../../components/ui/Segmented';
+import SelectMenu from '../../../components/ui/SelectMenu';
+import Skeleton from '../../../components/ui/Skeleton';
+import { EmptyState, ErrorState } from '../../../components/ui/States';
+import { humanize } from '../../../components/ui/tones';
 import useDebounce from '../../../hooks/useDebounce';
-import ReportFilters from '../components/ReportFilters';
-import ReportTable from '../components/ReportTable';
+import ReportRows from '../components/ReportRows';
 import useReports from '../hooks/useReports';
-import { DEFAULT_PAGE_SIZE, REPORT_SORTS } from '../services/reportsApi';
+import useReportStatusCounts from '../hooks/useReportStatusCounts';
+import { DEFAULT_PAGE_SIZE, REPORT_SORTS, REPORT_STATUSES } from '../services/reportsApi';
+import styles from '../reports.module.css';
 
 const EMPTY_FILTERS = { search: '', status: '', dateFrom: '', dateTo: '' };
+
+const STATUS_TABS = [
+  { value: '', label: 'All' },
+  ...REPORT_STATUSES.map((status) => ({
+    value: status,
+    label: status === 'WorkOrderRaised' ? 'Order raised' : humanize(status),
+  })),
+];
+
+// The two members of ReportSort. The API takes no direction: newest first, or grouped by the
+// stored status name alphabetically — not by lifecycle position.
+const SORT_OPTIONS = [
+  { value: REPORT_SORTS.CreatedAt, label: 'Newest first' },
+  { value: REPORT_SORTS.Status, label: 'Status (A–Z)' },
+];
+
+function RowsSkeleton() {
+  return (
+    <div className={styles.skeleton} role="status" aria-label="Loading reports">
+      {Array.from({ length: 6 }, (_, index) => (
+        <div key={index} className={styles.skeletonRow}>
+          <Skeleton width={28} height={12} />
+          <div style={{ flex: 1, display: 'grid', gap: 7 }}>
+            <Skeleton width="62%" height={14} />
+            <Skeleton width="26%" height={11} />
+          </div>
+          <Skeleton width={120} height={24} radius={999} />
+          <Skeleton width={92} height={12} />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /**
  * The intake queue: every fault reported on the estate, newest first by default.
  *
  * Routed for managers only, but WHO SEES WHICH REPORTS is not decided here — the API scopes
- * a Reporter to their own reports from the token, whatever this page asks for. A manager
- * sees the estate because the API says so, not because this page asked nicely.
+ * a Reporter to their own reports from the token, whatever this page asks for.
  */
 export function ReportsPage() {
-  // Local UI state stays in useState; only auth/session is app-wide Context.
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [sort, setSort] = useState(REPORT_SORTS.CreatedAt);
   const [page, setPage] = useState(1);
 
-  // One request after typing stops, instead of one per keystroke. The search is a real
-  // server-side parameter, matched across every page.
   const debouncedSearch = useDebounce(filters.search, 400);
 
   const { data, isLoading, error } = useReports({
@@ -35,12 +73,12 @@ export function ReportsPage() {
     page,
     pageSize: DEFAULT_PAGE_SIZE,
   });
+  const counts = useReportStatusCounts({ ...filters, search: debouncedSearch });
 
-  // "YYYY-MM-DD" strings compare correctly as strings, so no Date object is needed — and
-  // none is wanted, since `new Date("2026-09-01")` is UTC midnight and can move a day.
+  // Compared as strings: both are "YYYY-MM-DD", so string order is date order.
   const dateRangeError =
     filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo
-      ? '"From" is after "To", so no report can match. Both ends are inclusive.'
+      ? '“From” is after “To”, so no report can match. Both ends are inclusive.'
       : null;
 
   function handleFilterChange(name, value) {
@@ -60,61 +98,100 @@ export function ReportsPage() {
   }
 
   const hasFilters = Object.values(filters).some(Boolean);
+  const hasNarrowing = Boolean(filters.search || filters.dateFrom || filters.dateTo);
 
   return (
-    <section className="page">
-      <header className="page-header">
-        <div>
-          <p className="page-header__eyebrow">Intake queue</p>
-          <h1>Reports</h1>
-          <p className="page__lead">
-            Faults reported on the estate, and where each one has got to. Open a report to see
-            what the agents did with it.
-          </p>
-        </div>
-      </header>
-
-      <ReportFilters
-        values={filters}
-        onChange={handleFilterChange}
-        onClear={handleClear}
-        dateRangeError={dateRangeError}
+    <section className={styles.page}>
+      <PageHeader
+        crumbs={[{ label: 'Estate' }, { label: 'Reports' }]}
+        title="Reports"
+        lead="Faults reported from the phone, and where each one has got to. Open one to see what the agents did with it."
+        actions={
+          counts[''] !== null ? (
+            <span className={styles.headerCount}>
+              <strong>{counts['']}</strong> {counts[''] === 1 ? 'report' : 'reports'}
+              {hasNarrowing ? ' match' : ' on the estate'}
+            </span>
+          ) : null
+        }
       />
 
-      {/* All three request states are rendered explicitly. A blank screen is a bug. */}
-      {isLoading ? <Spinner label="Loading reports…" /> : null}
+      <div className={styles.controls}>
+        <Segmented
+          label="Filter by status"
+          value={filters.status}
+          onChange={(value) => handleFilterChange('status', value)}
+          options={STATUS_TABS.map((tab) => ({ ...tab, count: counts[tab.value] }))}
+        />
+
+        <div className={styles.toolbar}>
+          <label className={styles.search}>
+            <span className="mx-visually-hidden">Search reports</span>
+            <Search aria-hidden="true" />
+            <input
+              type="search"
+              placeholder="Search the fault description"
+              value={filters.search}
+              onChange={(event) => handleFilterChange('search', event.target.value)}
+              autoComplete="off"
+            />
+          </label>
+          <DateRange
+            label="Reported"
+            from={filters.dateFrom}
+            to={filters.dateTo}
+            onFromChange={(value) => handleFilterChange('dateFrom', value)}
+            onToChange={(value) => handleFilterChange('dateTo', value)}
+            invalid={Boolean(dateRangeError)}
+          />
+          <SelectMenu ariaLabel="Sort reports" inlineLabel="Sort" value={sort} onChange={handleSortChange} options={SORT_OPTIONS} />
+          {hasFilters ? (
+            <MxButton variant="ghost" icon={X} onClick={handleClear}>
+              Clear
+            </MxButton>
+          ) : null}
+        </div>
+
+        <p className={dateRangeError ? styles.hintError : styles.hint} role={dateRangeError ? 'alert' : undefined}>
+          {dateRangeError ?? 'Dates are UTC days, and both ends are inclusive.'}
+        </p>
+      </div>
+
+      {isLoading ? <RowsSkeleton /> : null}
 
       {!isLoading && error ? (
-        <ErrorMessage title="Could not load reports" message={error.message} />
+        <Panel>
+          <ErrorState title="Could not load reports" message={error.message} />
+        </Panel>
       ) : null}
 
       {!isLoading && !error && data ? (
-        <>
-          {/* An empty list is not a failure and must not look like one. */}
-          {data.items.length === 0 ? (
-            <div className="empty-state">
-              <p className="empty-state__title">
-                {hasFilters ? 'No reports match these filters' : 'No reports yet'}
-              </p>
-              <p className="empty-state__body">
-                {hasFilters
+        data.items.length === 0 ? (
+          <Panel>
+            <EmptyState
+              icon={hasFilters ? SearchX : MessageSquareWarning}
+              title={hasFilters ? 'No reports match these filters' : 'No reports yet'}
+              body={
+                hasFilters
                   ? 'Try a different search or date range, or clear the filters to see the whole queue.'
-                  : 'Reports appear here as soon as someone files one from the mobile app.'}
-              </p>
-            </div>
-          ) : (
-            <ReportTable reports={data.items} sort={sort} onSortChange={handleSortChange} />
-          )}
-
-          {data.totalCount > 0 ? (
-            <Pagination
+                  : 'Reports appear here as soon as someone files one from the phone app.'
+              }
+              action={hasFilters ? <MxButton onClick={handleClear}>Clear filters</MxButton> : null}
+            />
+          </Panel>
+        ) : (
+          <>
+            <ReportRows reports={data.items} />
+            <Pager
               page={data.page}
+              pageSize={data.pageSize}
               totalPages={data.totalPages}
               totalCount={data.totalCount}
               onPageChange={setPage}
+              noun={data.totalCount === 1 ? 'report' : 'reports'}
             />
-          ) : null}
-        </>
+          </>
+        )
       ) : null}
     </section>
   );

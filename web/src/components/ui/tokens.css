@@ -1,0 +1,135 @@
+/* MaintenX design tokens — the redesigned shell, dashboard and asset screens.
+   Namespaced --mx-* so the older screens, which still read the tokens in index.css, are not
+   restyled by accident. */
+
+:root {
+  /* Palette */
+  --mx-canvas: #eef0f3;
+  --mx-surface: #ffffff;
+  --mx-well: #f6f7f9;
+  --mx-ink: #15171c;
+  --mx-ink-2: #2b2e36;
+  --mx-graphite: #6a707c;
+  --mx-mute: #9aa0aa;
+  --mx-hairline: #e3e6eb;
+  --mx-hairline-soft: #eceef2;
+  --mx-iris: #5b50e8;
+  --mx-iris-soft: #efeefd;
+
+  /* Tones for pills and markers */
+  --mx-green: #0e8a4f;
+  --mx-green-bg: #eaf7f0;
+  --mx-green-line: #cdebd9;
+  --mx-amber: #b25e09;
+  --mx-amber-bg: #fdf4e6;
+  --mx-amber-line: #f4dcb4;
+  --mx-slate: #5c6370;
+  --mx-slate-bg: #f1f2f4;
+  --mx-slate-line: #e1e3e7;
+  --mx-violet: #6b4fd8;
+  --mx-violet-bg: #f2effd;
+  --mx-violet-line: #ddd6fa;
+  --mx-red: #c2341d;
+  --mx-red-bg: #fdeeeb;
+  --mx-red-line: #f6d0c9;
+  --mx-blue: #2563c9;
+  --mx-blue-bg: #ebf2fd;
+  --mx-blue-line: #cddcf7;
+
+  /* Shape and depth */
+  --mx-r-xs: 6px;
+  --mx-r-sm: 10px;
+  --mx-r: 14px;
+  --mx-r-lg: 20px;
+  --mx-r-xl: 26px;
+  --mx-shadow-card: 0 1px 2px rgba(21, 23, 28, 0.04), 0 0 0 1px rgba(21, 23, 28, 0.045);
+  --mx-shadow-lift: 0 6px 18px -8px rgba(21, 23, 28, 0.16), 0 0 0 1px rgba(21, 23, 28, 0.06);
+  --mx-shadow-float: 0 24px 60px -20px rgba(21, 23, 28, 0.28), 0 2px 8px rgba(21, 23, 28, 0.06);
+  --mx-focus: 0 0 0 3px rgba(91, 80, 232, 0.28);
+
+  /* Type */
+  --mx-sans: 'Hanken Grotesk Variable', 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mx-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --mx-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mx-app {
+  font-family: var(--mx-sans);
+  font-feature-settings: 'ss01', 'cv11';
+  color: var(--mx-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Form controls do not inherit a font by default. */
+.mx-app button,
+.mx-app input,
+.mx-app select,
+.mx-app textarea {
+  font-family: inherit;
+}
+
+.mx-mono {
+  font-family: var(--mx-mono);
+  font-feature-settings: 'zero';
+}
+
+.mx-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@keyframes mx-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes mx-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mx-app *,
+  .mx-app *::before,
+  .mx-app *::after,
+  [data-mx-portal] *,
+  [data-mx-portal] *::before,
+  [data-mx-portal] *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* Printing an asset label prints the label card and nothing else. */
+@media print {
+  body.mx-printing-label * {
+    visibility: hidden !important;
+  }
+  body.mx-printing-label .mx-print-target,
+  body.mx-printing-label .mx-print-target * {
+    visibility: visible !important;
+  }
+  body.mx-printing-label .mx-print-target {
+    position: fixed !important;
+    top: 12mm;
+    left: 12mm;
+    box-shadow: none !important;
+  }
+}

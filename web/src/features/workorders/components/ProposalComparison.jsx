@@ -1,77 +1,75 @@
+import clsx from 'clsx';
 import { Link } from 'react-router-dom';
 
-import { adviceLabel, formatDateTime, formatMoney } from '../services/workOrdersApi';
-import StrategyBadge from './StrategyBadge';
+import { formatInstant } from '../../../components/ui/format';
+import { Panel } from '../../../components/ui/Panel';
+import { Pill } from '../../../components/ui/Pill';
+import { adviceLabel, formatMoney } from '../services/workOrdersApi';
+import styles from '../workorders.module.css';
+import StrategyPill from './StrategyPill';
+
+const URGENCY_TONES = { high: 'red', medium: 'amber', low: 'slate' };
 
 /**
- * What the strategist PROPOSED beside the work order AS RAISED. They are not the same thing:
- * the agent proposes, a manager raises the order, and the manager may plan or cost it
- * differently. Putting them side by side lets the reader see that without being told.
- *
- * A row where the two differ is marked "differs". That marker decides nothing — it points a
- * reader at a difference, and the order is what is being approved either way.
+ * What the strategist PROPOSED beside the work order AS RAISED. The agent proposes, a manager
+ * raises the order, and the manager may plan or cost it differently; side by side, the reader
+ * sees that without being told. A row where the two differ is marked — the mark decides
+ * nothing, and the order is what is being approved either way.
  */
 export function ProposalComparison({ proposal, order, reportId }) {
-  return (
-    <section className="approval-panel" aria-label="The agent's proposal">
-      <header className="approval-panel__head">
-        <h3>Proposal</h3>
-        <span className="approval-panel__source">ResolutionStrategist · advice</span>
-      </header>
+  const ok = readable(proposal);
 
+  return (
+    <Panel eyebrow="Proposal" actions={<span className={styles.source}>Strategist · advice</span>}>
       <ProposalState proposal={proposal} reportId={reportId} />
 
-      <table className="proposal-table">
-        <thead>
-          <tr>
-            <th scope="col">
-              <span className="visually-hidden">Field</span>
-            </th>
-            <th scope="col">Agent proposed</th>
-            <th scope="col">Order as raised</th>
-          </tr>
-        </thead>
-        <tbody>
-          <Row
-            label="Strategy"
-            proposed={readable(proposal) ? <StrategyBadge strategy={proposal.strategy} /> : '—'}
-            raised={<StrategyBadge strategy={order.strategy} />}
-            differs={readable(proposal) && proposal.strategy !== order.strategy}
-          />
-          <Row
-            label="Estimated cost"
-            proposed={readable(proposal) ? formatMoney(proposal.estimatedCost) : '—'}
-            raised={formatMoney(order.estimatedCost)}
-            // Equality of two figures the API sent, to mark a row — never a threshold check.
-            differs={readable(proposal) && Number(proposal.estimatedCost) !== Number(order.estimatedCost)}
-          />
-          <Row
-            label="Urgency"
-            proposed={
-              readable(proposal) ? (
-                <span className={`urgency urgency--${proposal.urgency}`}>{adviceLabel(proposal.urgency)}</span>
-              ) : (
-                '—'
-              )
-            }
-            raised={<span className="proposal-table__none">Not recorded on an order</span>}
-          />
-          <Row
-            label="Parts"
-            proposed={<span className="proposal-table__none">Not part of a proposal</span>}
-            raised={order.partsRequired ?? <span className="proposal-table__none">None listed</span>}
-          />
-        </tbody>
-      </table>
+      <div className={styles.compare} role="table" aria-label="Agent proposal compared with the order as raised">
+        <div className={clsx(styles.compareRow, styles.compareHead)} role="row">
+          <span role="columnheader">
+            <span className="mx-visually-hidden">Field</span>
+          </span>
+          <span role="columnheader">Agent proposed</span>
+          <span role="columnheader">Order as raised</span>
+        </div>
+        <Row
+          label="Strategy"
+          proposed={ok ? <StrategyPill strategy={proposal.strategy} /> : '—'}
+          raised={<StrategyPill strategy={order.strategy} />}
+          differs={ok && proposal.strategy !== order.strategy}
+        />
+        <Row
+          label="Estimate"
+          proposed={ok ? <span className={styles.money}>{formatMoney(proposal.estimatedCost)}</span> : '—'}
+          raised={<span className={styles.money}>{formatMoney(order.estimatedCost)}</span>}
+          // Equality of two figures the API sent, to mark a row — never a threshold check.
+          differs={ok && Number(proposal.estimatedCost) !== Number(order.estimatedCost)}
+        />
+        <Row
+          label="Urgency"
+          proposed={
+            ok ? (
+              <Pill tone={URGENCY_TONES[proposal.urgency] ?? 'slate'}>{adviceLabel(proposal.urgency)}</Pill>
+            ) : (
+              '—'
+            )
+          }
+          raised={<span className={styles.none}>Not recorded on an order</span>}
+        />
+        <Row
+          label="Parts"
+          proposed={<span className={styles.none}>Not part of a proposal</span>}
+          raised={order.partsRequired ?? <span className={styles.none}>None listed</span>}
+        />
+      </div>
 
-      {readable(proposal) ? (
+      {ok ? (
         <>
-          <p className="approval-panel__label">Justification</p>
+          <p className={styles.miniLabel}>Justification</p>
           {/* Verbatim: the agent's account of why, for the person deciding. */}
-          <blockquote className="approval-panel__quote">{proposal.justification}</blockquote>
+          <blockquote className={styles.quote}>{proposal.justification}</blockquote>
 
           {proposal.consolidateWithWorkOrderIds.length > 0 ? (
-            <p className="approval-panel__note">
+            <p className={styles.note}>
               Proposes combining with{' '}
               {proposal.consolidateWithWorkOrderIds.map((id, index) => (
                 <span key={id}>
@@ -83,12 +81,12 @@ export function ProposalComparison({ proposal, order, reportId }) {
             </p>
           ) : null}
 
-          <p className="approval-panel__footnote">
-            From workflow #{proposal.workflowId}, recorded {formatDateTime(proposal.recordedAt)}.
+          <p className={styles.footnote}>
+            From workflow #{proposal.workflowId}, recorded {formatInstant(proposal.recordedAt)}.
           </p>
         </>
       ) : null}
-    </section>
+    </Panel>
   );
 }
 
@@ -98,14 +96,14 @@ function readable(proposal) {
 
 function Row({ label, proposed, raised, differs = false }) {
   return (
-    <tr className={differs ? 'proposal-table__row--differs' : undefined}>
-      <th scope="row">
+    <div className={clsx(styles.compareRow, differs && styles.compareDiffers)} role="row">
+      <span role="rowheader" className={styles.compareLabel}>
         {label}
-        {differs ? <span className="proposal-table__differs">differs</span> : null}
-      </th>
-      <td>{proposed}</td>
-      <td>{raised}</td>
-    </tr>
+        {differs ? <span className={styles.differs}>differs</span> : null}
+      </span>
+      <span role="cell">{proposed}</span>
+      <span role="cell">{raised}</span>
+    </div>
   );
 }
 
@@ -116,25 +114,24 @@ function Row({ label, proposed, raised, differs = false }) {
 function ProposalState({ proposal, reportId }) {
   if (!proposal) {
     return (
-      <p className="approval-panel__empty">
-        No proposal recorded — the strategist has not run on this report. Decide from the order
-        and the history below.
+      <p className={styles.empty}>
+        No proposal recorded — the strategist has not run on this report. Decide from the order and the history.
       </p>
     );
   }
 
   if (proposal.validationResult !== 'Ok') {
     return (
-      <p className="approval-panel__empty approval-panel__empty--failed">
-        The strategist ran ({formatDateTime(proposal.recordedAt)}) but could not produce a
-        proposal{proposal.errorMessage ? `: ${proposal.errorMessage}` : '.'}
+      <p className={clsx(styles.empty, styles.emptyFailed)}>
+        The strategist ran ({formatInstant(proposal.recordedAt)}) but could not produce a proposal
+        {proposal.errorMessage ? `: ${proposal.errorMessage}` : '.'}
       </p>
     );
   }
 
   if (!proposal.outputReadable) {
     return (
-      <p className="approval-panel__empty approval-panel__empty--failed">
+      <p className={clsx(styles.empty, styles.emptyFailed)}>
         A proposal was recorded but could not be read. The raw output is in the{' '}
         <Link to={`/reports/${reportId}`}>report&apos;s agent reasoning</Link>.
       </p>

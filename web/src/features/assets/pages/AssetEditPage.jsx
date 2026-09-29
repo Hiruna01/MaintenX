@@ -1,11 +1,15 @@
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useMemo } from 'react';
+import { useParams } from 'react-router-dom';
 
-import ErrorMessage from '../../../components/ErrorMessage';
-import Spinner from '../../../components/Spinner';
+import { StatusPill } from '../../../components/ui/Pill';
+import useRoutePanel from '../../../components/ui/useRoutePanel';
 import AssetForm from '../components/AssetForm';
+import AssetFormSheet from '../components/AssetFormSheet';
+import TagChip from '../components/TagChip';
 import useAsset from '../hooks/useAsset';
 import useAssetLookups from '../hooks/useAssetLookups';
 import { updateAsset } from '../services/assetsApi';
+import styles from '../assets.module.css';
 
 /** The API's AssetDetailDto, as the form's string-valued fields. */
 function toFormValues(asset) {
@@ -22,55 +26,54 @@ function toFormValues(asset) {
   };
 }
 
-/** Edit an asset. Admin only — the route guard refuses every other role. */
+/**
+ * Edit an asset — a slide-over on top of its detail page. Admin only; the route guard
+ * refuses every other role. Saving slides the panel away and tells the detail page to
+ * reload, so the change shows at once.
+ */
 export function AssetEditPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
+  const panel = useRoutePanel(`/assets/${id}`);
   const asset = useAsset(id);
   const lookups = useAssetLookups();
 
+  const initialValues = useMemo(() => (asset.data ? toFormValues(asset.data) : null), [asset.data]);
+
   async function handleSubmit(values) {
     await updateAsset(id, values);
-    navigate(`/assets/${id}`);
+    panel.closeThen(`/assets/${id}`, { state: { refresh: Date.now() } });
   }
 
-  const isLoading = asset.isLoading || lookups.isLoading;
   const error = asset.error ?? lookups.error;
 
   return (
-    <section className="page page--form">
-      <p className="page__back">
-        <Link to={`/assets/${id}`}>← Back to the asset</Link>
-      </p>
-
-      <header className="page-header page-header--stacked">
-        <p className="page-header__eyebrow">Asset registry</p>
-        <h1>{asset.data ? `Edit ${asset.data.name}` : 'Edit asset'}</h1>
-      </header>
-
-      {/* All three request states are rendered explicitly. A blank screen is a bug. */}
-      {isLoading ? <Spinner label="Loading asset…" /> : null}
-
-      {!isLoading && error ? (
-        <ErrorMessage
-          title={error.status === 404 ? 'Asset not found' : 'Could not load this asset'}
-          message={
-            error.status === 404 ? `There is no asset with id ${id} in the registry.` : error.message
-          }
-        />
-      ) : null}
-
-      {!isLoading && !error && asset.data ? (
+    <AssetFormSheet
+      panel={panel}
+      title={asset.data ? asset.data.name : 'Edit asset'}
+      description={asset.data ? 'Edit the record. The tag stays as printed.' : undefined}
+      meta={
+        asset.data ? (
+          <div className={styles.sheetMeta}>
+            <TagChip tag={asset.data.assetTag} />
+            <StatusPill status={asset.data.status} />
+          </div>
+        ) : null
+      }
+      isLoading={asset.isLoading || lookups.isLoading}
+      error={error}
+      errorTitle={error?.status === 404 ? 'Asset not found' : 'Could not load this asset'}
+      renderForm={({ onDirtyChange, onCancel }) => (
         <AssetForm
           mode="edit"
-          initialValues={toFormValues(asset.data)}
+          initialValues={initialValues}
           categories={lookups.categories}
           rooms={lookups.rooms}
           onSubmit={handleSubmit}
-          onCancel={() => navigate(`/assets/${id}`)}
+          onCancel={onCancel}
+          onDirtyChange={onDirtyChange}
         />
-      ) : null}
-    </section>
+      )}
+    />
   );
 }
 

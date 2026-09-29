@@ -380,6 +380,85 @@ public class ApprovalQueueTests : IClassFixture<ApiFactory>
          "reasoning_summary":"Cleaning is not holding."}
         """;
 
+    // ---------------------------------------------------------------------------------
+    // The report detail: where a manager raises the order from
+    // ---------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ReportDetail_CarriesTheLatestProposal_AndOffersRaisingTheOrder()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        var workflowId = await WorkflowIdAsync(fault.ReportId);
+
+        await AddStepAsync(workflowId, AgentRunResponse.StrategistAgentName, "[]", ProposalJson, "Ok");
+        // A strategist TOOL CALL after its answer is not its answer.
+        await AddStepAsync(workflowId, AgentRunResponse.StrategistAgentName,
+            """[{"tool":"get_open_work_orders"}]""", """{"Tool":"get_open_work_orders"}""", "Ok");
+
+        var detail = await DetailAsync(manager, fault.ReportId);
+
+        Assert.Equal(workflowId, detail.LatestWorkflow!.Id);
+        Assert.Equal(WorkflowState.Strategizing, detail.LatestWorkflow.State);
+        Assert.True(detail.LatestWorkflow.CanRaiseWorkOrder);
+        Assert.True(detail.Proposal!.OutputReadable);
+        Assert.Equal(WorkOrderStrategy.EscalateReplacement, detail.Proposal.Strategy);
+        Assert.Equal(45000.50m, detail.Proposal.EstimatedCost);
+
+        // Once it is raised, it is not offered again.
+        await RaiseAsync(manager, fault, 45_000m, WorkOrderStrategy.EscalateReplacement);
+        detail = await DetailAsync(manager, fault.ReportId);
+
+        Assert.Equal(WorkflowState.AwaitingManagerApproval, detail.LatestWorkflow!.State);
+        Assert.False(detail.LatestWorkflow.CanRaiseWorkOrder);
+    }
+
+    [Fact]
+    public async Task ReportDetail_WithNoStrategistRun_HasNoProposal()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+
+        Assert.Null((await DetailAsync(manager, fault.ReportId)).Proposal);
+    }
+
+    /// <summary>
+    /// THE OFFER AND THE GATE AGREE in every state: the detail says an order can be raised
+    /// exactly when POST /api/workorders then accepts one.
+    /// </summary>
+    [Theory]
+    [InlineData(WorkflowState.Submitted)]
+    [InlineData(WorkflowState.AwaitingClarification)]
+    [InlineData(WorkflowState.Diagnosing)]
+    [InlineData(WorkflowState.Strategizing)]
+    [InlineData(WorkflowState.Failed)]
+    [InlineData(WorkflowState.AwaitingManagerApproval)]
+    [InlineData(WorkflowState.WorkOrderRaised)]
+    [InlineData(WorkflowState.Closed)]
+    public async Task ReportDetail_OffersRaisingAnOrder_ExactlyWhenTheApiWouldAcceptOne(WorkflowState state)
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        await WorkflowTestData.PutInStateAsync(_factory.Services, fault.ReportId, state);
+
+        var offered = (await DetailAsync(manager, fault.ReportId)).LatestWorkflow!.CanRaiseWorkOrder;
+
+        var response = await manager.PostAsJsonAsync(
+            "/api/workorders",
+            new CreateWorkOrderDto(fault.ReportId, fault.AssetId, WorkOrderStrategy.SingleJob, 900m, null),
+            JsonOptions);
+
+        Assert.Equal(offered ? HttpStatusCode.Created : HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(state is WorkflowState.Strategizing or WorkflowState.Failed, offered);
+    }
+
+    private static async Task<ReportDetailDto> DetailAsync(HttpClient client, int reportId)
+    {
+        var response = await client.GetAsync($"/api/reports/{reportId}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return (await response.Content.ReadFromJsonAsync<ReportDetailDto>(JsonOptions))!;
+    }
+
     private const string ProposalJson = """
         {"strategy":"escalate_replacement","estimated_cost":45000.50,"urgency":"high",
          "justification":"Fourth failure of the same thermal fault.",

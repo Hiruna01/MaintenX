@@ -120,4 +120,13 @@ public static class WorkflowTransitions
     /// </summary>
     public static WorkflowTrigger ForRaisedWorkOrder(bool requiresApproval) =>
         requiresApproval ? WorkflowTrigger.WorkOrderNeedsApproval : WorkflowTrigger.WorkOrderAutoApproved;
+
+    /// <summary>
+    /// Whether a work order may be raised against a workflow in <paramref name="state"/>,
+    /// whichever side of the approval gate it lands on — read off the table, so a client
+    /// offering the control and CreateAsync accepting it cannot disagree.
+    /// </summary>
+    public static bool CanRaiseWorkOrder(WorkflowState state) =>
+        Next(state, WorkflowTrigger.WorkOrderAutoApproved) is not null
+        && Next(state, WorkflowTrigger.WorkOrderNeedsApproval) is not null;
 }

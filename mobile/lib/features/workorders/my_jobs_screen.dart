@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../core/api_client.dart';
+import '../../core/app_theme.dart';
 import '../../core/paged_result.dart';
 import '../../widgets/empty_view.dart';
 import '../../widgets/error_view.dart';
-import '../../widgets/loading_view.dart';
+import '../../widgets/surfaces.dart';
 import '../reports/report.dart' show formatTimestamp;
 import 'job_detail_screen.dart';
 import 'work_order.dart';
@@ -48,13 +50,38 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      appBar: AppBar(title: const Text('My jobs')),
+      appBar: AppBar(
+        leading: Navigator.canPop(context)
+            ? IconButton(
+                tooltip: 'Back',
+                icon: const Icon(LucideIcons.arrowLeft),
+                onPressed: () => Navigator.maybePop(context),
+              )
+            : null,
+      ),
       body: SafeArea(
+        top: false,
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('My jobs', style: theme.textTheme.headlineMedium),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Work orders assigned to you, newest first.',
+                    style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
+                  ),
+                ],
+              ),
+            ),
             _StatusFilter(selected: _status, onSelected: _setStatus),
-            const Divider(height: 1),
             // Only the list switches state; the filter stays put, so a failed or empty
             // result can be filtered out of.
             Expanded(child: _results()),
@@ -68,7 +95,7 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
     final page = ref.watch(jobsPageProvider(_query));
 
     return page.when(
-      loading: () => const LoadingView(message: 'Loading your jobs…'),
+      loading: () => const _JobListSkeleton(),
       error: (error, _) => ErrorView(
         title: 'Could not load your jobs',
         message: error is ApiException ? error.message : 'Could not reach the API.',
@@ -79,21 +106,23 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
           // Two different empties, neither of them a failure.
           return _status == null
               ? const EmptyView(
-                  icon: Icons.assignment_turned_in_outlined,
+                  icon: LucideIcons.clipboardList,
                   message: 'No jobs are assigned to you right now.\n'
                       'New work appears here once a facilities manager assigns it.',
                 )
               : EmptyView(
-                  icon: Icons.filter_alt_off_outlined,
+                  icon: LucideIcons.listFilter,
                   message: 'None of your jobs are '
                       '${WorkOrderStatuses.label(_status!).toLowerCase()}.',
-                  action: TextButton(
+                  action: OutlinedButton(
                     onPressed: () => _setStatus(null),
                     child: const Text('Show all jobs'),
                   ),
                 );
         }
         return RefreshIndicator(
+          color: MxColors.ink,
+          backgroundColor: MxColors.surface,
           onRefresh: () => ref.refresh(jobsPageProvider(_query).future),
           child: _list(result),
         );
@@ -105,31 +134,21 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
     return ListView(
       // Always scrollable, so pull-to-refresh works on a short list.
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
       children: [
-        for (final job in result.items) _JobCard(job: job),
+        for (final job in result.items) ...[
+          _JobCard(job: job),
+          const SizedBox(height: 12),
+        ],
         if (result.totalPages > 1)
           Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: Row(
-              children: [
-                IconButton(
-                  tooltip: 'Previous page',
-                  icon: const Icon(Icons.chevron_left),
-                  onPressed: result.hasPrevious ? () => setState(() => _page--) : null,
-                ),
-                Expanded(
-                  child: Text(
-                    'Page ${result.page} of ${result.totalPages} · ${result.totalCount} jobs',
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Next page',
-                  icon: const Icon(Icons.chevron_right),
-                  onPressed: result.hasNext ? () => setState(() => _page++) : null,
-                ),
-              ],
+            child: MxPager(
+              page: result.page,
+              totalPages: result.totalPages,
+              caption: '${result.totalCount} jobs',
+              onPrevious: result.hasPrevious ? () => setState(() => _page--) : null,
+              onNext: result.hasNext ? () => setState(() => _page++) : null,
             ),
           ),
       ],
@@ -147,10 +166,10 @@ class _StatusFilter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 52,
+      height: 64,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
         children: [
           ChoiceChip(
             label: const Text('All'),
@@ -172,6 +191,7 @@ class _StatusFilter extends StatelessWidget {
   }
 }
 
+/// One job: the machine it is for, leading, because that is what a technician walks up to.
 class _JobCard extends StatelessWidget {
   const _JobCard({required this.job});
 
@@ -180,46 +200,116 @@ class _JobCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    final meta = theme.textTheme.bodySmall?.copyWith(fontFeatures: MxType.tabular);
+    final done = job.completedAt != null;
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () => context.go(JobDetailScreen.location(job.id)),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return MxCard(
+      onTap: () => context.go(JobDetailScreen.location(job.id)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  WorkOrderStatusChip(status: job.status),
-                  const Spacer(),
-                  Text('#${job.id}', style: muted),
-                ],
+              WorkOrderStatusChip(status: job.status),
+              const Spacer(),
+              Text('#${job.id}', style: meta?.copyWith(color: MxColors.mute)),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              const MxIconTile(icon: LucideIcons.qrCode, size: 44),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      job.assetTag,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontSize: 17,
+                        fontFeatures: MxType.tabular,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      WorkOrderStrategies.label(job.strategy),
+                      style: theme.textTheme.bodyMedium?.copyWith(color: MxColors.graphite),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Icon(Icons.qr_code_2, size: 18, color: theme.colorScheme.outline),
-                  const SizedBox(width: 6),
-                  Expanded(child: Text(job.assetTag, style: theme.textTheme.titleMedium)),
-                  const Icon(Icons.chevron_right),
-                ],
+              const Icon(LucideIcons.chevronRight, size: 18, color: MxColors.mute),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Icon(
+                done ? LucideIcons.circleCheck : LucideIcons.clock,
+                size: 14,
+                color: MxColors.graphite,
               ),
-              const SizedBox(height: 4),
-              Text(WorkOrderStrategies.label(job.strategy), style: theme.textTheme.bodyMedium),
-              const SizedBox(height: 4),
+              const SizedBox(width: 6),
               Text(
-                job.completedAt != null
+                done
                     ? 'Completed ${formatTimestamp(job.completedAt)}'
                     : 'Raised ${formatTimestamp(job.createdAt)}',
-                style: muted,
+                style: meta,
               ),
             ],
           ),
-        ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Loading, shaped like the cards it stands in for.
+class _JobListSkeleton extends StatelessWidget {
+  const _JobListSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Loading your jobs…',
+      child: ListView(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+        children: [
+          for (var i = 0; i < 3; i++) ...[
+            const MxCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Skeleton(width: 90, height: 22, radius: 99),
+                  SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Skeleton(width: 44, height: 44, radius: 14),
+                      SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Skeleton(width: 140, height: 16),
+                            SizedBox(height: 8),
+                            Skeleton(width: 90, height: 12),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 18),
+                  Skeleton(width: 160, height: 12),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ],
       ),
     );
   }

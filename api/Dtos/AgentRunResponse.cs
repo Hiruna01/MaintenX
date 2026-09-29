@@ -30,7 +30,19 @@ public record AgentRunResponse(
     // Output; absent (Undefined) or null when the graph did not run that agent. Read only
     // through DownstreamResults().
     [property: JsonPropertyName("diagnosis")] JsonElement Diagnosis = default,
-    [property: JsonPropertyName("strategy")] JsonElement Strategy = default)
+    [property: JsonPropertyName("strategy")] JsonElement Strategy = default,
+
+    // The planner's envelope — the structured plan the rest of the run was delegated from.
+    // Absent on a resumed run, which starts at the diagnostic under the plan already stored,
+    // and on a reply from an agent service that predates the planner. Read only through
+    // PlannerResult().
+    [property: JsonPropertyName("plan")] JsonElement Plan = default,
+
+    // What the agent in the TOP-LEVEL fields reports about itself: how many LLM attempts it
+    // took (1, or 2 with the one retry) and how long it ran. Null when it did not say — an
+    // older agent service — in which case the runner falls back to the whole call's time.
+    [property: JsonPropertyName("attempts")] int? Attempts = null,
+    [property: JsonPropertyName("duration_ms")] int? DurationMs = null)
 {
     /// <summary>The status string the agent sends when it could not produce real output.</summary>
     public const string SafeFailureStatus = "safe_failure";
@@ -51,6 +63,13 @@ public record AgentRunResponse(
 
     /// <summary>The AgentStep.AgentName the strategist's proposal is recorded under.</summary>
     public const string StrategistAgentName = "strategist";
+
+    /// <summary>
+    /// True when the clarifier ran in this call — its fields are the top-level ones. False
+    /// when the planner sent the run straight to the diagnostic, or on a resumed run: the
+    /// agent service then puts the diagnostic's name at the top level instead.
+    /// </summary>
+    public bool ClarifierRan => string.Equals(Agent, ClarifierAgentName, StringComparison.Ordinal);
 
     public bool IsSafeFailure => string.Equals(Status, SafeFailureStatus, StringComparison.Ordinal);
 
@@ -186,8 +205,41 @@ public record AgentRunResponse(
         var succeeded = outputJson is not null
                         && !string.Equals(status, SafeFailureStatus, StringComparison.Ordinal);
 
-        results.Add(new DownstreamAgentResult(agentName, succeeded, outputJson, error));
+        results.Add(new DownstreamAgentResult(
+            agentName, succeeded, outputJson, error, IntProperty(envelope, "attempts"), IntProperty(envelope, "duration_ms")));
     }
+
+    /// <summary>
+    /// The planner's result, or null when the reply carries none. Read like the downstream
+    /// envelopes — defensively, and verbatim: whether the plan is USABLE is PlanRules'
+    /// decision, not this parse's, so an output that is present is handed over whatever it
+    /// contains.
+    /// </summary>
+    public PlannerAgentResult? PlannerResult()
+    {
+        if (Plan.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var status = StringProperty(Plan, "status");
+        var hasOutput = Plan.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Object;
+
+        return new PlannerAgentResult(
+            Succeeded: hasOutput && !string.Equals(status, SafeFailureStatus, StringComparison.Ordinal),
+            Output: hasOutput ? output.Clone() : default,
+            OutputJson: hasOutput ? output.GetRawText() : null,
+            Error: StringProperty(Plan, "error"),
+            Attempts: IntProperty(Plan, "attempts"),
+            DurationMs: IntProperty(Plan, "duration_ms"));
+    }
+
+    private static int? IntProperty(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt32(out var number)
+            ? number
+            : null;
 
     private static string? StringProperty(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -228,4 +280,21 @@ public record DownstreamAgentResult(
     string AgentName,
     bool Succeeded,
     string? OutputJson,
-    string? Error);
+    string? Error,
+
+    // What the agent reported about itself; null when it did not say.
+    int? Attempts = null,
+    int? DurationMs = null);
+
+/// <summary>
+/// The planner's result out of a /run reply. <see cref="Output"/> is the plan as the agent
+/// sent it — PlanRules decides whether it is used — and <see cref="OutputJson"/> the same,
+/// verbatim, for its AgentStep.
+/// </summary>
+public record PlannerAgentResult(
+    bool Succeeded,
+    JsonElement Output,
+    string? OutputJson,
+    string? Error,
+    int? Attempts,
+    int? DurationMs);

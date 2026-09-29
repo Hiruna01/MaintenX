@@ -6,7 +6,8 @@ namespace CampusFacilities.Api.Services;
 /// THE WORKFLOW STATE MACHINE — every legal move, in one place (DEVELOPMENT_GUIDE.md §8).
 ///
 ///   Submitted ──┬─ clarifier asked ─────────► AwaitingClarification ── reporter answered ──┐
-///               └─ clarifier found nothing ──► Diagnosing ◄───────────────────────────────┘
+///               ├─ clarifier found nothing ──► Diagnosing ◄───────────────────────────────┘
+///               └─ planned without clarification ─► Diagnosing
 ///   Diagnosing ── diagnosed ──► Strategizing ──┬─ order auto-approved ──► WorkOrderRaised
 ///                                              └─ order needs approval ─► AwaitingManagerApproval
 ///   AwaitingManagerApproval ── approved ► WorkOrderRaised · rejected ► Closed · revision ► Strategizing
@@ -33,6 +34,8 @@ public static class WorkflowTransitions
             // decides the next state — see ForClarification.
             [(WorkflowState.Submitted, WorkflowTrigger.ClarifierAsked)] = WorkflowState.AwaitingClarification,
             [(WorkflowState.Submitted, WorkflowTrigger.ClarifierFoundNothing)] = WorkflowState.Diagnosing,
+            // The planner left the clarifier out of the plan: the report is clear enough.
+            [(WorkflowState.Submitted, WorkflowTrigger.PlannedWithoutClarification)] = WorkflowState.Diagnosing,
             [(WorkflowState.Submitted, WorkflowTrigger.AgentFailed)] = WorkflowState.Failed,
 
             // Human pause 1. Only the reporter's answers move it on.

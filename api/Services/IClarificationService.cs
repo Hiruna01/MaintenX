@@ -13,9 +13,12 @@ public interface IClarificationService
     /// are the working data the application reads, orders and answers. Both are written
     /// for every run that produces questions.
     ///
-    /// Returns the number of rows written. Zero when there was nothing to write, and zero
-    /// when the report or workflow does not exist — a background caller has no request to
-    /// surface a 404 on, so a missing parent is a logged no-op rather than an exception.
+    /// Returns the number of rows written. Zero when there was nothing to write, zero when
+    /// the report or workflow does not exist — a background caller has no request to surface
+    /// a 404 on, so a missing parent is a logged no-op rather than an exception — and zero
+    /// when the report's lifecycle does not allow a move back to AwaitingClarification
+    /// (ReportService.CanMove), because the rows and that move are written together or not
+    /// at all.
     /// </summary>
     Task<int> RecordQuestionsAsync(
         int reportId,

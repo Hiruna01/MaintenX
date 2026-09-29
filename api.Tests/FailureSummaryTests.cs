@@ -223,12 +223,9 @@ public class FailureSummaryTests : IClassFixture<FixedClockApiFactory>
     /// <summary>A fresh Admin, category, room and asset — every test gets its own history.</summary>
     private async Task<(HttpClient Admin, int AssetId)> CreateAssetAsync(DateOnly? warrantyExpiresOn = null)
     {
-        var admin = _factory.CreateClient();
+        var admin = await _factory.CreateAdminClientAsync();
 
-        var registered = await admin.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SummaryPass1", "Test Admin", Role.Admin),
-            JsonOptions);
+        var registered = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SummaryPass1", "Test Admin", Role.Admin));
         Assert.Equal(HttpStatusCode.Created, registered.StatusCode);
 
         var auth = await registered.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions);

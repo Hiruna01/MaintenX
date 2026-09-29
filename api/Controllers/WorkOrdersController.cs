@@ -378,7 +378,12 @@ public class WorkOrdersController : ControllerBase
         RequestRevisionDto dto,
         CancellationToken cancellationToken)
     {
-        var outcome = await _workOrderService.RequestRevisionAsync(id, dto.Note, cancellationToken);
+        if (!TryGetCaller(out var callerId, out _))
+        {
+            return Unauthorized();
+        }
+
+        var outcome = await _workOrderService.RequestRevisionAsync(id, callerId, dto.Note, cancellationToken);
 
         return ToActionResult(id, outcome, field: null, AwaitingApprovalOnly);
     }

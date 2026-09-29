@@ -59,6 +59,19 @@ public class ClarificationService : IClarificationService
             return 0;
         }
 
+        // The questions and the move to AwaitingClarification go together or not at all, and
+        // the move follows the same lifecycle map as a manager's PATCH. Without this check a
+        // later run could drag a Clarified — or a Closed — report back to AwaitingClarification,
+        // and Closed is terminal. Nothing is written; the runner fails the run with the reason.
+        if (!ReportService.CanMove(report.Status, ReportStatus.AwaitingClarification))
+        {
+            _logger.LogWarning(
+                "Cannot record clarification questions: report {ReportId} is {Status}, and the report "
+                + "lifecycle does not allow it back to AwaitingClarification.",
+                reportId, report.Status);
+            return 0;
+        }
+
         if (!await _db.AgentWorkflows.AnyAsync(w => w.Id == workflowId, cancellationToken))
         {
             _logger.LogWarning(

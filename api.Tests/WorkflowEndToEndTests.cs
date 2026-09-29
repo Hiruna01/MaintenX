@@ -115,10 +115,12 @@ public class WorkflowEndToEndTests : IDisposable
 
         // Three agent runs, one per agent — clarifier on the first call, diagnostic and
         // strategist on the resume — and no tool rows, because the scripted agent calls none.
+        // Then the approval gate's own step: under the threshold, so nobody had to decide.
         var steps = (await WorkflowAsync(scene, workflowId)).Steps;
-        Assert.Equal(3, steps.Count);
-        Assert.Equal(new[] { "clarifier", "diagnostic", "strategist" }, steps.Select(s => s.AgentName));
-        Assert.All(steps, s => Assert.Equal("[]", s.ToolCallsJson));
+        Assert.Equal(4, steps.Count);
+        Assert.Equal(new[] { "clarifier", "diagnostic", "strategist", "approval" }, steps.Select(s => s.AgentName));
+        Assert.All(steps.Take(3), s => Assert.Equal("[]", s.ToolCallsJson));
+        Assert.Equal("AutoApproved", steps[3].ValidationResult);
 
         Assert.Equal(WorkOrderStatus.Completed, await OrderStatusAsync(scene, orderId));
     }
@@ -180,12 +182,16 @@ public class WorkflowEndToEndTests : IDisposable
         await AssertStatesAsync(scene, reportId, ReportStatus.Submitted, workflowId, WorkflowState.Strategizing);
 
         // Five agent runs: the first call's three, then the re-diagnosis's two — appended, so
-        // both diagnoses are there to compare.
+        // both diagnoses are there to compare. Between them, the human pause: the gate
+        // routing the order to a manager, and the manager's approval.
         var detail = await WorkflowAsync(scene, workflowId);
-        Assert.Equal(5, detail.Steps.Count);
+        Assert.Equal(7, detail.Steps.Count);
         Assert.Equal(
-            new[] { "clarifier", "diagnostic", "strategist", "diagnostic", "strategist" },
+            new[] { "clarifier", "diagnostic", "strategist", "approval", "approval", "diagnostic", "strategist" },
             detail.Steps.Select(s => s.AgentName));
+        Assert.Equal(
+            new[] { "ApprovalRequired", "ManagerApproved" },
+            detail.Steps.Where(s => s.AgentName == "approval").Select(s => s.ValidationResult));
         Assert.Equal(
             new[] { "Loose HDMI connection", "Failing cooling fan" },
             detail.Diagnoses.Select(d => d.Hypotheses[d.PrimaryHypothesisIndex!.Value].Cause));
@@ -193,7 +199,7 @@ public class WorkflowEndToEndTests : IDisposable
         // The first repair's workflow is untouched by the second's reopen.
         var first = await WorkflowAsync(scene, firstWorkflowId);
         Assert.Equal(WorkflowState.Closed, first.CurrentState);
-        Assert.Equal(3, first.Steps.Count);
+        Assert.Equal(4, first.Steps.Count);
     }
 
     [Fact]

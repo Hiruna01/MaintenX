@@ -191,6 +191,21 @@ Map<String, dynamic> _clarifierRun({
       }),
     };
 
+/// The planner's agent-run step: its plan, delegating to [agents] in order.
+Map<String, dynamic> _plannerRun(List<String> agents, {String validationResult = 'Ok'}) => {
+      'id': 2,
+      'workflowId': 9,
+      'agentName': 'planner',
+      'toolCallsJson': '[]',
+      'validationResult': validationResult,
+      'payloadJson': jsonEncode({
+        'steps': [
+          for (final agent in agents) {'agent': agent, 'purpose': 'For this report.'},
+        ],
+        'rationale': 'Spy plan.',
+      }),
+    };
+
 void main() {
   group('ReportsApi', () {
     test('the list sends filters by NAME and leaves empty ones out', () async {
@@ -492,6 +507,31 @@ void main() {
     test("the clarifier's tool calls are not its answer", () {
       final toolCall = _clarifierRun(toolCallsJson: '[{"tool":"get_room"}]');
       expect(readClarifierProgress(_detail(steps: [toolCall])), ClarifierProgress.running);
+    });
+
+    test('a plan that leaves the clarifier out is nothing to ask — no clarifier step will come', () {
+      expect(
+        readClarifierProgress(_detail(steps: [_plannerRun(['diagnostic', 'strategist'])])),
+        ClarifierProgress.nothingToAsk,
+      );
+    });
+
+    test('a plan that includes the clarifier keeps the wait going until it has run', () {
+      expect(
+        readClarifierProgress(
+            _detail(steps: [_plannerRun(['clarifier', 'diagnostic', 'strategist'])])),
+        ClarifierProgress.running,
+      );
+    });
+
+    test('a planner that failed or was rejected means the default plan, so the wait goes on', () {
+      for (final result in ['SafeFailure', 'Rejected']) {
+        expect(
+          readClarifierProgress(
+              _detail(steps: [_plannerRun(['diagnostic', 'strategist'], validationResult: result)])),
+          ClarifierProgress.running,
+        );
+      }
     });
   });
 

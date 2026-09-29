@@ -321,7 +321,7 @@ public class AssetService : IAssetService
         return new AssetContextDto(ToDto(asset), asset.Category.Name, asset.Room.Name);
     }
 
-    public async Task<IReadOnlyList<ServiceRecordDto>?> GetRecentServiceHistoryAsync(
+    public async Task<IReadOnlyList<ToolServiceVisitDto>?> GetRecentServiceHistoryAsync(
         int assetId,
         CancellationToken cancellationToken = default)
     {
@@ -342,7 +342,8 @@ public class AssetService : IAssetService
             .OrderByDescending(s => s.ServicedOn)
             .ThenByDescending(s => s.Id)
             .Take(IAssetService.MaxToolHistoryRows)
-            .Select(s => ToDto(s))
+            .Select(s => new ToolServiceVisitDto(
+                s.Id, s.AssetId, s.ServicedOn, s.TechnicianNote, s.Outcome, s.WorkOrderId))
             .ToListAsync(cancellationToken);
     }
 

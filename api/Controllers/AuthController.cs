@@ -18,28 +18,45 @@ public class AuthController : ControllerBase
         _authService = authService;
     }
 
+    /// <summary>
+    /// Creates an account. Open to anonymous callers, but only for the Reporter role — that
+    /// is self-registration from the phone. Any other role needs an Admin's token: without
+    /// one the request is a 403, whatever role the body asks for. See AuthService.RegisterAsync.
+    ///
+    /// [AllowAnonymous] skips authorization, not authentication: a token that is sent is
+    /// still read, which is how an Admin's request is told apart from a stranger's.
+    /// </summary>
     [HttpPost("register")]
     [AllowAnonymous]
     [ProducesResponseType(typeof(AuthResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<AuthResponse>> Register(
         RegisterRequest request,
         CancellationToken cancellationToken)
     {
-        var response = await _authService.RegisterAsync(request, cancellationToken);
+        Role? callerRole = Enum.TryParse<Role>(User.FindFirst("role")?.Value, out var parsed) ? parsed : null;
 
-        if (response is null)
+        var result = await _authService.RegisterAsync(request, callerRole, cancellationToken);
+
+        return result.Outcome switch
         {
-            return Conflict(new ProblemDetails
+            RegisterOutcome.Registered => CreatedAtAction(nameof(Me), value: result.Response),
+            RegisterOutcome.EmailTaken => Conflict(new ProblemDetails
             {
                 Status = StatusCodes.Status409Conflict,
                 Title = "Email already registered.",
                 Detail = "An account with that email address already exists."
-            });
-        }
-
-        return CreatedAtAction(nameof(Me), value: response);
+            }),
+            RegisterOutcome.RoleNotAllowed => StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
+            {
+                Status = StatusCodes.Status403Forbidden,
+                Title = "Role not allowed.",
+                Detail = "Anyone may register as a Reporter. Every other role is created by an Admin."
+            }),
+            _ => throw new InvalidOperationException($"Unhandled register outcome '{result.Outcome}'.")
+        };
     }
 
     [HttpPost("login")]

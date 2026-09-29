@@ -7,14 +7,19 @@ public interface IWorkflowService
 {
     /// <summary>
     /// Creates the workflow row in state Submitted and returns immediately. It does not
-    /// call the agent service — the controller queues the id and the background runner
-    /// picks it up.
+    /// call the agent service — the caller queues the id and the background runner picks
+    /// it up.
     ///
-    /// Returns null when the request names a ReportId that does not exist (a 400 for the
-    /// caller). ReportId is a real foreign key, so an unchecked bad id would surface as a
-    /// constraint violation out of the driver rather than as a validation failure.
+    /// Refused, with nothing written, when the request names a report that:
+    ///   * does not exist (ReportNotFound, a 400 — ReportId is a real foreign key, so an
+    ///     unchecked bad id would surface as a constraint violation out of the driver);
+    ///   * is Closed (ReportClosed, a 409 — a fault that returns is a new report);
+    ///   * already has a LIVE run (RunInProgress, a 409). One report, one live run: the
+    ///     manager's actions move the report's LATEST workflow, so a second run started
+    ///     beside a live one would quietly take its place. A new run is allowed once the
+    ///     latest one has ended in Failed or Closed — "run the agents again".
     /// </summary>
-    Task<WorkflowSummaryDto?> StartAsync(StartWorkflowRequest dto, CancellationToken cancellationToken = default);
+    Task<StartWorkflowResult> StartAsync(StartWorkflowRequest dto, CancellationToken cancellationToken = default);
 
     /// <summary>Returns null when no workflow has that id (a 404 for the caller).</summary>
     Task<WorkflowDetailDto?> GetByIdAsync(int id, CancellationToken cancellationToken = default);
@@ -27,9 +32,14 @@ public interface IWorkflowService
 
     Task<bool> ExistsAsync(int workflowId, CancellationToken cancellationToken = default);
 
+    /// <summary>The workflow's current state, or null when no workflow has that id.</summary>
+    Task<WorkflowState?> GetStateAsync(int workflowId, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Appends one audit row to the workflow. Returns false when the workflow does not
     /// exist, so nothing is silently written against a missing parent.
+    /// <paramref name="attempts"/> is the LLM attempts behind an agent-level step (null for a
+    /// tool call).
     /// </summary>
     Task<bool> RecordStepAsync(
         int workflowId,
@@ -39,6 +49,7 @@ public interface IWorkflowService
         int durationMs,
         string? validationResult,
         string? errorMessage,
+        int? attempts = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -53,6 +64,44 @@ public interface IWorkflowService
     /// already past the agents — so a stray queue entry can never rewind it.
     /// </summary>
     Task<WorkflowState?> BeginProcessingAsync(int workflowId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The workflows an agent run was meant to be working on: Submitted (not yet run) and
+    /// Diagnosing (resumed). The queue is in memory, so a restart empties it; the runner
+    /// re-queues these at startup so a restart does not strand them. Oldest first.
+    /// </summary>
+    Task<IReadOnlyList<int>> GetUnfinishedRunIdsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores the workflow's structured plan in PlanJson — the only writer of that column.
+    /// The plan has already been through PlanRules: the planner's, re-checked, or the fallback.
+    /// </summary>
+    Task<bool> SetPlanAsync(int workflowId, WorkflowPlanDto plan, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Marks the first pending plan step for <paramref name="agentName"/> with
+    /// <paramref name="status"/> (PlanStepStatus). A workflow with no stored plan is left alone.
+    /// </summary>
+    Task<bool> MarkPlanStepAsync(
+        int workflowId,
+        string agentName,
+        string status,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Appends a second diagnostic and strategist step to the plan when a repair did not hold,
+    /// so the re-diagnosis is delegated in the plan as well as recorded in the steps.
+    /// </summary>
+    Task<bool> AppendRediagnosisToPlanAsync(
+        int workflowId,
+        int reopenedWorkOrderId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The planner left the clarifier out of the plan: Submitted to Diagnosing, through its
+    /// own trigger (PlannedWithoutClarification), not the clarifier's.
+    /// </summary>
+    Task<bool> ProceedWithoutClarificationAsync(int workflowId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Moves a workflow to Failed and records why. Used when the agent call fails, when the
@@ -92,3 +141,14 @@ public interface IWorkflowService
         bool proposed,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Why <see cref="IWorkflowService.StartAsync"/> did or did not start a run.</summary>
+public enum StartWorkflowOutcome
+{
+    Started,
+    ReportNotFound,
+    ReportClosed,
+    RunInProgress
+}
+
+public record StartWorkflowResult(StartWorkflowOutcome Outcome, WorkflowSummaryDto? Workflow = null);

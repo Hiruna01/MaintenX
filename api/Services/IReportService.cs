@@ -121,8 +121,11 @@ public interface IReportService
     /// NULL means no asset has that id; an EMPTY LIST means the asset exists and nothing
     /// is open against it. Those are different facts and the tool reports them
     /// differently — same rule as IAssetService.GetRecentServiceHistoryAsync.
+    ///
+    /// Each report is a <see cref="ToolReportDto"/> — without the reporter's id or the photo's
+    /// URL, which no agent reads and which would otherwise be copied into every tool step.
     /// </summary>
-    Task<IReadOnlyList<ReportDto>?> GetOpenReportsForAssetAsync(
+    Task<IReadOnlyList<ToolReportDto>?> GetOpenReportsForAssetAsync(
         int assetId,
         CancellationToken cancellationToken = default);
 

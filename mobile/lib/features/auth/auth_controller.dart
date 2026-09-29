@@ -62,6 +62,21 @@ class AuthController extends Notifier<AuthState> {
     state = AuthState.signedIn(result.user);
   }
 
+  /// Creates a Reporter account and signs it in — the API's 201 carries the token, so there
+  /// is no second login. Throws [ApiException] on failure (409 for an email already in use)
+  /// so the registration screen can show the message.
+  Future<void> register({
+    required String fullName,
+    required String email,
+    required String password,
+  }) async {
+    final result = await ref
+        .read(authApiProvider)
+        .register(fullName: fullName, email: email, password: password);
+    await ref.read(tokenStorageProvider).write(result.token);
+    state = AuthState.signedIn(result.user);
+  }
+
   /// No server call: the API issues an access token only, with nothing to revoke.
   Future<void> logout() async {
     // Set the state first: the token listener above treats a token disappearing while the

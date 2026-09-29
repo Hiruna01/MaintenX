@@ -58,6 +58,15 @@ public class ReportService : IReportService
             [ReportStatus.Closed] = Array.Empty<ReportStatus>()
         };
 
+    /// <summary>
+    /// Whether the lifecycle allows <paramref name="from"/> to <paramref name="to"/>. The one
+    /// reading of <see cref="LegalTransitions"/> for code outside this class, so a report that
+    /// moves as a side effect — the clarifier's questions arriving — follows the same map as a
+    /// manager's PATCH, and Closed stays terminal for both.
+    /// </summary>
+    internal static bool CanMove(ReportStatus from, ReportStatus to) =>
+        LegalTransitions[from].Contains(to);
+
     private readonly AppDbContext _db;
     private readonly IWorkflowService _workflowService;
     private readonly IWorkflowQueue _workflowQueue;
@@ -285,7 +294,7 @@ public class ReportService : IReportService
         var steps = stepRows
             .Select(s => new AgentStepDto(
                 s.Id, s.WorkflowId, s.AgentName, s.ToolCallsJson, s.DurationMs,
-                s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt))
+                s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt, s.Attempts))
             .ToList();
 
         // The newest strategist AGENT RUN — its tool calls carry the same name, and the
@@ -425,22 +434,22 @@ public class ReportService : IReportService
         //
         // The description becomes the objective verbatim. Both are capped at 1000
         // characters, so this cannot overflow.
-        var workflow = await _workflowService.StartAsync(
+        var started = await _workflowService.StartAsync(
             new StartWorkflowRequest(report.Description, report.Id), cancellationToken);
 
-        // StartAsync only returns null for a ReportId that does not exist, and we just
-        // wrote this one in the same DbContext. Defensive, not expected.
-        if (workflow is not null)
+        // A report written a moment ago exists, is Submitted and has no run yet, so StartAsync
+        // can only have started one. Checked anyway rather than assumed.
+        if (started.Workflow is not null)
         {
             // CancellationToken.None, not the request's: that token is cancelled as soon as
             // the response is written, which would abort the hand-off we just promised.
-            await _workflowQueue.EnqueueAsync(workflow.Id, CancellationToken.None);
+            await _workflowQueue.EnqueueAsync(started.Workflow.Id, CancellationToken.None);
         }
 
         return ToDto(report);
     }
 
-    public async Task<IReadOnlyList<ReportDto>?> GetOpenReportsForAssetAsync(
+    public async Task<IReadOnlyList<ToolReportDto>?> GetOpenReportsForAssetAsync(
         int assetId,
         CancellationToken cancellationToken = default)
     {
@@ -458,7 +467,7 @@ public class ReportService : IReportService
             // taking ten of an oldest-first list would hide whatever was reported today.
             .OrderByDescending(r => r.Id)
             .Take(IReportService.MaxToolRelatedReports)
-            .Select(r => ToDto(r))
+            .Select(r => new ToolReportDto(r.Id, r.RoomId, r.AssetId, r.Description, r.Status, r.CreatedAt))
             .ToListAsync(cancellationToken);
     }
 

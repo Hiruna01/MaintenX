@@ -25,6 +25,13 @@ public class AgentStep
 
     public int DurationMs { get; set; }
 
+    /// <summary>
+    /// How many LLM attempts an agent-level step took: 1 when the first reply validated, 2
+    /// when it took the one retry. Null on a tool-call row, which makes no model call, and on
+    /// a step whose agent did not report it.
+    /// </summary>
+    public int? Attempts { get; set; }
+
     /// <summary>Short outcome tag, e.g. "Ok", "NotFound", "RejectedUnknownTool".</summary>
     [MaxLength(100)]
     public string? ValidationResult { get; set; }

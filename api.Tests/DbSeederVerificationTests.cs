@@ -96,7 +96,10 @@ public class DbSeederVerificationTests : IClassFixture<ApiFactory>
         Assert.Equal(9, await db.WorkOrders.CountAsync());
         Assert.Equal(9, await db.Reports.CountAsync());
         Assert.Equal(2, await db.AgentWorkflows.CountAsync());
-        Assert.Equal(6, await db.AgentSteps.CountAsync());
+        // Two workflows, each clarifier + diagnostic + strategist + the approval gate's step.
+        Assert.Equal(8, await db.AgentSteps.CountAsync());
+        Assert.Equal(2, await db.AgentSteps.CountAsync(st => st.AgentName == ApprovalAudit.StepName
+                                                             && st.ValidationResult == ApprovalAudit.ApprovalRequired));
     }
 
     [Fact]

@@ -9,8 +9,14 @@ namespace CampusFacilities.Api.Services;
 /// IHostedService: the host starts it once at boot and it sits on the queue for the
 /// lifetime of the process, so no request thread ever waits for agent work.
 ///
+/// A fresh run starts from its PLAN. The planner agent reads the objective and delegates
+/// the run to the clarifier (when the report needs it), the diagnostic and the strategist;
+/// PlanRules re-checks that plan in C# before it is stored as AgentWorkflow.PlanJson, and a
+/// plan that fails the check — or a planner that fails — is replaced by the fallback plan,
+/// with the reason. Each plan step is then marked as its agent's result is recorded.
+///
 /// It advances a workflow ONE AGENT AT A TIME through the state machine
-/// (WorkflowTransitions): the clarifier's step is recorded and then its transition made,
+/// (WorkflowTransitions): the planner's step, then the clarifier's step and its transition,
 /// then the diagnostic's step and its transition, then the strategist's. Each save stands on
 /// its own, so a poll of GET /api/workflows/{id} sees the run move agent by agent.
 ///
@@ -50,6 +56,11 @@ public class WorkflowRunner : BackgroundService
     {
         _logger.LogInformation("Workflow runner started.");
 
+        // Not awaited before the loop: the queue is bounded, so re-queueing more ids than it
+        // holds would wait for room that only this loop's dequeues can make. It runs beside the
+        // loop instead, and catches everything itself.
+        _ = RequeueUnfinishedRunsAsync(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             int workflowId;
@@ -71,23 +82,91 @@ public class WorkflowRunner : BackgroundService
     }
 
     /// <summary>
-    /// Writes the clarifier's AGENT-LEVEL step for this run — the first of up to three (see
-    /// <see cref="RecordDownstreamStepAsync"/>), and the only one written when the call
-    /// never completed or the clarifier paused the run for questions.
+    /// The queue is an in-process channel, so a restart empties it — and a host that sleeps
+    /// when idle restarts often. The rows are durable, so at startup every workflow an agent
+    /// run was meant to be working on (Submitted or Diagnosing) is queued again rather than
+    /// left looking busy forever. Safe to repeat: the runner only starts from those two
+    /// states, so an id that has already moved on is skipped when it comes round.
+    /// </summary>
+    internal async Task RequeueUnfinishedRunsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<int> ids;
+
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                ids = await scope.ServiceProvider.GetRequiredService<IWorkflowService>()
+                    .GetUnfinishedRunIdsAsync(cancellationToken);
+            }
+
+            foreach (var id in ids)
+            {
+                await _queue.EnqueueAsync(id, cancellationToken);
+            }
+
+            if (ids.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Re-queued {Count} workflow(s) left unfinished by the last shutdown.", ids.Count);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutting down before the re-queue finished; the rows are still there next time.
+        }
+        catch (Exception ex)
+        {
+            // Most often the database is not reachable yet. The runner still serves new work.
+            _logger.LogError(ex, "Could not re-queue unfinished workflows at startup.");
+        }
+    }
+
+    /// <summary>
+    /// How long each agent in one /run call took. The agent service reports every agent's
+    /// own duration_ms, and that is what each step records. When it does not — a reply from
+    /// an agent service that predates the field — the FIRST agent recorded carries the whole
+    /// call's time and the rest 0, because dividing the total would invent a split.
+    /// </summary>
+    private sealed class CallTiming
+    {
+        private readonly int _wholeCallMs;
+        private bool _wholeCallSpent;
+
+        public CallTiming(int wholeCallMs) => _wholeCallMs = wholeCallMs;
+
+        public int For(int? reportedMs)
+        {
+            if (reportedMs is int ms)
+            {
+                return ms;
+            }
+
+            if (_wholeCallSpent)
+            {
+                return 0;
+            }
+
+            _wholeCallSpent = true;
+            return _wholeCallMs;
+        }
+    }
+
+    /// <summary>
+    /// Writes the clarifier's AGENT-LEVEL step for this run — and, when the call never
+    /// completed, the only step: a CallFailed row with the reason.
     ///
     /// Only agent-level: the tool calls the agent made on its way here already wrote their
     /// own AgentStep rows from InternalToolsController, which sees every call including the
     /// ones it rejects. Recording the agent's returned tool_calls here as well would double
     /// every tool call in the audit trail, so ToolCallsJson is the empty array and the
     /// controller stays the single owner of those rows.
-    ///
-    /// DurationMs is the WHOLE /run call — when the clarifier asked nothing, the diagnostic
-    /// and the strategist ran inside it too, and the agent service reports no split.
     /// </summary>
     private static async Task RecordAgentStepAsync(
         IWorkflowService workflows,
         int workflowId,
         AgentCallResult call,
+        CallTiming timing,
         CancellationToken cancellationToken)
     {
         var succeeded = call.Ok && call.Response is not null && !call.Response.IsSafeFailure;
@@ -97,16 +176,16 @@ public class WorkflowRunner : BackgroundService
             agentName: call.Response?.Agent ?? AgentRunResponse.ClarifierAgentName,
             toolCallsJson: "[]",
             // The agent's output verbatim, into the jsonb column that exists for exactly
-            // this. Note what is NOT written: AgentWorkflow.PlanJson stays null, because
-            // the clarifier produces questions and questions are not a plan. Putting them
-            // there would mislabel them for every reader of that column.
+            // this. The clarifier's questions are NOT a plan — the plan is the planner's, and
+            // is stored as PlanJson by RecordPlanAsync.
             payloadJson: call.Response is null
                 ? null
                 : JsonSerializer.Serialize(call.Response.Output),
-            durationMs: call.DurationMs,
+            durationMs: timing.For(call.Response?.DurationMs),
             validationResult: succeeded ? "Ok" : call.Ok ? "SafeFailure" : "CallFailed",
             errorMessage: call.Error ?? call.Response?.Error,
-            cancellationToken);
+            attempts: call.Response?.Attempts,
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -115,38 +194,116 @@ public class WorkflowRunner : BackgroundService
     /// in verbatim — the audit copy, never edited — and the approval queue reads it back from
     /// here (see AgentAnalysis). Same "[]" ToolCallsJson as the clarifier's step, for the same
     /// reason: their tool calls are already rows of their own.
-    ///
-    /// <paramref name="durationMs"/> is the whole call's time on the FIRST agent that ran in
-    /// it and 0 on the rest: the agent reports no per-agent split, and dividing it up here
-    /// would invent one. On a first run that is the clarifier's step, so both of these get 0;
-    /// on a resume after clarification the diagnostic ran first and carries it.
     /// </summary>
     private static Task RecordDownstreamStepAsync(
         IWorkflowService workflows,
         int workflowId,
         DownstreamAgentResult result,
-        int durationMs,
+        CallTiming timing,
         CancellationToken cancellationToken) =>
         workflows.RecordStepAsync(
             workflowId,
             agentName: result.AgentName,
             toolCallsJson: "[]",
             payloadJson: result.OutputJson,
-            durationMs: durationMs,
+            durationMs: timing.For(result.DurationMs),
             validationResult: result.Succeeded ? "Ok" : "SafeFailure",
             errorMessage: result.Error,
-            cancellationToken);
+            attempts: result.Attempts,
+            cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// The planner's step and the workflow's stored plan — first, because every other step of
+    /// the run was delegated from it.
+    ///
+    /// The planner's reply is recorded VERBATIM on its own AgentStep, whatever it said: that is
+    /// the audit copy. What is stored as PlanJson is different — the plan PlanRules has
+    /// re-checked, or the fallback plan with the reason it was needed:
+    ///
+    ///   * the planner produced a plan that passes the C# check      → its plan, step "Ok";
+    ///   * the planner safe-failed                                    → fallback, "SafeFailure";
+    ///   * the planner produced a plan that FAILS the C# check        → fallback, "Rejected";
+    ///   * the reply carried no plan (an older agent service)         → fallback, no step.
+    ///
+    /// A plan the model wrote is never stored as-is: the check is deterministic C#, the same
+    /// rule on this side of the network as the Pydantic schema on the other.
+    /// </summary>
+    private async Task<WorkflowPlanDto> RecordPlanAsync(
+        IWorkflowService workflows,
+        int workflowId,
+        AgentRunResponse response,
+        CallTiming timing,
+        CancellationToken cancellationToken)
+    {
+        var planner = response.PlannerResult();
+        WorkflowPlanDto plan;
+
+        if (planner is null)
+        {
+            plan = PlanRules.Fallback("The agent service returned no plan, so the run followed the default one.");
+        }
+        else
+        {
+            string validationResult;
+            var error = planner.Error;
+
+            if (!planner.Succeeded)
+            {
+                plan = PlanRules.Fallback(
+                    $"The planner could not produce a plan ({planner.Error ?? "no reason given"}), " +
+                    "so the run followed the default one.");
+                validationResult = "SafeFailure";
+            }
+            else
+            {
+                var (checkedPlan, reason) = PlanRules.Validate(planner.Output);
+
+                if (checkedPlan is null)
+                {
+                    // Should be impossible — the agent validates the same rules before it acts
+                    // on a plan — which is exactly why it is worth a warning: the two contracts
+                    // have drifted apart.
+                    _logger.LogWarning(
+                        "Workflow {WorkflowId}: the planner's plan failed the C# check ({Reason}). "
+                        + "The fallback plan was stored instead.", workflowId, reason);
+
+                    plan = PlanRules.Fallback($"The planner's plan was rejected: {reason}");
+                    validationResult = "Rejected";
+                    error = reason;
+                }
+                else
+                {
+                    plan = checkedPlan;
+                    validationResult = "Ok";
+                }
+            }
+
+            await workflows.RecordStepAsync(
+                workflowId,
+                agentName: PlanRules.PlannerAgentName,
+                toolCallsJson: "[]",
+                payloadJson: planner.OutputJson,
+                durationMs: timing.For(planner.DurationMs),
+                validationResult: validationResult,
+                errorMessage: error,
+                attempts: planner.Attempts,
+                cancellationToken: cancellationToken);
+        }
+
+        await workflows.SetPlanAsync(workflowId, plan, cancellationToken);
+        return plan;
+    }
 
     /// <summary>
     /// Writes the clarifier's questions as ClarificationQuestion rows — the working data
-    /// beside the AgentStep audit row.
+    /// beside the AgentStep audit row — and returns how many were written.
     ///
     /// A workflow with no report writes none. That is not a failure: POST /api/workflows
     /// can still start a run from a bare objective, and a question about nothing has
     /// nobody to ask and nowhere to appear. The AgentStep still records what was asked, so
     /// the run is not invisible.
     /// </summary>
-    private async Task RecordClarificationQuestionsAsync(
+    private async Task<int> RecordClarificationQuestionsAsync(
         IClarificationService clarifications,
         int? reportId,
         int workflowId,
@@ -163,7 +320,7 @@ public class WorkflowRunner : BackgroundService
                     workflowId, response.QuestionCount);
             }
 
-            return;
+            return 0;
         }
 
         var questions = response.ParseQuestions();
@@ -180,7 +337,7 @@ public class WorkflowRunner : BackgroundService
                 workflowId, response.QuestionCount, questions.Count);
         }
 
-        await clarifications.RecordQuestionsAsync(
+        return await clarifications.RecordQuestionsAsync(
             reportId.Value, workflowId, questions, cancellationToken);
     }
 
@@ -260,8 +417,9 @@ public class WorkflowRunner : BackgroundService
     }
 
     /// <summary>
-    /// A fresh report: the clarifier first, and — only if it asked nothing — the diagnostic
-    /// and the strategist, which graph.py runs in the same call.
+    /// A fresh report: the planner first, then whatever it delegated — the clarifier when the
+    /// report needs one, and (when nothing needs asking) the diagnostic and the strategist,
+    /// which graph.py runs in the same call.
     /// </summary>
     private async Task RunFromSubmittedAsync(
         IWorkflowService workflows,
@@ -275,14 +433,15 @@ public class WorkflowRunner : BackgroundService
             RequestFor(workflow, report, answers: null, assetId: report?.AssetId, reopened: false),
             cancellationToken);
 
-        await RecordAgentStepAsync(workflows, workflow.Id, call, cancellationToken);
+        var timing = new CallTiming(call.DurationMs);
 
-        // Two different failures, one outcome. A call that never completed (timeout,
-        // refused connection, bad body) and a clarifier that reported it could not produce
-        // output both leave the run unable to decide whether to pause, so both move it to
-        // Failed with the reason on the row rather than leaving it parked in Submitted.
+        // A call that never completed (timeout, refused connection, bad body) ran nothing and
+        // planned nothing: its one step says why, and the run is Failed with the reason on the
+        // row rather than left parked in Submitted.
         if (!call.Ok || call.Response is null)
         {
+            await RecordAgentStepAsync(workflows, workflow.Id, call, timing, cancellationToken);
+
             // call.Error is already a complete sentence from AgentClient; prefixing it
             // here produced "The agent service could not be reached: Could not reach
             // the agent service: ...", which a user reads on the workflow page.
@@ -293,11 +452,43 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        if (call.Response.IsSafeFailure)
+        var response = call.Response;
+
+        // The plan comes first: it is what the rest of the run was delegated from.
+        var plan = await RecordPlanAsync(workflows, workflow.Id, response, timing, cancellationToken);
+
+        if (!response.ClarifierRan)
         {
+            // The planner judged the report clear enough to go straight to diagnosis. When the
+            // STORED plan still names the clarifier — the C# check refused the planner's plan
+            // after the agent service had already followed it — the two disagree, and the
+            // clarifier's step says so rather than sitting pending forever.
+            if (PlanRules.IncludesClarifier(plan))
+            {
+                _logger.LogWarning(
+                    "Workflow {WorkflowId}: the stored plan includes the clarifier, but the agent "
+                    + "service went straight to the diagnostic.", workflow.Id);
+
+                await workflows.MarkPlanStepAsync(
+                    workflow.Id, AgentRunResponse.ClarifierAgentName, PlanStepStatus.Skipped, cancellationToken);
+            }
+
+            await workflows.ProceedWithoutClarificationAsync(workflow.Id, cancellationToken);
+            await AdvanceThroughDownstreamAsync(workflows, workflow.Id, response, timing, cancellationToken);
+            return;
+        }
+
+        await RecordAgentStepAsync(workflows, workflow.Id, call, timing, cancellationToken);
+
+        // A clarifier that reported it could not produce output leaves the run unable to
+        // decide whether to pause, so it is Failed with the reason on the row.
+        if (response.IsSafeFailure)
+        {
+            await workflows.MarkPlanStepAsync(
+                workflow.Id, AgentRunResponse.ClarifierAgentName, PlanStepStatus.Failed, cancellationToken);
             await workflows.FailAsync(
                 workflow.Id,
-                $"The clarifier could not produce questions: {call.Response.Error ?? "no reason given"}",
+                $"The clarifier could not produce questions: {response.Error ?? "no reason given"}",
                 cancellationToken);
             return;
         }
@@ -307,13 +498,29 @@ public class WorkflowRunner : BackgroundService
         // audit trail and it is never edited. This stores the same questions as rows
         // the application can actually use — queried per report, ordered, rendered as
         // a form and answered. Neither replaces the other.
-        await RecordClarificationQuestionsAsync(
-            clarifications, workflow.ReportId, workflow.Id, call.Response, cancellationToken);
+        var written = await RecordClarificationQuestionsAsync(
+            clarifications, workflow.ReportId, workflow.Id, response, cancellationToken);
+
+        await workflows.MarkPlanStepAsync(
+            workflow.Id, AgentRunResponse.ClarifierAgentName, PlanStepStatus.Completed, cancellationToken);
+
+        // Questions were asked about a report, but none could be recorded against it —
+        // unreadable, or the report's lifecycle refused the move back to AwaitingClarification.
+        // Pausing now would wait on a reporter who has nothing to answer.
+        if (response.QuestionCount > 0 && workflow.ReportId is not null && written == 0)
+        {
+            await workflows.FailAsync(
+                workflow.Id,
+                $"The clarifier asked {response.QuestionCount} question(s), but none could be recorded "
+                + $"against report {workflow.ReportId}. The report may be past clarification.",
+                cancellationToken);
+            return;
+        }
 
         await workflows.CompleteClarificationAsync(
-            workflow.Id, call.Response.QuestionCount, cancellationToken);
+            workflow.Id, response.QuestionCount, cancellationToken);
 
-        if (call.Response.QuestionCount > 0)
+        if (response.QuestionCount > 0)
         {
             // HUMAN PAUSE 1. The run ends here, and graph.py stopped at the clarifier for
             // the same reason: a diagnosis made before the answers would be made without
@@ -321,8 +528,7 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        // The clarifier's step already carries the whole call's time.
-        await AdvanceThroughDownstreamAsync(workflows, workflow.Id, call.Response, firstDurationMs: 0, cancellationToken);
+        await AdvanceThroughDownstreamAsync(workflows, workflow.Id, response, timing, cancellationToken);
     }
 
     /// <summary>
@@ -332,7 +538,8 @@ public class WorkflowRunner : BackgroundService
     ///   * the reporter answered, and ClarificationService moved it here — the answers go out
     ///     as clarification_answers;
     ///   * the reporter said a repair did not hold, and VerificationService moved it here
-    ///     (RepairReopened) — the request says reopened.
+    ///     (RepairReopened) — the request says reopened, and the plan gains a second
+    ///     diagnostic and strategist step.
     ///     The diagnostic's tools then read the service history as it is NOW, with the record
     ///     the repair appended, and any report filed since.
     ///
@@ -380,10 +587,17 @@ public class WorkflowRunner : BackgroundService
         // history, with the failed repair now on it, is the whole point of running again.
         var assetId = report?.AssetId;
 
-        if (assetId is null && reopened)
+        if (reopened)
         {
-            var order = await workOrders.GetWorkOrderFactsAsync(workflow.ReopenedWorkOrderId!.Value, cancellationToken);
-            assetId = order?.AssetId;
+            // Delegated in the plan before it runs, so a poll sees the new steps pending.
+            await workflows.AppendRediagnosisToPlanAsync(
+                workflow.Id, workflow.ReopenedWorkOrderId!.Value, cancellationToken);
+
+            if (assetId is null)
+            {
+                var order = await workOrders.GetWorkOrderFactsAsync(workflow.ReopenedWorkOrderId!.Value, cancellationToken);
+                assetId = order?.AssetId;
+            }
         }
 
         var call = await agent.RunAsync(
@@ -401,24 +615,25 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        await AdvanceThroughDownstreamAsync(workflows, workflow.Id, call.Response, call.DurationMs, cancellationToken);
+        await AdvanceThroughDownstreamAsync(
+            workflows, workflow.Id, call.Response, new CallTiming(call.DurationMs), cancellationToken);
     }
 
     /// <summary>
-    /// The diagnostic, then the strategist: each one's step written, then its transition
-    /// made, in graph order. The workflow is in Diagnosing on the way in and in Strategizing
-    /// on the way out, waiting for a manager to raise the order.
+    /// The diagnostic, then the strategist: each one's step written, its plan step marked, then
+    /// its transition made, in graph order. The workflow is in Diagnosing on the way in and in
+    /// Strategizing on the way out, waiting for a manager to raise the order.
     ///
-    /// An agent that safe-failed still moves the workflow on — the failure is on its step,
-    /// and a missing diagnosis or proposal costs advice, not the ability to raise an order.
-    /// An agent that is ABSENT from the reply is different: the graph did not do what this
-    /// runner was promised, so the run is Failed with that said.
+    /// An agent that safe-failed still moves the workflow on — the failure is on its step and
+    /// its plan step, and a missing diagnosis or proposal costs advice, not the ability to
+    /// raise an order. An agent that is ABSENT from the reply is different: the graph did not
+    /// do what this runner was promised, so the run is Failed with that said.
     /// </summary>
     private static async Task AdvanceThroughDownstreamAsync(
         IWorkflowService workflows,
         int workflowId,
         AgentRunResponse response,
-        int firstDurationMs,
+        CallTiming timing,
         CancellationToken cancellationToken)
     {
         var results = response.DownstreamResults();
@@ -431,7 +646,10 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        await RecordDownstreamStepAsync(workflows, workflowId, diagnosis, firstDurationMs, cancellationToken);
+        await RecordDownstreamStepAsync(workflows, workflowId, diagnosis, timing, cancellationToken);
+        await workflows.MarkPlanStepAsync(
+            workflowId, AgentRunResponse.DiagnosticAgentName,
+            diagnosis.Succeeded ? PlanStepStatus.Completed : PlanStepStatus.Failed, cancellationToken);
         await workflows.CompleteDiagnosisAsync(workflowId, diagnosis.Succeeded, cancellationToken);
 
         var proposal = results.FirstOrDefault(r => r.AgentName == AgentRunResponse.StrategistAgentName);
@@ -442,7 +660,10 @@ public class WorkflowRunner : BackgroundService
             return;
         }
 
-        await RecordDownstreamStepAsync(workflows, workflowId, proposal, 0, cancellationToken);
+        await RecordDownstreamStepAsync(workflows, workflowId, proposal, timing, cancellationToken);
+        await workflows.MarkPlanStepAsync(
+            workflowId, AgentRunResponse.StrategistAgentName,
+            proposal.Succeeded ? PlanStepStatus.Completed : PlanStepStatus.Failed, cancellationToken);
         await workflows.RecordProposalAsync(workflowId, proposal.Succeeded, cancellationToken);
     }
 

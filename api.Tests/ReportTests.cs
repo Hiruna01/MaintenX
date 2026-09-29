@@ -37,9 +37,7 @@ public class ReportTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(UniqueEmail(), "ReportPass1", "Test Reporter", role), JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(UniqueEmail(), "ReportPass1", "Test Reporter", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
@@ -52,7 +50,7 @@ public class ReportTests : IClassFixture<ApiFactory>
     /// <summary>Creates a building and a room in it, returning the room's id.</summary>
     private async Task<int> CreateRoomAsync()
     {
-        var client = _factory.CreateClient();
+        var client = await _factory.CreateAdminClientAsync();
 
         var buildingResponse = await client.PostAsJsonAsync(
             "/api/buildings", new CreateBuildingDto("Engineering Block", UniqueCode()), JsonOptions);
@@ -249,7 +247,8 @@ public class ReportTests : IClassFixture<ApiFactory>
 
         // A workflow exists for the report, in Submitted — the runner has not touched it
         // (ApiFactory removes WorkflowRunner), so nothing has moved it on.
-        var workflows = await client.GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
+        // The workflow list is a manager's and an Admin's read, not the reporter's.
+        var workflows = await (await _factory.CreateAdminClientAsync()).GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
             "/api/workflows?page=1&pageSize=50", JsonOptions);
 
         var workflow = Assert.Single(workflows!.Items.Where(w => w.ReportId == report!.Id));
@@ -544,7 +543,7 @@ public class ReportTests : IClassFixture<ApiFactory>
         var roomId = await CreateRoomAsync();
         var reportId = await FileReportAsync(client, roomId, "A fault the clarifier will ask about.");
 
-        var workflowId = await WorkflowIdForAsync(client, reportId);
+        var workflowId = await WorkflowIdForAsync(reportId);
 
         using (var scope = _factory.Services.CreateScope())
         {
@@ -576,7 +575,7 @@ public class ReportTests : IClassFixture<ApiFactory>
         var (client, _) = await CreateAuthenticatedClientAsync();
         var roomId = await CreateRoomAsync();
         var reportId = await FileReportAsync(client, roomId, "The lift makes a grinding noise.");
-        var workflowId = await WorkflowIdForAsync(client, reportId);
+        var workflowId = await WorkflowIdForAsync(reportId);
 
         using (var scope = _factory.Services.CreateScope())
         {
@@ -797,9 +796,10 @@ public class ReportTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>The workflow POST /api/reports raised for a report.</summary>
-    private static async Task<int> WorkflowIdForAsync(HttpClient client, int reportId)
+    private async Task<int> WorkflowIdForAsync(int reportId)
     {
-        var workflows = await client.GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
+        // The workflow list is a manager's and an Admin's read, not the reporter's.
+        var workflows = await (await _factory.CreateAdminClientAsync()).GetFromJsonAsync<PagedResult<WorkflowSummaryDto>>(
             "/api/workflows?page=1&pageSize=100", JsonOptions);
 
         return Assert.Single(workflows!.Items.Where(w => w.ReportId == reportId)).Id;

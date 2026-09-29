@@ -10,6 +10,10 @@ public class WorkflowService : IWorkflowService
     /// <summary>Largest page a client may ask for, so one request cannot pull the table.</summary>
     private const int MaxPageSize = 100;
 
+    // The column lengths of AgentStep.ErrorMessage and AgentWorkflow.Outcome.
+    private const int MaxErrorLength = 2000;
+    private const int MaxOutcomeLength = 2000;
+
     private readonly AppDbContext _db;
 
     public WorkflowService(AppDbContext db)
@@ -17,17 +21,45 @@ public class WorkflowService : IWorkflowService
         _db = db;
     }
 
-    public async Task<WorkflowSummaryDto?> StartAsync(
+    public async Task<StartWorkflowResult> StartAsync(
         StartWorkflowRequest dto,
         CancellationToken cancellationToken = default)
     {
-        // ReportId is a foreign key, so a bad one has to be caught here to be a 400
-        // rather than a 500. Null is legitimate — a workflow may be started from a bare
-        // objective — so only a supplied value is checked.
-        if (dto.ReportId is not null
-            && !await _db.Reports.AnyAsync(r => r.Id == dto.ReportId, cancellationToken))
+        // Null is legitimate — a workflow may be started from a bare objective — so only a
+        // supplied report is checked.
+        if (dto.ReportId is not null)
         {
-            return null;
+            var report = await _db.Reports
+                .AsNoTracking()
+                .Where(r => r.Id == dto.ReportId)
+                .Select(r => new { r.Status })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            // ReportId is a foreign key, so a bad one has to be caught here to be a 400
+            // rather than a 500.
+            if (report is null)
+            {
+                return new StartWorkflowResult(StartWorkflowOutcome.ReportNotFound);
+            }
+
+            if (report.Status == ReportStatus.Closed)
+            {
+                return new StartWorkflowResult(StartWorkflowOutcome.ReportClosed);
+            }
+
+            // The LATEST run is the one every later action moves (the raise, the approval,
+            // the verification), so a new one may only start once it has ended.
+            var latestState = await _db.AgentWorkflows
+                .AsNoTracking()
+                .Where(w => w.ReportId == dto.ReportId)
+                .OrderByDescending(w => w.Id)
+                .Select(w => (WorkflowState?)w.CurrentState)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (latestState is not null and not (WorkflowState.Failed or WorkflowState.Closed))
+            {
+                return new StartWorkflowResult(StartWorkflowOutcome.RunInProgress);
+            }
         }
 
         var workflow = new AgentWorkflow
@@ -41,7 +73,7 @@ public class WorkflowService : IWorkflowService
         _db.AgentWorkflows.Add(workflow);
         await _db.SaveChangesAsync(cancellationToken);
 
-        return ToSummaryDto(workflow);
+        return new StartWorkflowResult(StartWorkflowOutcome.Started, ToSummaryDto(workflow));
     }
 
     public async Task<WorkflowDetailDto?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
@@ -81,7 +113,8 @@ public class WorkflowService : IWorkflowService
             workflow.CreatedAt,
             workflow.UpdatedAt,
             steps,
-            diagnoses);
+            diagnoses,
+            PlanRules.Read(workflow.PlanJson));
     }
 
     public async Task<PagedResult<WorkflowSummaryDto>> GetAllAsync(
@@ -116,6 +149,12 @@ public class WorkflowService : IWorkflowService
     public Task<bool> ExistsAsync(int workflowId, CancellationToken cancellationToken = default) =>
         _db.AgentWorkflows.AnyAsync(w => w.Id == workflowId, cancellationToken);
 
+    public Task<WorkflowState?> GetStateAsync(int workflowId, CancellationToken cancellationToken = default) =>
+        _db.AgentWorkflows
+            .Where(w => w.Id == workflowId)
+            .Select(w => (WorkflowState?)w.CurrentState)
+            .FirstOrDefaultAsync(cancellationToken);
+
     public async Task<bool> RecordStepAsync(
         int workflowId,
         string agentName,
@@ -124,6 +163,7 @@ public class WorkflowService : IWorkflowService
         int durationMs,
         string? validationResult,
         string? errorMessage,
+        int? attempts = null,
         CancellationToken cancellationToken = default)
     {
         if (!await ExistsAsync(workflowId, cancellationToken))
@@ -139,7 +179,10 @@ public class WorkflowService : IWorkflowService
             PayloadJson = payloadJson,
             DurationMs = durationMs,
             ValidationResult = validationResult,
-            ErrorMessage = errorMessage
+            // Capped at the column's length: an agent's error text can be a long validation
+            // report, and a varchar overflow would lose the whole row, not just the tail.
+            ErrorMessage = Truncate(errorMessage, MaxErrorLength),
+            Attempts = attempts
         });
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -165,6 +208,54 @@ public class WorkflowService : IWorkflowService
         await _db.SaveChangesAsync(cancellationToken);
         return workflow.CurrentState;
     }
+
+    public async Task<IReadOnlyList<int>> GetUnfinishedRunIdsAsync(CancellationToken cancellationToken = default) =>
+        await _db.AgentWorkflows
+            .AsNoTracking()
+            .Where(w => w.CurrentState == WorkflowState.Submitted || w.CurrentState == WorkflowState.Diagnosing)
+            .OrderBy(w => w.Id)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken);
+
+    public async Task<bool> SetPlanAsync(
+        int workflowId,
+        WorkflowPlanDto plan,
+        CancellationToken cancellationToken = default)
+    {
+        var workflow = await _db.AgentWorkflows.FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
+
+        if (workflow is null)
+        {
+            return false;
+        }
+
+        // The ONLY place PlanJson is written, always through PlanRules — so what is stored is
+        // a plan that has passed the C# check or the fallback, never a model's reply as-is.
+        workflow.PlanJson = PlanRules.Serialize(plan);
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    public Task<bool> MarkPlanStepAsync(
+        int workflowId,
+        string agentName,
+        string status,
+        CancellationToken cancellationToken = default) =>
+        ChangePlanAsync(workflowId, plan => PlanRules.MarkStep(plan, agentName, status), cancellationToken);
+
+    public Task<bool> AppendRediagnosisToPlanAsync(
+        int workflowId,
+        int reopenedWorkOrderId,
+        CancellationToken cancellationToken = default) =>
+        ChangePlanAsync(workflowId, plan => PlanRules.AppendRediagnosis(plan, reopenedWorkOrderId), cancellationToken);
+
+    public Task<bool> ProceedWithoutClarificationAsync(int workflowId, CancellationToken cancellationToken = default) =>
+        MoveAsync(
+            workflowId,
+            WorkflowTrigger.PlannedWithoutClarification,
+            "The planner judged the report clear enough to diagnose without asking the reporter anything.",
+            completed: false,
+            cancellationToken);
 
     public Task<bool> FailAsync(int workflowId, string reason, CancellationToken cancellationToken = default) =>
         MoveAsync(workflowId, WorkflowTrigger.AgentFailed, reason, completed: true, cancellationToken);
@@ -239,7 +330,7 @@ public class WorkflowService : IWorkflowService
         }
 
         WorkflowTransitions.Move(workflow, trigger);
-        workflow.Outcome = outcome;
+        workflow.Outcome = Truncate(outcome, MaxOutcomeLength);
 
         if (completed)
         {
@@ -250,11 +341,35 @@ public class WorkflowService : IWorkflowService
         return true;
     }
 
+    /// <summary>
+    /// Applies one PlanRules change to a stored plan. A workflow with no readable plan — one
+    /// from before plans existed — is left alone: there is nothing to mark.
+    /// </summary>
+    private async Task<bool> ChangePlanAsync(
+        int workflowId,
+        Func<WorkflowPlanDto, WorkflowPlanDto> change,
+        CancellationToken cancellationToken)
+    {
+        var workflow = await _db.AgentWorkflows.FirstOrDefaultAsync(w => w.Id == workflowId, cancellationToken);
+
+        if (workflow is null || PlanRules.Read(workflow.PlanJson) is not { } plan)
+        {
+            return false;
+        }
+
+        workflow.PlanJson = PlanRules.Serialize(change(plan));
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    private static string? Truncate(string? value, int max) =>
+        value is null || value.Length <= max ? value : value[..(max - 1)] + "…";
+
     private static WorkflowSummaryDto ToSummaryDto(AgentWorkflow w) =>
         new(w.Id, w.ReportId, w.Objective, w.CurrentState, w.Outcome,
             w.StartedAt, w.CompletedAt, w.CreatedAt, w.UpdatedAt);
 
     private static AgentStepDto ToStepDto(AgentStep s) =>
         new(s.Id, s.WorkflowId, s.AgentName, s.ToolCallsJson, s.DurationMs,
-            s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt);
+            s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt, s.Attempts);
 }

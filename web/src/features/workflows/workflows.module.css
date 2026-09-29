@@ -501,6 +501,12 @@
   --marker-line: var(--mx-violet-line);
 }
 
+.trailApproval {
+  --marker-fg: var(--mx-amber);
+  --marker-bg: var(--mx-amber-bg);
+  --marker-line: var(--mx-amber-line);
+}
+
 .trailFailed {
   --marker-fg: var(--mx-red);
   --marker-bg: var(--mx-red-bg);
@@ -699,5 +705,73 @@
   font-size: 0.75rem;
   line-height: 1.5;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Plan ---------- */
+
+.planNote {
+  margin: -0.2rem 0 1rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--mx-graphite);
+}
+
+.planList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.planStep {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+}
+
+.planOrder {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  background: var(--mx-well);
+  font-family: var(--mx-mono);
+  font-size: 0.8125rem;
+  color: var(--mx-graphite);
+}
+
+.planBody {
+  min-width: 0;
+  flex: 1;
+}
+
+.planHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.planAgent {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.planAddedBy {
+  font-size: 0.75rem;
+  color: var(--mx-mute);
+}
+
+.planPurpose {
+  margin: 0.3rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--mx-ink);
   overflow-wrap: anywhere;
 }

@@ -29,13 +29,28 @@ public class AgentSettings
     public string BaseUrl { get; init; } = string.Empty;
 
     /// <summary>
-    /// How long the API waits for one POST /run before giving up.
+    /// How long the API waits for one POST /run before giving up, by default.
     ///
-    /// Generous on purpose. A measured clarifier run against a real provider takes about
-    /// ten seconds, and the agent's own LLM timeout is 30s with one retry, so a slow-but-
-    /// working run can legitimately approach a minute. This timeout exists to stop a
-    /// wedged agent pinning a background worker forever — not to second-guess a slow one,
-    /// which is why it is deliberately longer than anything the agent should ever need.
+    /// BUDGETED against the agent's own timeouts, not guessed. One /run on a fresh report can
+    /// run four agents in a row — planner, clarifier, diagnostic, strategist — and each makes
+    /// at most two LLM attempts at LLM_TIMEOUT_SECONDS (30s), plus its tool calls at
+    /// TOOL_TIMEOUT_SECONDS (10s) each:
+    ///
+    ///   planner     2 × 30s                 =  60s   (no tools)
+    ///   clarifier   2 × 30s + 2 tools × 10s =  80s
+    ///   diagnostic  2 × 30s + 3 tools × 10s =  90s
+    ///   strategist  2 × 30s + 3 tools × 10s =  90s
+    ///                                         ─────
+    ///                                          320s
+    ///
+    /// 360s sits above that worst case. When this was 60s, a slow provider made the API mark
+    /// the run Failed while the agent was still working, and the agent's later tool calls
+    /// kept writing audit rows onto a workflow already declared dead. A real run takes tens
+    /// of seconds; this only has to stop a WEDGED agent pinning the runner forever. If either
+    /// agent timeout is raised, raise this with it.
     /// </summary>
-    public double TimeoutSeconds { get; init; } = 60;
+    public const double DefaultTimeoutSeconds = 360;
+
+    /// <summary>How long the API waits for one POST /run. See <see cref="DefaultTimeoutSeconds"/>.</summary>
+    public double TimeoutSeconds { get; init; } = DefaultTimeoutSeconds;
 }

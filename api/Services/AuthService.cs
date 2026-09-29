@@ -26,22 +26,34 @@ public class AuthService : IAuthService
         _jwtSettings = jwtSettings;
     }
 
-    public async Task<AuthResponse?> RegisterAsync(
+    public async Task<RegisterResult> RegisterAsync(
         RegisterRequest request,
+        Role? callerRole,
         CancellationToken cancellationToken = default)
     {
+        // Checked before anything else, so a refused caller learns nothing about which
+        // addresses already have accounts. A Reporter is open to anyone — that is signing up
+        // from the phone. Every other role is an Admin's to hand out: the body says what is
+        // ASKED for, the caller's token says whether it is granted.
+        var role = request.Role ?? Role.Reporter;
+
+        if (role != Role.Reporter && callerRole != Role.Admin)
+        {
+            return new RegisterResult(RegisterOutcome.RoleNotAllowed);
+        }
+
         var email = NormaliseEmail(request.Email);
 
         if (await _db.Users.AnyAsync(u => u.Email == email, cancellationToken))
         {
-            return null;
+            return new RegisterResult(RegisterOutcome.EmailTaken);
         }
 
         var user = new User
         {
             Email = email,
             FullName = request.FullName,
-            Role = request.Role
+            Role = role
         };
         user.PasswordHash = _passwordHasher.HashPassword(user, request.Password);
 
@@ -60,19 +72,21 @@ public class AuthService : IAuthService
 
             if (await IsDuplicateEmailAsync(email, cancellationToken))
             {
-                return null;
+                return new RegisterResult(RegisterOutcome.EmailTaken);
             }
 
             // Some other database failure — let the exception middleware answer with a 500.
             throw;
         }
 
-        return new AuthResponse(
-            CreateToken(user),
-            user.Id,
-            user.Email,
-            user.FullName,
-            user.Role);
+        return new RegisterResult(
+            RegisterOutcome.Registered,
+            new AuthResponse(
+                CreateToken(user),
+                user.Id,
+                user.Email,
+                user.FullName,
+                user.Role));
     }
 
     public async Task<AuthResponse?> LoginAsync(

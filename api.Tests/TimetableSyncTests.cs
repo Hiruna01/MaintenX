@@ -623,10 +623,7 @@ public class TimetableSyncTests : IClassFixture<TimetableStubApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SyncPass1", "Test User", role),
-            JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SyncPass1", "Test User", role));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         var auth = await response.Content.ReadFromJsonAsync<AuthResponse>(JsonOptions);
@@ -656,10 +653,7 @@ public class TimetableSyncNotConfiguredTests : IClassFixture<ApiFactory>
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
         var client = _factory.CreateClient();
 
-        var register = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SyncPass1", "Manager", Role.FacilitiesManager),
-            options);
+        var register = await _factory.RegisterAsync(new RegisterRequest($"user-{Guid.NewGuid():N}@campus.test", "SyncPass1", "Manager", Role.FacilitiesManager));
         var auth = await register.Content.ReadFromJsonAsync<AuthResponse>(options);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", auth!.Token);
 

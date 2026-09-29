@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -10,6 +11,7 @@ import '../../core/app_theme.dart';
 import '../../widgets/app_form_field.dart';
 import '../../widgets/surfaces.dart';
 import 'auth_controller.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -108,7 +110,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 Text('Sign in', style: theme.textTheme.displaySmall),
                 const SizedBox(height: 8),
                 Text(
-                  'Use the account your facilities team issued you.',
+                  'Sign in to report faults, answer questions and track repairs.',
                   style: theme.textTheme.bodyLarge?.copyWith(color: MxColors.graphite),
                 ),
                 const SizedBox(height: 26),
@@ -196,7 +198,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         )
                       : const Text('Sign in'),
                 ),
-                const SizedBox(height: 22),
+                const SizedBox(height: 14),
+                // Reporters sign themselves up; staff accounts are issued, so the link says so.
+                TextButton(
+                  onPressed: _isSubmitting ? null : () => context.go(RegisterScreen.path),
+                  child: const Text('New here? Create an account to report faults'),
+                ),
+                const SizedBox(height: 8),
                 Text(
                   'Forgotten your password? Your facilities team can reset it.',
                   textAlign: TextAlign.center,

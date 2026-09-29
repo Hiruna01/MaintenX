@@ -121,6 +121,11 @@ public class AgentToolTests : IClassFixture<ApiFactory>
 
         // The five oldest visits are the ones dropped, not the five newest.
         Assert.DoesNotContain(visits.Min(), returned);
+
+        // The evidence, not the person: no technician's name reaches the agent — or the
+        // AgentStep this call wrote, which stores the same response verbatim.
+        Assert.All(rows, r => Assert.False(r.TryGetProperty("technicianName", out _)));
+        Assert.All(rows, r => Assert.True(r.TryGetProperty("technicianNote", out _)));
     }
 
     [Fact]
@@ -170,6 +175,11 @@ public class AgentToolTests : IClassFixture<ApiFactory>
         Assert.Equal(returnedIds.OrderByDescending(i => i), returnedIds);
         Assert.Equal(openIds.Max(), returnedIds.First());
         Assert.DoesNotContain(openIds.Min(), returnedIds);
+
+        // What was reported, not who reported it or where their photo lives.
+        Assert.All(rows, r => Assert.False(r.TryGetProperty("reporterId", out _)));
+        Assert.All(rows, r => Assert.False(r.TryGetProperty("photoUrl", out _)));
+        Assert.All(rows, r => Assert.True(r.TryGetProperty("description", out _)));
     }
 
     [Fact]
@@ -263,6 +273,11 @@ public class AgentToolTests : IClassFixture<ApiFactory>
 
         // Strategy and status by NAME, like every enum on the wire.
         Assert.All(rows, r => Assert.Equal(JsonValueKind.String, r.GetProperty("status").ValueKind));
+
+        // The facts consolidation is decided on — not who is assigned to the job.
+        Assert.All(rows, r => Assert.False(r.TryGetProperty("assignedTechnicianId", out _)));
+        Assert.All(rows, r => Assert.False(r.TryGetProperty("assignedTechnicianName", out _)));
+        Assert.All(rows, r => Assert.True(r.TryGetProperty("estimatedCost", out _)));
     }
 
     [Fact]
@@ -372,9 +387,7 @@ public class AgentToolTests : IClassFixture<ApiFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync(
-            "/api/auth/register",
-            new RegisterRequest(UniqueEmail(), "ToolPass1", "Test User", role), JsonOptions);
+        var response = await _factory.RegisterAsync(new RegisterRequest(UniqueEmail(), "ToolPass1", "Test User", role));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 

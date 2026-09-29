@@ -349,6 +349,17 @@ public class ReportService : IReportService
             .Select(o => (WorkOrderStatus?)o.Status)
             .FirstOrDefaultAsync(cancellationToken);
 
+        // A Draft is an order sent back for revision. It is resubmitted, not joined by a
+        // second order — WorkOrderService.CreateAsync refuses one while it exists — so the
+        // raise offer below is off while it is here, and the offer and the POST agree.
+        var revisionDraft = await _db.WorkOrders
+            .AsNoTracking()
+            .Where(o => o.ReportId == id && o.Status == WorkOrderStatus.Draft)
+            .OrderByDescending(o => o.Id)
+            .Select(o => new RevisionDraftDto(
+                o.Id, o.AssetId, o.Asset!.AssetTag, o.Strategy, o.EstimatedCost, o.PartsRequired, o.RevisionNote))
+            .FirstOrDefaultAsync(cancellationToken);
+
         return new ReportDetailDto(
             report.Id,
             report.ReporterId,
@@ -371,12 +382,14 @@ public class ReportService : IReportService
                     latestWorkflow.Id,
                     latestWorkflow.CurrentState,
                     WorkflowTransitions.CanRaiseWorkOrder(latestWorkflow.CurrentState)
-                    && report.Status != ReportStatus.Closed),
+                    && report.Status != ReportStatus.Closed
+                    && revisionDraft is null),
             proposalStep is null ? null : AgentAnalysis.ToProposal(proposalStep),
             ReportProgress.StageFor(
                 report.Status,
                 latestWorkflow?.CurrentState,
-                latestOrderStatus == WorkOrderStatus.Rejected));
+                latestOrderStatus == WorkOrderStatus.Rejected),
+            revisionDraft);
     }
 
     public Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default) =>

@@ -181,26 +181,31 @@ public class WorkflowEndToEndTests : IDisposable
         await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.BeingReviewed, workflowId, WorkflowState.Diagnosing);
 
         // 9. The runner diagnoses AGAIN — sent as a reopen, not to the clarifier — and the
-        //    strategist proposes again: Strategizing once more, for a manager to act on. The
-        //    report stays WorkOrderRaised: the lifecycle has no way back to Diagnosed, so the
-        //    second diagnosis's move is skipped and logged, never forced.
+        //    strategist proposes again. The request named the reopened ORDER's asset, so the
+        //    runner raises that proposal through the approval gate: Rs 4,500, within the
+        //    threshold, approved with nobody deciding. A NEW order for the fault that came
+        //    back, never the old one reopened. The report stays WorkOrderRaised: the lifecycle
+        //    has no way back to Diagnosed, so the second diagnosis's move is skipped and
+        //    logged, never forced.
         await RunAgentAsync(workflowId, Rediagnosed);
         Assert.True(_factory.Agent.Requests[^1].Reopened);
-        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.BeingReviewed, workflowId, WorkflowState.Strategizing);
+        await AssertStatesAsync(scene, reportId, ReportStatus.WorkOrderRaised, ReportStage.RepairPlanned, workflowId, WorkflowState.WorkOrderRaised);
         Assert.Contains(_factory.Logs.Entries, e =>
             e.Message.Contains($"report {reportId} to Diagnosed") && e.Message.Contains("does not allow"));
 
         // Five agent runs: the first call's three, then the re-diagnosis's two — appended, so
         // both diagnoses are there to compare. Between them, the human pause: the gate
-        // routing the order to a manager, and the manager's approval.
+        // routing the order to a manager, and the manager's approval. After them, the gate
+        // again, for the order the runner raised from the second proposal.
         var detail = await WorkflowAsync(scene, workflowId);
-        Assert.Equal(7, detail.Steps.Count);
+        Assert.Equal(8, detail.Steps.Count);
         Assert.Equal(
-            new[] { "clarifier", "diagnostic", "strategist", "approval", "approval", "diagnostic", "strategist" },
+            new[] { "clarifier", "diagnostic", "strategist", "approval", "approval", "diagnostic", "strategist", "approval" },
             detail.Steps.Select(s => s.AgentName));
         Assert.Equal(
-            new[] { "ApprovalRequired", "ManagerApproved" },
+            new[] { "ApprovalRequired", "ManagerApproved", "AutoApproved" },
             detail.Steps.Where(s => s.AgentName == "approval").Select(s => s.ValidationResult));
+        Assert.Contains("Raised by the workflow runner", detail.Steps[^1].PayloadJson);
         Assert.Equal(
             new[] { "Loose HDMI connection", "Failing cooling fan" },
             detail.Diagnoses.Select(d => d.Hypotheses[d.PrimaryHypothesisIndex!.Value].Cause));

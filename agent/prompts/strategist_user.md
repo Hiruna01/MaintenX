@@ -13,6 +13,9 @@ these parts:
   first. Typed by technicians.
 - `open_work_orders` — work orders not yet finished on this asset or others in the same
   room. The only ids you may consolidate with.
+- `order_under_revision` — present only when a manager sent a proposal back: the work
+  order that was raised from it, as it stands now. It is the job you are re-planning, not
+  one to consolidate with.
 - `notes` — anything the system could not look up, and why.
 
 --- BEGIN DATA ---

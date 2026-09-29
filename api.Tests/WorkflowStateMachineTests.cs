@@ -242,6 +242,7 @@ public class WorkflowStateMachineTests : IClassFixture<StateMachineApiFactory>
         Approve,
         Reject,
         RequestRevision,
+        ResubmitOverThreshold,
         Complete,
         AnswerClarification
     }
@@ -253,6 +254,7 @@ public class WorkflowStateMachineTests : IClassFixture<StateMachineApiFactory>
         ApiMove.Approve => WorkflowTrigger.ManagerApproved,
         ApiMove.Reject => WorkflowTrigger.ManagerRejected,
         ApiMove.RequestRevision => WorkflowTrigger.RevisionRequested,
+        ApiMove.ResubmitOverThreshold => WorkflowTrigger.WorkOrderNeedsApproval,
         ApiMove.Complete => WorkflowTrigger.WorkCompleted,
         ApiMove.AnswerClarification => WorkflowTrigger.ReporterAnswered,
         _ => throw new ArgumentOutOfRangeException(nameof(move))
@@ -298,6 +300,17 @@ public class WorkflowStateMachineTests : IClassFixture<StateMachineApiFactory>
                     _ => await scene.Manager.PostAsJsonAsync(
                         $"/api/workorders/{orderId}/request-revision", new RequestRevisionDto("Try a repair first."), JsonOptions)
                 };
+                break;
+
+            case ApiMove.ResubmitOverThreshold:
+                // A Draft sent back for revision, the legal way; then the workflow is moved
+                // somewhere the gate may not route an order from.
+                orderId = await RaiseAsync(scene, reportId, 42_000m, WorkOrderStatus.AwaitingApproval);
+                Assert.Equal(HttpStatusCode.NoContent, (await scene.Manager.PostAsJsonAsync(
+                    $"/api/workorders/{orderId}/request-revision", new RequestRevisionDto("Try a repair first."), JsonOptions)).StatusCode);
+                await WorkflowTestData.PutInStateAsync(_factory.Services, reportId, state);
+                response = await scene.Manager.PostAsJsonAsync($"/api/workorders/{orderId}/resubmit",
+                    new ResubmitWorkOrderDto(WorkOrderStrategy.SingleJob, 43_000m, null), JsonOptions);
                 break;
 
             case ApiMove.Complete:
@@ -347,6 +360,17 @@ public class WorkflowStateMachineTests : IClassFixture<StateMachineApiFactory>
                 Assert.Null(waiting.ApprovedByUserId);
                 Assert.Null(waiting.RejectionReason);
                 Assert.Null(waiting.RevisionNote);
+                break;
+
+            case ApiMove.ResubmitOverThreshold:
+                var draft = await db.WorkOrders.AsNoTracking().SingleAsync(w => w.Id == orderId);
+                Assert.Equal(WorkOrderStatus.Draft, draft.Status);
+                Assert.Equal(42_000m, draft.EstimatedCost);
+                // The gate's step and the revision's, nothing after them.
+                Assert.Equal(
+                    new[] { ApprovalAudit.ApprovalRequired, ApprovalAudit.RevisionRequested },
+                    await db.AgentSteps.Where(st => st.Workflow!.ReportId == reportId && st.AgentName == ApprovalAudit.StepName)
+                        .OrderBy(st => st.Id).Select(st => st.ValidationResult).ToListAsync());
                 break;
 
             case ApiMove.Complete:

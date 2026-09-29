@@ -19,6 +19,7 @@ import CompletionForm from '../components/CompletionForm';
 import DiagnosisPanel from '../components/DiagnosisPanel';
 import JobProgress from '../components/JobProgress';
 import SlotFinder from '../components/SlotFinder';
+import TimetableSyncButton from '../components/TimetableSyncButton';
 import StrategyPill from '../components/StrategyPill';
 import useWorkOrder from '../hooks/useWorkOrder';
 import { ACTIVE_STATUSES, enumLabel, formatMoney, formatSlot } from '../services/workOrdersApi';
@@ -93,6 +94,7 @@ function WorkOrderBody({ order, notice, onChanged }) {
   const isDispatcher = hasRole(role, DISPATCH_ROLES);
   const isAssignedTechnician = role === ROLES.Technician && order.assignedTechnician?.id === user?.id;
   const isActive = ACTIVE_STATUSES.includes(order.status);
+  const [slotFinderKey, setSlotFinderKey] = useState(0);
 
   return (
     <>
@@ -193,7 +195,9 @@ function WorkOrderBody({ order, notice, onChanged }) {
                 <p className={styles.miniLabel} style={{ marginTop: '1.25rem' }}>
                   Find a time
                 </p>
-                <SlotFinder order={order} onBooked={onChanged} />
+                <TimetableSyncButton onSynced={() => setSlotFinderKey((key) => key + 1)} />
+                {/* Remounted after a sync, so results found against the old timetable are cleared. */}
+                <SlotFinder key={slotFinderKey} order={order} onBooked={onChanged} />
               </>
             ) : null}
           </Section>

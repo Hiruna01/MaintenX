@@ -278,7 +278,12 @@ def test_run_rejects_a_reopened_flag_that_is_not_a_boolean(client):
     assert response.status_code == 422
 
 
-def test_run_accepts_a_managers_revision_note(client):
+def test_a_revision_run_is_the_strategist_alone_at_the_top_level(client):
+    """
+    A manager sent the proposal back. Only the strategist runs, so the top-level fields are
+    its own — the same way a resumed run's are the diagnostic's — with no diagnosis beside
+    it and nobody asked anything. The API reads the proposal from `strategy`, as always.
+    """
     response = client.post(
         "/run",
         json={
@@ -286,10 +291,33 @@ def test_run_accepts_a_managers_revision_note(client):
             "description": "Projector cutting out.",
             "asset_id": 1,
             "revision_note": "Too expensive this term - look at a repair first.",
+            "revision_work_order_id": 57,
         },
     )
 
     assert response.status_code == 200
+    body = RunResponse.model_validate(response.json())
+
+    assert body.agent == "strategist"
+    assert body.status is AgentStatus.ok
+    assert body.output.questions == []
+    assert body.plan is None and body.diagnosis is None
+    assert body.strategy is not None and body.strategy.status is AgentStatus.ok
+    assert body.duration_ms == body.strategy.duration_ms
+
+
+def test_run_rejects_a_revision_work_order_id_that_is_not_an_id(client):
+    response = client.post(
+        "/run",
+        json={
+            "workflow_id": 7,
+            "description": "Projector cutting out.",
+            "revision_note": "Price a repair first.",
+            "revision_work_order_id": 0,
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_run_accepts_earlier_clarification_answers(client):

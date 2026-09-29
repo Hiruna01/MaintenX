@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -54,8 +56,12 @@ public class AgentStubApiFactory : StateMachineApiFactory
 ///     a person is never run again by a stray queue entry;
 ///   * the reporter's answers resume the run at the diagnostic, WITH the answers, and the
 ///     clarifier is not asked again;
-///   * it never reaches human pause 2 itself: it waits in Strategizing, and the manager
-///     raising the order is what moves it on;
+///   * it RAISES the strategist's proposal through the approval gate when the report names
+///     its asset — the gate, not the runner, decides whether that is human pause 2 — and
+///     otherwise waits in Strategizing for a manager to raise one;
+///   * a revision runs the strategist ALONE with the manager's note and resubmits the SAME
+///     order through the same gate; a revision it cannot act on waits for the manager, and is
+///     never run twice;
 ///   * an agent service that is down ends the run in Failed with the reason, and a manager
 ///     can still raise the order by hand;
 ///   * a repair the reporter says did not hold runs the diagnostic again — not the clarifier — on the
@@ -292,8 +298,10 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Equal(scene.AssetId, second.AssetId);
         Assert.Null(second.ClarificationAnswers);
 
+        // The second proposal names the reopened order's asset, so the runner raises it
+        // through the approval gate — a NEW order, within the threshold, approved at once.
         var detail = await PollAsync(scene, workflowId);
-        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+        Assert.Equal(WorkflowState.WorkOrderRaised, detail.CurrentState);
 
         // Appended, not replaced: the first run's three steps untouched, then the second run's
         // two — the diagnostic ran first in that call, so it carries the call's time.
@@ -333,6 +341,252 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Equal(orderId, newest.GetProperty("workOrderId").GetInt32());
         Assert.Equal("TemporaryFix", newest.GetProperty("outcome").GetString());
         Assert.Equal(TemporaryFixNote, newest.GetProperty("technicianNote").GetString());
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The runner raises the proposal — through the gate — and a revision closes the loop.
+    // ---------------------------------------------------------------------------------
+
+    private const string ReplacementProposal = """
+        {"agent": "strategist", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"strategy": "escalate_replacement", "estimated_cost": 45000.00, "urgency": "high",
+                    "justification": "Third thermal failure.", "consolidate_with_work_order_ids": []}}
+        """;
+
+    private const string RevisionNote = "Too dear this term - price a fan and filter swap first.";
+
+    private static string AsksNothingProposing(string proposal) => $$"""
+        {"workflow_id": 1, "agent": "clarifier", "status": "ok", "error": null, "tool_calls": [],
+         "output": {"questions": []}, "diagnosis": {{Diagnosis}}, "strategy": {{proposal}}}
+        """;
+
+    // A revision run: the strategist alone, so its fields are the top-level ones too.
+    private const string RevisedProposal = """
+        {"workflow_id": 1, "agent": "strategist", "status": "ok", "error": null, "tool_calls": [],
+         "attempts": 1, "duration_ms": 600, "output": {"questions": []},
+         "strategy": {"agent": "strategist", "status": "ok", "error": null, "tool_calls": [],
+                      "attempts": 1, "duration_ms": 600,
+                      "output": {"strategy": "known_fix", "estimated_cost": 6500.00, "urgency": "medium",
+                                 "justification": "Fan and filter swap, as the manager asked.",
+                                 "consolidate_with_work_order_ids": []}}}
+        """;
+
+    /// <summary>
+    /// The report names its equipment (a sticker scan), so the proposal can be raised — and
+    /// the runner raises it through CreateAsync: over the threshold and a replacement, so the
+    /// GATE sends it to a manager. The gate's step says the runner raised it. Verified to fail
+    /// with the raise removed from AdvanceThroughDownstreamAsync.
+    /// </summary>
+    [Fact]
+    public async Task AProposalForANamedAsset_IsRaisedByTheRunner_ThroughTheApprovalGate()
+    {
+        var scene = await _factory.SceneAsync();
+        var reportId = await FileReportOnTheAssetAsync(scene);
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothingProposing(ReplacementProposal)));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.AwaitingManagerApproval, detail.CurrentState);
+
+        var order = Assert.Single(await OrdersForReportAsync(reportId));
+        Assert.Equal(
+            (WorkOrderStatus.AwaitingApproval, WorkOrderStrategy.EscalateReplacement, 45_000m, scene.AssetId),
+            (order.Status, order.Strategy, order.EstimatedCost, order.AssetId));
+
+        var gate = detail.Steps[^1];
+        Assert.Equal(("approval", "ApprovalRequired"), (gate.AgentName, gate.ValidationResult));
+        Assert.Contains("Raised by the workflow runner", gate.PayloadJson);
+        Assert.Contains($"Work order {order.Id}", detail.Outcome);
+    }
+
+    /// <summary>
+    /// A proposal the API cannot raise as it stands — a strategy it does not know, or an
+    /// estimate finer than the numeric(18,2) column — is not guessed at or rounded: nothing is
+    /// raised, and the workflow waits in Strategizing for a manager.
+    /// </summary>
+    [Theory]
+    [InlineData("\"rebuild\"", "4500.00")]
+    [InlineData("\"single_job\"", "4500.555")]
+    public async Task AProposalTheApiCannotRaise_IsLeftForAManager(string strategy, string cost)
+    {
+        var scene = await _factory.SceneAsync();
+        var reportId = await FileReportOnTheAssetAsync(scene);
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        var proposal = $$$"""
+            {"agent": "strategist", "status": "ok", "error": null, "tool_calls": [],
+             "output": {"strategy": {{{strategy}}}, "estimated_cost": {{{cost}}}, "urgency": "high",
+                        "justification": "x", "consolidate_with_work_order_ids": []}}
+            """;
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothingProposing(proposal)));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        Assert.Equal(WorkflowState.Strategizing, (await PollAsync(scene, workflowId)).CurrentState);
+        Assert.Empty(await OrdersForReportAsync(reportId));
+    }
+
+    /// <summary>
+    /// THE REVISION LOOP, CLOSED. A manager sends the runner's order back with a note; the
+    /// runner sends the note and the order's id to the strategist alone, on the order's asset;
+    /// the revised proposal is recorded beside the first, planned as an appended step, and the
+    /// SAME order is resubmitted through the gate — within the threshold now, so approved with
+    /// nobody deciding. One order on the report, start to finish. Verified to fail with the
+    /// Strategizing branch removed from ProcessAsync.
+    /// </summary>
+    [Fact]
+    public async Task ARevision_RunsTheStrategistAlone_WithTheNote_AndResubmitsTheSameOrder()
+    {
+        var scene = await _factory.SceneAsync();
+        var (reportId, workflowId, orderId) = await RevisionRequestedAsync(scene);
+
+        _factory.Agent.Replies.Enqueue(Reply(RevisedProposal, durationMs: 700));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var request = _factory.Agent.Requests[^1];
+        Assert.Equal(RevisionNote, request.RevisionNote);
+        Assert.Equal(orderId, request.RevisionWorkOrderId);
+        Assert.Equal(scene.AssetId, request.AssetId);
+        Assert.Null(request.ClarificationAnswers);
+        Assert.False(request.Reopened);
+
+        var order = Assert.Single(await OrdersForReportAsync(reportId));
+        Assert.Equal(
+            (orderId, WorkOrderStatus.Approved, WorkOrderStrategy.KnownFix, 6_500m, RevisionNote),
+            (order.Id, order.Status, order.Strategy, order.EstimatedCost, order.RevisionNote));
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.WorkOrderRaised, detail.CurrentState);
+        Assert.Equal(
+            new[]
+            {
+                ("clarifier", "Ok"), ("diagnostic", "Ok"), ("strategist", "Ok"),
+                ("approval", "ApprovalRequired"), ("approval", "RevisionRequested"),
+                ("strategist", "Ok"), ("approval", "AutoApproved")
+            },
+            detail.Steps.Select(st => (st.AgentName, st.ValidationResult)));
+        Assert.Equal(600, detail.Steps[5].DurationMs);
+        Assert.Contains("Resubmitted by the workflow runner", detail.Steps[^1].PayloadJson);
+
+        // The revised proposal is delegated in the plan too — appended, the first one kept.
+        var planned = detail.Plan!.Steps;
+        Assert.Equal(
+            new[] { ("strategist", "completed"), ("strategist", "completed") },
+            planned.Where(p => p.Agent == "strategist").Select(p => (p.Agent, p.Status)));
+        Assert.Contains($"#{orderId}", planned[^1].Purpose);
+
+        // Answered: a stray queue entry runs nothing more.
+        var calls = _factory.Agent.Requests.Count;
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+        Assert.Equal(calls, _factory.Agent.Requests.Count);
+    }
+
+    /// <summary>
+    /// The strategist cannot be re-run — the agent service is down. The workflow is NOT failed:
+    /// it stays in Strategizing with the Draft, the failed call is on a strategist step (which
+    /// marks the revision answered, so it is not run again), and a manager resubmits the same
+    /// order through the same gate.
+    /// </summary>
+    [Fact]
+    public async Task ARevisionTheRunnerCannotAnswer_WaitsForAManagerToResubmit_AndIsNotRunAgain()
+    {
+        var scene = await _factory.SceneAsync();
+        var (reportId, workflowId, orderId) = await RevisionRequestedAsync(scene);
+
+        const string Reason = "Could not reach the agent service: Connection refused.";
+        _factory.Agent.Replies.Enqueue(new AgentCallResult(false, null, Reason, 30));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+        Assert.Equal(WorkflowState.Strategizing, detail.CurrentState);
+        Assert.Contains($"resubmit work order {orderId}", detail.Outcome);
+        Assert.Equal(("strategist", "CallFailed", Reason), (detail.Steps[^1].AgentName, detail.Steps[^1].ValidationResult, detail.Steps[^1].ErrorMessage));
+        Assert.Equal(PlanStepStatus.Failed, detail.Plan!.Steps[^1].Status);
+        Assert.Equal(WorkOrderStatus.Draft, Assert.Single(await OrdersForReportAsync(reportId)).Status);
+
+        var calls = _factory.Agent.Requests.Count;
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+        Assert.Equal(calls, _factory.Agent.Requests.Count);
+
+        var resubmitted = await scene.Manager.PostAsJsonAsync($"/api/workorders/{orderId}/resubmit",
+            new ResubmitWorkOrderDto(WorkOrderStrategy.SingleJob, 20_000m, "Fan, filter."), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, resubmitted.StatusCode);
+
+        Assert.Equal(WorkOrderStatus.AwaitingApproval, Assert.Single(await OrdersForReportAsync(reportId)).Status);
+        Assert.Equal(WorkflowState.AwaitingManagerApproval, (await PollAsync(scene, workflowId)).CurrentState);
+    }
+
+    /// <summary>
+    /// The queue is in memory. A revision the strategist has not answered is unfinished work,
+    /// so a restart queues it again; one it has answered (even by failing) is not, and nor is
+    /// a workflow merely waiting in Strategizing for a manager. Verified to fail with the
+    /// pending revisions left out of RequeueUnfinishedRunsAsync.
+    /// </summary>
+    [Fact]
+    public async Task AtStartup_ARevisionNotYetAnswered_IsQueuedAgain_AndNoOtherStrategizingRun()
+    {
+        var scene = await _factory.SceneAsync();
+        var queue = _factory.Services.GetRequiredService<IWorkflowQueue>();
+
+        var (_, pending, _) = await RevisionRequestedAsync(scene);
+
+        var (_, answered, _) = await RevisionRequestedAsync(scene);
+        _factory.Agent.Replies.Enqueue(new AgentCallResult(false, null, "down", 30));
+        await Runner().ProcessAsync(answered, CancellationToken.None);
+
+        // No asset named, so nothing was raised: waiting on a manager, not on the runner.
+        var waiting = await WorkflowOfNewReportAsync(scene);
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothing));
+        await Runner().ProcessAsync(waiting, CancellationToken.None);
+        Assert.Equal(WorkflowState.Strategizing, (await PollAsync(scene, waiting)).CurrentState);
+
+        await DrainAsync(queue);
+        await Runner().RequeueUnfinishedRunsAsync(CancellationToken.None);
+
+        var requeued = await DrainAsync(queue);
+        Assert.Contains(pending, requeued);
+        Assert.DoesNotContain(answered, requeued);
+        Assert.DoesNotContain(waiting, requeued);
+    }
+
+    /// <summary>
+    /// A report naming the scene's asset, run to an order the runner raised over the threshold,
+    /// then sent back by a manager: Draft, Strategizing, and the workflow re-queued.
+    /// </summary>
+    private async Task<(int ReportId, int WorkflowId, int OrderId)> RevisionRequestedAsync(StateMachineScene scene)
+    {
+        var reportId = await FileReportOnTheAssetAsync(scene);
+        var workflowId = await WorkflowOfAsync(scene, reportId);
+
+        _factory.Agent.Replies.Enqueue(Reply(AsksNothingProposing(ReplacementProposal)));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+        var orderId = Assert.Single(await OrdersForReportAsync(reportId)).Id;
+
+        var revised = await scene.Manager.PostAsJsonAsync(
+            $"/api/workorders/{orderId}/request-revision", new RequestRevisionDto(RevisionNote), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, revised.StatusCode);
+        Assert.Equal(WorkflowState.Strategizing, (await PollAsync(scene, workflowId)).CurrentState);
+
+        return (reportId, workflowId, orderId);
+    }
+
+    private static async Task<int> FileReportOnTheAssetAsync(StateMachineScene scene)
+    {
+        var response = await scene.Reporter.PostAsJsonAsync(
+            "/api/reports",
+            new CreateReportDto("Projector keeps cutting out mid-lecture.", scene.RoomId, scene.AssetId),
+            JsonOptions);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        return (await response.Content.ReadFromJsonAsync<ReportDto>(JsonOptions))!.Id;
+    }
+
+    private async Task<List<WorkOrder>> OrdersForReportAsync(int reportId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        return await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .WorkOrders.AsNoTracking().Where(w => w.ReportId == reportId).OrderBy(w => w.Id).ToListAsync();
     }
 
     // ---------------------------------------------------------------------------------
@@ -558,6 +812,12 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
 
         var fresh = JsonSerializer.Serialize(new AgentRunRequest(1, "Projector cutting out.", 3, null), web);
         Assert.DoesNotContain("reopened", fresh);
+        Assert.DoesNotContain("revision", fresh);
+
+        var revision = JsonSerializer.Serialize(
+            new AgentRunRequest(1, "Projector cutting out.", 3, null, 7, RevisionNote: "Price a repair.", RevisionWorkOrderId: 57), web);
+        Assert.Contains("\"revision_note\":\"Price a repair.\"", revision);
+        Assert.Contains("\"revision_work_order_id\":57", revision);
 
         var reopened = JsonSerializer.Serialize(
             new AgentRunRequest(1, "Projector cutting out.", 3, null, 7, Reopened: true), web);

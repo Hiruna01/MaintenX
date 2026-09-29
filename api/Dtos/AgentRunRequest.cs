@@ -41,7 +41,22 @@ public record AgentRunRequest(
     // tools. Left off the wire when false, so every other run's body is unchanged.
     [property: JsonPropertyName("reopened"),
               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    bool Reopened = false);
+    bool Reopened = false,
+
+    // The manager's note when an order was sent back for revision (WorkOrder.RevisionNote).
+    // Its presence routes graph.py straight to the strategist: the fault is diagnosed
+    // already, and what was sent back is the plan for the work. Left off the wire when null,
+    // so every other run's body is unchanged.
+    [property: JsonPropertyName("revision_note"),
+              JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? RevisionNote = null,
+
+    // The Draft order that note is on. It is still open in its room, so the strategist's own
+    // open-orders lookup returns it; this id is how it tells the job being re-planned from a
+    // job it could consolidate with.
+    [property: JsonPropertyName("revision_work_order_id"),
+              JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? RevisionWorkOrderId = null);
 
 /// <summary>
 /// One answered question, in the shape of the agent's ClarificationAnswer: the question with

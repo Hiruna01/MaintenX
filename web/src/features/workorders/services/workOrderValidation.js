@@ -106,6 +106,22 @@ export function initialRaiseValues(report) {
   };
 }
 
+/**
+ * The resubmit form's starting values: the order AS IT WAS SENT BACK — its strategy, estimate
+ * and parts. Not the strategist's proposal: while this form is offered, the latest proposal is
+ * either the one the manager just sent back or one the runner could not use (a usable revised
+ * proposal is resubmitted by the runner itself, and the Draft is gone). The asset is the
+ * order's own and is not editable: a revision re-plans the job, it does not move it.
+ */
+export function initialResubmitValues(draft) {
+  return {
+    assetId: String(draft.assetId),
+    strategy: draft.strategy,
+    estimatedCost: String(draft.estimatedCost),
+    partsRequired: draft.partsRequired ?? '',
+  };
+}
+
 export function validateRaiseWorkOrder(values) {
   const errors = {};
 

@@ -7,7 +7,8 @@ namespace CampusFacilities.Api.Dtos;
 ///
 /// <see cref="CanRaiseWorkOrder"/> is whether POST /api/workorders would accept an order for
 /// this report now: the workflow is somewhere <see cref="Services.WorkflowTransitions"/> lets
-/// an order be raised from (Strategizing, or Failed), and the report is not Closed. It decides
+/// an order be raised from (Strategizing, or Failed), the report is not Closed, and no order
+/// sent back for revision is waiting in Draft to be resubmitted instead. It decides
 /// which control a client OFFERS; CreateAsync still makes the move and refuses a stale one
 /// with a 409.
 /// </summary>

@@ -452,6 +452,55 @@ public class ApprovalQueueTests : IClassFixture<ApiFactory>
         Assert.Equal(state is WorkflowState.Strategizing or WorkflowState.Failed, offered);
     }
 
+    /// <summary>
+    /// While an order sent back for revision waits in Draft, the report offers resubmitting IT
+    /// rather than raising another — the workflow is in Strategizing, where raising would
+    /// otherwise be offered, and the POST refuses a second order. The offer and the gate still
+    /// agree. Verified to fail with the Draft condition removed from CanRaiseWorkOrder.
+    /// </summary>
+    [Fact]
+    public async Task ReportDetail_OffersTheRevisedDraft_NotASecondOrder_WhileOneWaits()
+    {
+        var (manager, _) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        await WorkflowTestData.ReadyForWorkOrderAsync(_factory.Services, fault.ReportId);
+
+        var raised = await manager.PostAsJsonAsync("/api/workorders",
+            new CreateWorkOrderDto(fault.ReportId, fault.AssetId, WorkOrderStrategy.EscalateReplacement, 45_000m, "New unit."),
+            JsonOptions);
+        var order = await raised.Content.ReadFromJsonAsync<WorkOrderDto>(JsonOptions);
+        Assert.Null((await DetailAsync(manager, fault.ReportId)).RevisionDraft);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await manager.PostAsJsonAsync($"/api/workorders/{order!.Id}/request-revision",
+            new RequestRevisionDto("Price a repair first."), JsonOptions)).StatusCode);
+
+        var detail = await DetailAsync(manager, fault.ReportId);
+        Assert.Equal(WorkflowState.Strategizing, detail.LatestWorkflow!.State);
+        Assert.False(detail.LatestWorkflow.CanRaiseWorkOrder);
+
+        var draft = detail.RevisionDraft!;
+        Assert.Equal(order.Id, draft.WorkOrderId);
+        Assert.Equal(fault.AssetId, draft.AssetId);
+        Assert.Equal(WorkOrderStrategy.EscalateReplacement, draft.Strategy);
+        Assert.Equal(45_000m, draft.EstimatedCost);
+        Assert.Equal("New unit.", draft.PartsRequired);
+        Assert.Equal("Price a repair first.", draft.RevisionNote);
+
+        var second = await manager.PostAsJsonAsync("/api/workorders",
+            new CreateWorkOrderDto(fault.ReportId, fault.AssetId, WorkOrderStrategy.SingleJob, 900m, null), JsonOptions);
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+
+        // Resubmitted, it is no longer a Draft — and the offer stays off, because the workflow
+        // has moved on to the manager's decision.
+        Assert.Equal(HttpStatusCode.NoContent, (await manager.PostAsJsonAsync($"/api/workorders/{order.Id}/resubmit",
+            new ResubmitWorkOrderDto(WorkOrderStrategy.SingleJob, 9_000m, null), JsonOptions)).StatusCode);
+
+        var after = await DetailAsync(manager, fault.ReportId);
+        Assert.Null(after.RevisionDraft);
+        Assert.Equal(WorkflowState.WorkOrderRaised, after.LatestWorkflow!.State);
+        Assert.False(after.LatestWorkflow.CanRaiseWorkOrder);
+    }
+
     private static async Task<ReportDetailDto> DetailAsync(HttpClient client, int reportId)
     {
         var response = await client.GetAsync($"/api/reports/{reportId}");

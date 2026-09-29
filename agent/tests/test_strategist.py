@@ -191,6 +191,7 @@ def test_strategist_input_is_exactly_what_the_agent_may_see():
         "asset_id",
         "diagnosis",
         "revision_note",
+        "revision_work_order_id",
     }
 
 
@@ -353,6 +354,65 @@ async def test_consolidating_with_an_order_it_was_never_shown_is_a_safe_failure(
     assert result.status is AgentStatus.safe_failure
     assert result.output is None
     assert "999" in result.error
+
+
+# --- A revision: the order sent back is re-planned, never consolidated with ---
+
+DRAFT_UNDER_REVISION = {
+    "id": 57,
+    "reportId": 12,
+    "assetId": 1,
+    "assetTag": "PRJ-MAB101-01",
+    "status": "Draft",
+    "strategy": "EscalateReplacement",
+    "estimatedCost": 45000.00,
+    "createdAt": "2026-09-25T04:00:00Z",
+}
+
+REVISION_REQUEST = SEEDED_PROJECTOR_REQUEST.model_copy(
+    update={"revision_note": "Too expensive this term - price a repair first.", "revision_work_order_id": 57}
+)
+
+
+async def test_the_order_under_revision_is_shown_as_itself_not_as_open_work(settings):
+    """
+    The Draft a manager sent back is still open, so get_open_work_orders returns it. It is
+    the job being re-planned: shown on its own, and left out of the ids open for consolidation.
+    """
+    responder = ScriptedResponder(VALID_PROPOSAL)
+
+    await _agent(settings, responder, _tools_with_open_orders([DRAFT_UNDER_REVISION, OPEN_AC_ORDER])).run(
+        REVISION_REQUEST, None
+    )
+
+    data = _data_block(_user_prompt(responder))
+    assert data["manager_revision_note"] == "Too expensive this term - price a repair first."
+    assert data["order_under_revision"]["id"] == 57
+    assert [o["id"] for o in data["open_work_orders"]] == [42]
+
+
+async def test_consolidating_with_the_order_under_revision_is_a_safe_failure(settings):
+    """Merging a job into itself is not a plan — refused like any id the agent was not shown."""
+    responder = ScriptedResponder(
+        _reply(strategy="consolidated_job", consolidate_with_work_order_ids=[57])
+    )
+
+    result = await _agent(
+        settings, responder, _tools_with_open_orders([DRAFT_UNDER_REVISION, OPEN_AC_ORDER])
+    ).run(REVISION_REQUEST, None)
+
+    assert result.status is AgentStatus.safe_failure
+    assert "57" in result.error
+
+
+async def test_a_first_run_has_no_order_under_revision(settings):
+    responder = ScriptedResponder(VALID_PROPOSAL)
+
+    await _agent(settings, responder, _tools_with_open_orders([OPEN_AC_ORDER])).run(
+        SEEDED_PROJECTOR_REQUEST, THERMAL_DIAGNOSIS
+    )
+
+    assert "order_under_revision" not in _data_block(_user_prompt(responder))
 
 
 # --- Retry and safe failure --------------------------------------------------

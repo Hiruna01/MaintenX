@@ -1,3 +1,4 @@
+using Google;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Calendar.v3;
 using Google.Apis.Calendar.v3.Data;
@@ -16,6 +17,14 @@ namespace CampusFacilities.Api.Services;
 /// </summary>
 public sealed class GoogleCalendarClient : IGoogleCalendarClient, IDisposable
 {
+    /// <summary>
+    /// The key a GoogleApiException carries Google's Retry-After under, in its Data, as a
+    /// TimeSpan. GoogleApiException has no response headers of its own, so the header is caught
+    /// on the way in (<see cref="RetryAfterCapture"/>) and attached to the exception this
+    /// client throws. Only GoogleCalendarSyncService reads it — and decides what it means.
+    /// </summary>
+    public const string RetryAfterDataKey = "MaintenX.RetryAfter";
+
     /// <summary>
     /// Read-only, and the narrowest scope the Calendar API offers. The calendar is only
     /// shared with the service account for reading anyway; asking for less than that is a
@@ -87,6 +96,10 @@ public sealed class GoogleCalendarClient : IGoogleCalendarClient, IDisposable
         string? pageToken = null;
         var pages = 0;
 
+        // One per call, not per client: a singleton shared by every sync must not carry one
+        // call's Retry-After into the next.
+        var retryAfter = new RetryAfterCapture();
+
         do
         {
             var request = _service.Events.List(_settings.CalendarId);
@@ -98,8 +111,25 @@ public sealed class GoogleCalendarClient : IGoogleCalendarClient, IDisposable
             request.ShowDeleted = true;
             request.MaxResults = PageSize;
             request.PageToken = pageToken;
+            request.AddUnsuccessfulResponseHandler(retryAfter);
 
-            var page = await request.ExecuteAsync(cancellationToken);
+            Events page;
+
+            try
+            {
+                page = await request.ExecuteAsync(cancellationToken);
+            }
+            catch (GoogleApiException ex)
+            {
+                // Still thrown — the sync tells a rate limit from an outage by the exception —
+                // just with the header Google sent, which the exception has no field for.
+                if (retryAfter.RetryAfter is { } wait)
+                {
+                    ex.Data[RetryAfterDataKey] = wait;
+                }
+
+                throw;
+            }
 
             if (page.Items is not null)
             {
@@ -115,4 +145,42 @@ public sealed class GoogleCalendarClient : IGoogleCalendarClient, IDisposable
     }
 
     public void Dispose() => _service?.Dispose();
+}
+
+/// <summary>
+/// Reads Retry-After off an unsuccessful Google response and asks for NO retry: the client's
+/// own back-off is off on purpose (see GoogleCalendarClient), and the next scheduled sync is
+/// the retry. Google sends the header on a 429 and on some quota 403s.
+/// </summary>
+internal sealed class RetryAfterCapture : IHttpUnsuccessfulResponseHandler
+{
+    public TimeSpan? RetryAfter { get; private set; }
+
+    public Task<bool> HandleResponseAsync(HandleUnsuccessfulResponseArgs args)
+    {
+        RetryAfter = RetryAfterOf(args.Response, DateTimeOffset.UtcNow);
+        return Task.FromResult(false);
+    }
+
+    /// <summary>
+    /// The wait a response asks for — its Retry-After as seconds, or as a date measured from
+    /// <paramref name="now"/> (never negative). Null when it sent none: none is invented.
+    /// </summary>
+    internal static TimeSpan? RetryAfterOf(HttpResponseMessage response, DateTimeOffset now)
+    {
+        var header = response.Headers.RetryAfter;
+
+        if (header?.Delta is { } delta)
+        {
+            return delta;
+        }
+
+        if (header?.Date is { } date)
+        {
+            var wait = date - now;
+            return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
+        }
+
+        return null;
+    }
 }

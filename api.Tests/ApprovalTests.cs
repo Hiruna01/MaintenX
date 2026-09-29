@@ -96,6 +96,57 @@ public class ApprovalTests : IClassFixture<ApiFactory>
         Assert.Equal(WorkflowState.AwaitingManagerApproval, await WorkflowStateAsync(fault.ReportId));
     }
 
+    /// <summary>
+    /// A RESUBMITTED DRAFT GOES THROUGH THE SAME GATE: sent back for revision, then resubmitted
+    /// at exactly the threshold, it lands where a new order at that cost would — approved for
+    /// every strategy but a replacement — and the same order moves on, not a second one. The
+    /// gate leaves its step after the revision's, saying who resubmitted it. Verified to fail
+    /// with ResubmitAsync setting the status itself instead of calling the gate.
+    /// </summary>
+    [Theory]
+    [InlineData(WorkOrderStrategy.KnownFix, WorkOrderStatus.Approved, WorkflowState.WorkOrderRaised)]
+    [InlineData(WorkOrderStrategy.Defer, WorkOrderStatus.Approved, WorkflowState.WorkOrderRaised)]
+    [InlineData(WorkOrderStrategy.EscalateReplacement, WorkOrderStatus.AwaitingApproval, WorkflowState.AwaitingManagerApproval)]
+    public async Task AResubmittedDraft_AtExactlyTheThreshold_IsRoutedByTheSameGate(
+        WorkOrderStrategy strategy, WorkOrderStatus expected, WorkflowState expectedWorkflow)
+    {
+        var (manager, managerId) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        var order = await RaiseAsync(manager, fault, 42_000m);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await manager.PostAsJsonAsync(
+            $"/api/workorders/{order.Id}/request-revision", new RequestRevisionDto("Too dear."), JsonOptions)).StatusCode);
+        Assert.Equal(WorkOrderStatus.Draft, (await DetailAsync(manager, order.Id)).Status);
+
+        var resubmitted = await manager.PostAsJsonAsync(
+            $"/api/workorders/{order.Id}/resubmit", new ResubmitWorkOrderDto(strategy, Threshold, "Fan and filter."), JsonOptions);
+        Assert.Equal(HttpStatusCode.NoContent, resubmitted.StatusCode);
+
+        var detail = await DetailAsync(manager, order.Id);
+        Assert.Equal(expected, detail.Status);
+        Assert.Equal(strategy, detail.Strategy);
+        Assert.Equal(Threshold, detail.EstimatedCost);
+        Assert.Equal(strategy == WorkOrderStrategy.EscalateReplacement, detail.ApprovalBasis.RequiresApproval);
+        Assert.Equal(expectedWorkflow, await WorkflowStateAsync(fault.ReportId));
+
+        var steps = await ApprovalStepsAsync(fault.ReportId);
+        Assert.Equal(
+            new[]
+            {
+                ApprovalAudit.ApprovalRequired, ApprovalAudit.RevisionRequested,
+                expected == WorkOrderStatus.Approved ? ApprovalAudit.AutoApproved : ApprovalAudit.ApprovalRequired
+            },
+            steps.Select(st => st.Decision));
+        Assert.All(steps, st => Assert.Equal(order.Id, st.WorkOrderId));
+        Assert.Null(steps[2].DecidedByUserId);
+        Assert.Contains($"user {managerId}", steps[2].Note);
+
+        // Still the one order on the report.
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(order.Id, (await db.WorkOrders.SingleAsync(w => w.ReportId == fault.ReportId)).Id);
+    }
+
     // ---------------------------------------------------------------------------------
     // Who may decide
     // ---------------------------------------------------------------------------------
@@ -105,6 +156,7 @@ public class ApprovalTests : IClassFixture<ApiFactory>
     [InlineData("approve")]
     [InlineData("reject")]
     [InlineData("request-revision")]
+    [InlineData("resubmit")]
     public async Task ManagerDecisions_WithNoToken_Are401(string action)
     {
         var (manager, _) = await ClientAsync(Role.FacilitiesManager);

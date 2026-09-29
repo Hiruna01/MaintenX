@@ -154,6 +154,25 @@ async def test_a_reopened_repair_is_diagnosed_again_without_asking_again():
     assert state["response"] is None
 
 
+async def test_a_revision_runs_the_strategist_alone_with_the_managers_note():
+    """
+    A manager sent the proposal back. The fault is diagnosed already, so neither the planner,
+    the clarifier nor the diagnostic runs again — only the strategist, handed the note on the
+    request and no fresh diagnosis.
+    """
+    graph, (_, _, strategist, _, _), calls = _graph(_clarifier_reply(questions=2))
+    revision = FRESH.model_copy(
+        update={"revision_note": "Too expensive - price a repair first.", "revision_work_order_id": 57}
+    )
+
+    state = await graph.ainvoke(_initial(revision))
+
+    assert calls == ["strategize"]
+    assert strategist.args[0].revision_note == "Too expensive - price a repair first."
+    assert strategist.args[1] is None
+    assert state["response"] is None and state["diagnosis"] is None
+
+
 # ----------------------------------------------------------------------
 # The plan delegates. What the planner decides is whether the clarifier runs; the routing on
 # that decision is plain Python reading a plan PlannerOutput has already validated.

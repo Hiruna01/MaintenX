@@ -11,6 +11,7 @@ using CampusFacilities.Api.Services;
 using Google;
 using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Calendar.v3.Data;
+using Google.Apis.Requests;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -369,7 +370,13 @@ public class TimetableSyncTests : IClassFixture<TimetableStubApiFactory>
         { "401", TimetableSyncFailure.AuthenticationFailed },
         { "403", TimetableSyncFailure.AuthenticationFailed },
         { "404", TimetableSyncFailure.Rejected },
-        { "unreachable", TimetableSyncFailure.Unreachable }
+        { "unreachable", TimetableSyncFailure.Unreachable },
+        // Too many requests, told apart from a refused credential: a 429, and a 403 whose
+        // reason is a usage limit — which the Calendar API sends as often as a 429.
+        { "429", TimetableSyncFailure.RateLimited },
+        { "403-rateLimitExceeded", TimetableSyncFailure.RateLimited },
+        { "403-quotaExceeded", TimetableSyncFailure.RateLimited },
+        { "403-forbidden", TimetableSyncFailure.AuthenticationFailed }
     };
 
     /// <summary>What each named failure looks like coming out of the Google client library.</summary>
@@ -379,6 +386,11 @@ public class TimetableSyncTests : IClassFixture<TimetableStubApiFactory>
             new TokenErrorResponse { Error = "invalid_grant", ErrorDescription = "Invalid JWT Signature." },
             HttpStatusCode.BadRequest),
         "unreachable" => new HttpRequestException("No such host is known. (oauth2.googleapis.com:443)"),
+        _ when name.StartsWith("403-", StringComparison.Ordinal) => new GoogleApiException("calendar", $"Google answered {name}.")
+        {
+            HttpStatusCode = HttpStatusCode.Forbidden,
+            Error = new RequestError { Code = 403, Errors = new[] { new SingleError { Reason = name[4..] } } }
+        },
         _ => new GoogleApiException("calendar", $"Google answered {name}.")
         {
             HttpStatusCode = (HttpStatusCode)int.Parse(name)
@@ -417,6 +429,60 @@ public class TimetableSyncTests : IClassFixture<TimetableStubApiFactory>
         Assert.Equal(cached.UpdatedAt, after.UpdatedAt);
 
         Assert.True(SyncWarnings() > warningsBefore);
+    }
+
+    /// <summary>
+    /// A rate limit reports how long Google asked us to wait — rounded UP to whole seconds,
+    /// never early — and says nothing when Google said nothing: no wait is invented. The
+    /// cached class is untouched either way. Only a rate limit carries one. Verified to fail
+    /// with the 429 case removed from Classify.
+    /// </summary>
+    [Theory]
+    [InlineData(429, 2.3, 3)]
+    [InlineData(429, null, null)]
+    [InlineData(503, 30.0, null)]
+    public async Task Sync_WhenRateLimited_ReportsGooglesRetryAfter_AndInventsNone(
+        int status, double? retryAfterSeconds, int? expected)
+    {
+        var cached = await CacheAClassAsync("evt-rate");
+
+        var error = new GoogleApiException("calendar", "Rate Limit Exceeded") { HttpStatusCode = (HttpStatusCode)status };
+        if (retryAfterSeconds is { } wait)
+        {
+            error.Data[GoogleCalendarClient.RetryAfterDataKey] = TimeSpan.FromSeconds(wait);
+        }
+
+        _factory.Calendar.Respond = _ => throw error;
+
+        var result = await SyncAsync();
+
+        Assert.True(result.Degraded);
+        Assert.Equal(expected, result.RetryAfterSeconds);
+        Assert.Equal(cached.SyncedAt, (await SingleClassAsync("evt-rate")).SyncedAt);
+    }
+
+    /// <summary>
+    /// How the real client reads the header off Google's response: seconds, or a date measured
+    /// from now and never negative, or nothing.
+    /// </summary>
+    [Fact]
+    public void RetryAfter_IsReadAsSecondsOrADate_AndIsNullWhenAbsent()
+    {
+        var now = new DateTimeOffset(2026, 10, 5, 2, 0, 0, TimeSpan.Zero);
+
+        var seconds = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        seconds.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(45));
+
+        var date = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        date.Headers.RetryAfter = new RetryConditionHeaderValue(now.AddMinutes(2));
+
+        var past = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        past.Headers.RetryAfter = new RetryConditionHeaderValue(now.AddMinutes(-2));
+
+        Assert.Equal(TimeSpan.FromSeconds(45), RetryAfterCapture.RetryAfterOf(seconds, now));
+        Assert.Equal(TimeSpan.FromMinutes(2), RetryAfterCapture.RetryAfterOf(date, now));
+        Assert.Equal(TimeSpan.Zero, RetryAfterCapture.RetryAfterOf(past, now));
+        Assert.Null(RetryAfterCapture.RetryAfterOf(new HttpResponseMessage(HttpStatusCode.TooManyRequests), now));
     }
 
     /// <summary>

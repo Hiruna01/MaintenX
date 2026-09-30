@@ -1192,8 +1192,10 @@ public class WorkOrderService : IWorkOrderService
         return busy;
     }
 
+    // An ACTIVE Technician: a deactivated one can neither be handed a job nor have their
+    // diary searched for a slot, since they will never sign in to do it.
     private Task<bool> IsTechnicianAsync(int userId, CancellationToken cancellationToken) =>
-        _db.Users.AnyAsync(u => u.Id == userId && u.Role == Role.Technician, cancellationToken);
+        _db.Users.AnyAsync(u => u.Id == userId && u.Role == Role.Technician && u.IsActive, cancellationToken);
 
     /// <summary>
     /// PostgreSQL's "could not serialize access" (SQLSTATE 40001), which it raises on the

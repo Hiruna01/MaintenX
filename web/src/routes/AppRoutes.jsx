@@ -19,6 +19,9 @@ import ReportsPage from '../features/reports/pages/ReportsPage';
 import MetricsPage from '../features/verification/pages/MetricsPage';
 import VerificationDetailPage from '../features/verification/pages/VerificationDetailPage';
 import VerificationsPage from '../features/verification/pages/VerificationsPage';
+import UserCreatePage from '../features/users/pages/UserCreatePage';
+import UserManagePage from '../features/users/pages/UserManagePage';
+import UsersPage from '../features/users/pages/UsersPage';
 import WorkflowDetailPage from '../features/workflows/pages/WorkflowDetailPage';
 import WorkflowsPage from '../features/workflows/pages/WorkflowsPage';
 import ApprovalsPage from '../features/workorders/pages/ApprovalsPage';
@@ -84,9 +87,17 @@ export function AppRoutes() {
       </Route>
 
       {/* The buildings, rooms and asset categories: Admin only, exactly the API's policy on
-          their writes — the same split as registering an asset. */}
+          their writes — the same split as registering an asset. And the user accounts. */}
       <Route element={<ProtectedRoute allowedRoles={ADMIN_ROLES} />}>
         <Route path="/estate" element={<EstatePage />} />
+        {/* Accounts: Admin only, exactly the API's policy on every /api/users action but the
+            technician picker. Create and manage open as slide-overs ON TOP of the list, nested
+            routes rendered into its <Outlet /> — the whole route is Admin-only already, so they
+            need no RolePanelGuard of their own. */}
+        <Route path="/users" element={<UsersPage />}>
+          <Route path="new" element={<UserCreatePage />} />
+          <Route path=":id" element={<UserManagePage />} />
+        </Route>
       </Route>
 
       {/* Estate-wide numbers: FacilitiesManager and Admin, the two roles the endpoint names. */}

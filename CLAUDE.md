@@ -125,6 +125,67 @@ file, run `git add --renormalize .` once. Do not commit a file with CRLF line en
 
 ---
 
+## USER MANAGEMENT — Admin only, and "delete" is deactivate
+
+`UsersController` / `IUserService` / `UserService` (`AddScoped`), behind the web's `/users`
+page (see Users under FRONTEND). **Every action is the Admin's** —
+`[Authorize]` on the class, `[Authorize(Policy = nameof(Role.Admin))]` per action — except
+`GET /api/users/technicians`, the FacilitiesManager's picker. No token is 401, any other role 403.
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/users?search=&role=&isActive=&page=&pageSize=` | `PagedResult<UserAdminDto>`, name then `Id`; search matches name OR email (`ToLower().Contains()`) |
+| `GET /api/users/{id}` | `UserAdminDto` or 404 |
+| `POST /api/users` | `CreateUserDto` → **201** via `CreatedAtAction`, **409** email taken |
+| `PUT /api/users/{id}` | `UpdateUserDto` (email, name, role) → 204 / 404 / 409 |
+| `DELETE /api/users/{id}` | **deactivates** (`DeactivateAsync`) → 204, idempotent |
+| `POST /api/users/{id}/reactivate` | → 204, idempotent |
+| `POST /api/users/{id}/password` | `ResetPasswordDto` → 204. An Admin sets a temporary password; there is no email flow |
+| `GET /api/users/technicians` | FacilitiesManager: every **active** Technician, by name |
+
+- **`User.IsActive` is how a person leaves the system; the row is never deleted.** Reports,
+  clarification answers and work orders (assigned technician, approved by) all point at
+  `Users` with `Restrict` keys, so a real delete would be a 500 for anyone who ever did
+  anything — the same reason `DELETE /api/assets/{id}` retires. `UserAdminDto` never carries
+  the hash; `UserWriteOutcome` is the `EstateWriteOutcome` shape.
+- **The column's default lives in the migration, not the model** (`AddUserIsActive`,
+  hand-edited to `defaultValue: true`). `HasDefaultValue(true)` on a bool would make EF skip
+  the column whenever the value is `false` — the one value that must be written. New rows get
+  `true` from the property initializer, which is also what keeps the tests' bootstrap Admin
+  (written straight into `Users`) able to sign in.
+- **A deactivated account cannot sign in** — `LoginAsync` answers with the SAME null (401,
+  same body) as a wrong password, and only after checking the password.
+- **Deactivation and a role change take effect on the NEXT request**, not when the 12-hour
+  token runs out: `JwtBearerEvents.OnTokenValidated` in `Program.cs` calls
+  `IAuthService.IsSessionValidAsync` — the account exists, is active, and still has the role
+  the token claims — and fails the request (401) otherwise. One primary-key lookup per
+  authenticated request is the price; with no refresh tokens there is nothing else to revoke.
+  Both clients already turn a 401 on a token into "session expired". A name or email change
+  leaves the session alone.
+- **An Admin cannot deactivate themselves or change their own role** (409, `OwnAccount`).
+  That single rule is what guarantees an active Admin always exists: only an active Admin can
+  call these endpoints (the token check refuses anyone else), and none can remove themselves.
+  There is deliberately no separate "last Admin" check — it could never fire.
+- **A Technician with unfinished work cannot be deactivated or given another role** (409,
+  `HasLiveWork`): any assigned order not `Completed` / `Rejected` / `Cancelled`. Only the
+  assigned Technician can complete an order, so it would be stuck. Reassign first (`assign`
+  takes a different technician). `UserAdminDto.LiveWorkOrderCount` shows it before the try.
+- **An inactive Technician is not a Technician for work orders**: not in the picker, `assign`
+  is a 400, and the slot finder refuses them as `technicianId` (`IsTechnicianAsync` checks
+  `IsActive`). Orders ALREADY assigned to someone are never touched by a deactivation — the
+  live-work rule means there are none.
+- **Emails are stored lower-cased** through `AuthService.NormaliseEmail` (internal, shared),
+  so the unique index means what it says however the Admin typed it; a lost race on it is
+  re-checked and becomes the same 409.
+- `CreateUserDto.Role` is a **`[Required]` nullable**: a missing role is a 400, never the
+  enum's first member (`Reporter`) chosen for the Admin. `POST /api/auth/register` still works
+  for an Admin but signs in AS the new account, which is why this endpoint exists.
+- Pinned by `UserManagementTests` (plus the picker in `ApprovalQueueTests`). **Verified to
+  fail with each rule broken**: the token check, the login check, both `OwnAccount` checks,
+  both `HasLiveWork` checks, the picker's `IsActive` filter and the assign's.
+
+---
+
 ## ASSET REGISTRY — what exists, and what has been done to it
 
 `AssetCategory`, `Asset` and `ServiceRecord` in `Models/`, with `AssetStatus` and
@@ -1005,9 +1066,10 @@ and proposal for the report.
   guess.** Confidence, urgency and next action stay **strings** — advice, like
   `VerificationCheck.AgentOutcome`. The proposed cost is read with `GetDecimal()` from the
   JSON number's text.
-- `GET /api/users?role=Technician` (`UsersController`, `IUserService`, FacilitiesManager
-  only) is the technician picker behind assign and the board's filter. `role` is
-  **required** — there is no way to list the whole user table.
+- `GET /api/users/technicians` (`UsersController`, `IUserService`, FacilitiesManager
+  only) is the technician picker behind assign and the board's filter — **active**
+  Technicians only. A fixed route, not a role parameter: the whole user table is the Admin's
+  list (see USER MANAGEMENT), and a manager has no way to read it.
 
 ## VERIFICATION — did the repair actually hold?
 
@@ -1817,7 +1879,9 @@ flakiness to retry away.
   - `AnalyticsTests` — `GET /api/analytics/metrics`: the empty database, roles, and each
     of the three figures on its boundaries.
   - `AuthTests` — registration (who may create which role), the fallback policy and the
-    exact list of anonymous endpoints. `EstateTests` — buildings and rooms: access and every
+    exact list of anonymous endpoints. `UserManagementTests` — the Admin's account
+    management: access, CRUD, deactivation (login and live token refused), a role change
+    retiring the old token, `OwnAccount`, `HasLiveWork`, reset password. `EstateTests` — buildings and rooms: access and every
     409/400. `PlanRulesTests` — the plan check as pure functions; the runner's use of it is
     in `WorkflowRunnerTests`. `WorkflowTests` also pins who may read and start a workflow,
     one live run per report, and the tool router refusing a workflow that has ended — with
@@ -2046,6 +2110,30 @@ delete on the API). A refusal — a code in use, a building with rooms, a room w
 history — is shown on the form or the row exactly as the API worded it. After any write the
 lists remount with a new `key`, as everywhere else.
 
+### Users — `features/users/`
+
+`/users` ("Users" in the sidebar, under Estate), behind `ADMIN_ROLES` — the API's Admin policy
+on every account action. A list with search (name or email, server-side, debounced), a role
+picker and Active / Deactivated tabs whose counts are the API's `totalCount`
+(`useUserStatusCounts`), paged with `Pager`. **Create and manage are slide-overs that are
+routes**, like the asset registry's: `/users/new` and `/users/:id`, children of `/users`
+rendered into its `<Outlet />`. The whole route is Admin-only already, so they need no
+`RolePanelGuard`.
+
+- **The manage panel is edit + the account switches** (`AccountActions`): deactivate or
+  reactivate (two steps, "history is kept") and "Reset password" (`ResetPasswordForm`, the
+  password twice, `validatePassword()`). Editing never sends a password or `isActive`.
+- **After any change the panel navigates to its own URL with a fresh `state.refresh`**: the
+  list's fetched part (`UserResults`) and the panel's body (`ManageBody`) are both keyed on it
+  and remount, while the filters (held above) and the sheet itself stay. There is no refetch
+  in `useFetch`, as everywhere.
+- **Own account: the role control is shown locked and Deactivate is not offered** — the API
+  refuses both (`OwnAccount`), and an Admin is not offered a control that could only come
+  back 409. Every other refusal (email taken, a Technician's live work) is shown as the API
+  worded it; `liveWorkOrderCount` is the API's count, only displayed.
+- `validate()` / `validatePassword()` in `services/userValidation.js` mirror `CreateUserDto`,
+  `UpdateUserDto` and `ResetPasswordDto`; roles are `ROLES` by NAME, tones in `tones.js`.
+
 ### Reports — `features/reports/`
 
 `/reports` is the managers' intake queue, behind `MANAGER_ROLES` and in the nav for them
@@ -2162,7 +2250,7 @@ them both. Which orders a caller sees is the API's rule; the client keeps no cop
 
 - **The board searches server-side** (`search` debounced 400 ms — asset tag or fault),
   filters by status by NAME (tabs with counts) and, **for a manager only**, by technician
-  from `GET /api/users?role=Technician`. Only Newest and Highest estimate sort — the two
+  from `GET /api/users/technicians`. Only Newest and Highest estimate sort — the two
   `WorkOrderSort` members, no direction, never a browser-side sort of the page.
 - **`ApprovalsPage` is the screen an evaluator reads hardest.** One card per order, and a
   manager decides without opening anything else: the report verbatim, **the cost against

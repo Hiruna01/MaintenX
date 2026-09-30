@@ -8,6 +8,7 @@ import {
   MessageSquareWarning,
   ShieldCheck,
   Stamp,
+  UserCog,
   Workflow,
   Wrench,
 } from 'lucide-react';
@@ -45,6 +46,7 @@ const GROUPS = [
       { to: '/assets', label: 'Assets', icon: Boxes, roles: null },
       { to: '/reports', label: 'Reports', icon: MessageSquareWarning, roles: MANAGER_ROLES },
       { to: '/estate', label: 'Buildings & rooms', icon: Building2, roles: ADMIN_ROLES },
+      { to: '/users', label: 'Users', icon: UserCog, roles: ADMIN_ROLES },
     ],
   },
   {

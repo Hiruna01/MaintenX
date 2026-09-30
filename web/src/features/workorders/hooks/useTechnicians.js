@@ -2,7 +2,7 @@ import useFetch from '../../../hooks/useFetch';
 import { TECHNICIANS_PATH } from '../services/workOrdersApi';
 
 /**
- * Every Technician, by name, from GET /api/users?role=Technician — the picker behind
+ * Every ACTIVE Technician, by name, from GET /api/users/technicians — the picker behind
  * assigning an order and filtering the board by who is going.
  *
  * FacilitiesManager only on the API, so only components rendered for a manager call this:

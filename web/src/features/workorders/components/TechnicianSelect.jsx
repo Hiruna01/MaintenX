@@ -2,7 +2,7 @@ import SelectMenu from '../../../components/ui/SelectMenu';
 import useTechnicians from '../hooks/useTechnicians';
 
 /**
- * A picker over every Technician, fetched from GET /api/users?role=Technician.
+ * A picker over every Technician, fetched from GET /api/users/technicians.
  *
  * Only ever rendered for a FacilitiesManager — the endpoint is theirs alone — and it shows
  * its own loading and error states rather than an empty list, since "no technicians" and

@@ -14,7 +14,7 @@ export const ROLES = {
 export const MANAGER_ROLES = [ROLES.FacilitiesManager, ROLES.Admin];
 
 /**
- * Who may change the asset registry. Matches the API's per-action
+ * Who may change the asset registry — and the estate and the user accounts. Matches the API's per-action
  * `[Authorize(Policy = nameof(Role.Admin))]` — deciding what equipment the estate contains
  * is an Admin's job, and there is no "or anyone more senior" fallback in either place.
  */

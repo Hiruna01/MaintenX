@@ -107,6 +107,14 @@ public class AuthService : IAuthService
             return null;
         }
 
+        // A deactivated account is refused with the SAME null as a wrong password, and only
+        // after the password has been checked — so the response says nothing about whether
+        // the account exists, is active, or the password was right.
+        if (!user.IsActive)
+        {
+            return null;
+        }
+
         if (result == PasswordVerificationResult.SuccessRehashNeeded)
         {
             // The stored hash used older parameters. The password was correct, so upgrade it.
@@ -133,9 +141,25 @@ public class AuthService : IAuthService
             : new UserDto(user.Id, user.Email, user.FullName, user.Role);
     }
 
+    public async Task<bool> IsSessionValidAsync(
+        int userId,
+        string? roleClaim,
+        CancellationToken cancellationToken = default)
+    {
+        var user = await _db.Users
+            .AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => new { u.IsActive, u.Role })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Compared by NAME, the way the claim was written in CreateToken.
+        return user is not null && user.IsActive && user.Role.ToString() == roleClaim;
+    }
+
     /// <summary>Emails are compared case-insensitively by storing them lower-cased,
-    /// so Admin@campus.test and admin@campus.test cannot both be registered.</summary>
-    private static string NormaliseEmail(string email) => email.Trim().ToLowerInvariant();
+    /// so Admin@campus.test and admin@campus.test cannot both be registered. Internal so
+    /// UserService, which also writes Users.Email, stores it the same way.</summary>
+    internal static string NormaliseEmail(string email) => email.Trim().ToLowerInvariant();
 
     private Task<bool> IsDuplicateEmailAsync(string email, CancellationToken cancellationToken) =>
         _db.Users.AsNoTracking().AnyAsync(u => u.Email == email, cancellationToken);

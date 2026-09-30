@@ -495,7 +495,7 @@ public class WorkOrdersController : ControllerBase
                 return QueryInvalid(nameof(assetId), $"Asset {assetId} does not exist.");
 
             case AvailableSlotsOutcome.NotATechnician:
-                return QueryInvalid(nameof(technicianId), "That user does not exist or is not a Technician.");
+                return QueryInvalid(nameof(technicianId), "That user does not exist or is not an active Technician.");
 
             case AvailableSlotsOutcome.InvalidDateRange:
                 return QueryInvalid(nameof(toDate),
@@ -621,7 +621,7 @@ public class WorkOrdersController : ControllerBase
                 });
 
             case WorkOrderActionOutcome.NotATechnician:
-                ModelState.AddModelError(field ?? string.Empty, "That user does not exist or is not a Technician.");
+                ModelState.AddModelError(field ?? string.Empty, "That user does not exist or is not an active Technician.");
                 return ValidationProblem(ModelState);
 
             case WorkOrderActionOutcome.NoWorkflow:

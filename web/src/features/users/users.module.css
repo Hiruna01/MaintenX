@@ -1,0 +1,246 @@
+/* User management — the list and its two slide-overs. Values follow the asset registry's
+   (assets.module.css), so the two Admin pages read as one system. */
+
+.page {
+  color: var(--mx-ink);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* ---------- List controls ---------- */
+
+.listControls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-bottom: 1.1rem;
+  animation: mx-rise 420ms 60ms var(--mx-ease) both;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.search {
+  position: relative;
+  flex: 1 1 260px;
+  max-width: 380px;
+  display: flex;
+  align-items: center;
+}
+
+.search svg {
+  position: absolute;
+  left: 0.85rem;
+  width: 16px;
+  height: 16px;
+  color: var(--mx-mute);
+  pointer-events: none;
+}
+
+.search input {
+  width: 100%;
+  height: 38px;
+  padding: 0 0.9rem 0 2.35rem;
+  border: 1px solid var(--mx-hairline);
+  border-radius: 999px;
+  background: var(--mx-surface);
+  color: var(--mx-ink);
+  font-size: 0.875rem;
+  transition: border-color 160ms var(--mx-ease), box-shadow 160ms var(--mx-ease);
+}
+
+.search input::placeholder {
+  color: var(--mx-mute);
+}
+
+.search input:hover {
+  border-color: #cfd3da;
+}
+
+.search input:focus {
+  outline: none;
+  border-color: var(--mx-iris);
+  box-shadow: var(--mx-focus);
+}
+
+.toolbarPickers {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.rowsSkeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rowSkeleton {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem;
+  background: var(--mx-surface);
+  border-radius: 14px;
+  box-shadow: var(--mx-shadow-card);
+}
+
+/* ---------- Panel ---------- */
+
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.summaryPills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.youTag {
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--mx-iris-soft);
+  color: var(--mx-iris);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sectionNote {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--mx-graphite);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.35rem;
+}
+
+.formSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.formLegend {
+  padding: 0;
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--mx-graphite);
+}
+
+.lockedValue {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 42px;
+  padding: 0 0.85rem;
+  border-radius: var(--mx-r-sm);
+  background: var(--mx-well);
+  box-shadow: inset 0 0 0 1px var(--mx-hairline-soft);
+  font-size: 0.8125rem;
+  color: var(--mx-ink-2);
+}
+
+.lockedValue svg {
+  width: 14px;
+  height: 14px;
+  color: var(--mx-graphite);
+}
+
+/* Not sticky, unlike the asset form's: on the manage panel the account switches follow it. */
+.formFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--mx-hairline-soft);
+}
+
+.formFooterNote {
+  margin-right: auto;
+  font-size: 0.75rem;
+  color: var(--mx-graphite);
+}
+
+.discardBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+  padding: 0.65rem 0.75rem 0.65rem 0.95rem;
+  border-radius: var(--mx-r);
+  background: var(--mx-amber-bg);
+  box-shadow: inset 0 0 0 1px var(--mx-amber-line);
+  color: var(--mx-amber);
+  font-size: 0.8125rem;
+  font-weight: 540;
+  animation: mx-rise 220ms var(--mx-ease);
+}
+
+.discardBar div {
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* ---------- Account switches ---------- */
+
+.account {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+  border-radius: var(--mx-r);
+  background: var(--mx-well);
+  box-shadow: inset 0 0 0 1px var(--mx-hairline-soft);
+}
+
+.accountHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.accountButtons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.resetForm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--mx-hairline-soft);
+}

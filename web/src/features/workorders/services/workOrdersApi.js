@@ -222,8 +222,11 @@ export function buildApprovalQueuePath(page = 1) {
   return `/api/workorders/approvals?${params.toString()}`;
 }
 
-/** GET /api/users?role=Technician — the picker for assigning and filtering. FacilitiesManager only. */
-export const TECHNICIANS_PATH = '/api/users?role=Technician';
+/**
+ * GET /api/users/technicians — every ACTIVE Technician, the picker for assigning and
+ * filtering. FacilitiesManager only; a deactivated technician cannot be handed a job.
+ */
+export const TECHNICIANS_PATH = '/api/users/technicians';
 
 /**
  * GET /api/workorders/slots/available. `fromDate` / `toDate` are campus-local calendar dates,

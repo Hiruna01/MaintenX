@@ -54,6 +54,13 @@ const TONES = {
   AwaitingManagerApproval: 'amber',
   AwaitingVerification: 'amber',
   Failed: 'red',
+
+  // Role — which account is which at a glance on the user list. A tone decides nothing; the
+  // API's policies decide what each role may do.
+  Reporter: 'slate',
+  Technician: 'amber',
+  FacilitiesManager: 'blue',
+  Admin: 'violet',
 };
 
 export function toneFor(name) {

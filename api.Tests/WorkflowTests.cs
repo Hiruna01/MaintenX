@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CampusFacilities.Api.Data;
 using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
@@ -363,6 +364,68 @@ public class WorkflowTests : IClassFixture<ApiFactory>
 
         var detail = await manager.GetFromJsonAsync<WorkflowDetailDto>($"/api/workflows/{workflow.Id}", JsonOptions);
         Assert.Empty(detail!.Steps);
+    }
+
+    /// <summary>
+    /// THE ONE EXCEPTION to the rule above: the verification agent judging a repair. A confirmed
+    /// repair's workflow is Closed by the reporter's answer, and the agent still has to read the
+    /// repair it is judging. What opens it is the DATABASE — a check on the report waiting on
+    /// the agent, on the report's latest workflow — never the caller's name alone: another
+    /// agent's name, an older run of the same report, and a check already judged all stay 409.
+    /// </summary>
+    [Fact]
+    public async Task ToolCall_ForAnEndedWorkflow_IsTakenOnlyFromTheVerificationAgent_WhileItsCheckIsWaiting()
+    {
+        int olderWorkflow, closedWorkflow, orderId, checkId;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var order = await VerificationTests.SeedCompletedWorkOrderAsync(db, "TRV", DateTime.UtcNow.AddDays(-8));
+            orderId = order.Id;
+            olderWorkflow = await VerificationAgentRunnerTests.AddWorkflowAsync(db, order.ReportId, WorkflowState.Failed);
+            closedWorkflow = await VerificationAgentRunnerTests.AddWorkflowAsync(db, order.ReportId, WorkflowState.Closed);
+
+            var check = new VerificationCheck
+            {
+                WorkOrderId = order.Id,
+                AssetId = order.AssetId,
+                DueAt = DateTime.UtcNow.AddDays(-3),
+                Status = VerificationStatus.Confirmed,
+                ReporterConfirmed = true,
+                ReporterRespondedAt = DateTime.UtcNow.AddHours(-1),
+                AgentQueuedAt = DateTime.UtcNow.AddHours(-1)
+            };
+            db.VerificationChecks.Add(check);
+            await db.SaveChangesAsync();
+            checkId = check.Id;
+        }
+
+        var agent = CreateAgentClient();
+        Task<HttpResponseMessage> Call(int workflowId, string agentName) => agent.PostAsJsonAsync(
+            "/api/internal/tools/get_work_order", new ToolCallRequest(workflowId, orderId, agentName), JsonOptions);
+
+        Assert.Equal(HttpStatusCode.OK, (await Call(closedWorkflow, "verification")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Call(closedWorkflow, "diagnostic")).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await Call(olderWorkflow, "verification")).StatusCode);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            // The one call that was taken is on the audit trail, under the agent's name.
+            var step = Assert.Single(await db.AgentSteps.Where(s => s.WorkflowId == closedWorkflow).ToListAsync());
+            Assert.Equal("verification", step.AgentName);
+            Assert.False(await db.AgentSteps.AnyAsync(s => s.WorkflowId == olderWorkflow));
+
+            // Judged: the check is no longer waiting, so the workflow is ended again for everyone.
+            var check = await db.VerificationChecks.SingleAsync(v => v.Id == checkId);
+            check.AgentJudgedAt = DateTime.UtcNow;
+            check.AgentOutcome = "confirm";
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(HttpStatusCode.Conflict, (await Call(closedWorkflow, "verification")).StatusCode);
     }
 
     // -----------------------------------------------------------------------------------

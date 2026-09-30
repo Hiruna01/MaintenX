@@ -1,7 +1,8 @@
 import clsx from 'clsx';
-import { Bot, CircleCheck, CircleX, Hourglass, MessageSquareQuote, Wrench } from 'lucide-react';
+import { Bot, CircleAlert, CircleCheck, CircleX, Hourglass, MessageSquareQuote, Wrench } from 'lucide-react';
 
 import { formatInstant } from '../../../components/ui/format';
+import { AGENT_REVIEW_STATES } from '../services/verificationApi';
 import { AgentOutcomePill } from './VerificationPills';
 import styles from '../verification.module.css';
 
@@ -89,21 +90,47 @@ function ReporterAnswer({ check }) {
 }
 
 /**
- * The VerificationAgent's verdict, reason and evidence, verbatim. "Not judged" has two
- * meanings, told apart by AgentQueuedAt: not handed over yet, or handed over and waiting.
+ * The VerificationAgent's verdict, reason and evidence, verbatim — or why there is none. Which
+ * of those it is comes from the API's `agentState`, by NAME; nothing here compares the queue
+ * and judgement times. A state this client does not know falls to the "no verdict" line.
  */
 function AgentReview({ check }) {
-  if (!check.agentOutcome) {
-    return (
-      <p className={styles.voiceWaiting}>
-        <Hourglass aria-hidden="true" />
-        {check.agentQueuedAt
-          ? `Handed to the agent ${formatInstant(check.agentQueuedAt)}; no verdict yet.`
-          : 'Not handed to the agent yet — that happens once the reporter answers, or stays silent past the response window.'}
-      </p>
-    );
+  if (check.agentState === AGENT_REVIEW_STATES.Judged && check.agentOutcome) {
+    return <Verdict check={check} />;
   }
 
+  let body;
+  let Icon = Hourglass;
+
+  if (check.agentState === AGENT_REVIEW_STATES.NotQueued) {
+    body = 'Not handed to the agent yet — that happens once the reporter answers, or stays silent past the response window.';
+  } else if (check.agentState === AGENT_REVIEW_STATES.Queued) {
+    body = `Handed to the agent ${formatInstant(check.agentQueuedAt)}; no verdict yet.`;
+  } else if (check.agentState === AGENT_REVIEW_STATES.Retrying) {
+    body = 'The agent service could not be reached last time; it will be tried again.';
+  } else if (check.agentState === AGENT_REVIEW_STATES.CouldNotJudge) {
+    Icon = CircleAlert;
+    body = 'The agent could not give a verdict on this repair, and will not be asked again.';
+  } else {
+    body = 'No verdict from the agent.';
+  }
+
+  return (
+    <>
+      <p className={styles.voiceWaiting}>
+        <Icon aria-hidden="true" />
+        {body}
+      </p>
+      {/* The system's reason, as the API worded it — not the model's. */}
+      {check.agentError ? <p className={styles.voiceEmpty}>Reason: {check.agentError}</p> : null}
+      {check.agentState === AGENT_REVIEW_STATES.CouldNotJudge ? (
+        <p className={styles.voiceWhen}>The status still stands: it is the reporter&apos;s answer, not the agent&apos;s.</p>
+      ) : null}
+    </>
+  );
+}
+
+function Verdict({ check }) {
   return (
     <>
       <AgentOutcomePill outcome={check.agentOutcome} />
@@ -122,7 +149,10 @@ function AgentReview({ check }) {
         <p className={styles.voiceEmpty}>No evidence was recorded with this verdict.</p>
       )}
 
-      <p className={styles.voiceWhen}>Recorded beside the status for you to weigh — it changes nothing by itself.</p>
+      <p className={styles.voiceWhen}>
+        Judged {formatInstant(check.agentJudgedAt)}. Recorded beside the status for you to weigh — it changes nothing by
+        itself.
+      </p>
     </>
   );
 }

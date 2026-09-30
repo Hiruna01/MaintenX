@@ -490,8 +490,8 @@ class _StatusPanel extends StatelessWidget {
               children: [
                 const MxPanelLabel('Automated review', icon: LucideIcons.fileSearch),
                 const SizedBox(height: 10),
-                if (outcome != null) ...[
-                  AgentOutcomeChip(outcome: outcome),
+                if (check.hasVerdict) ...[
+                  AgentOutcomeChip(outcome: outcome!),
                   const SizedBox(height: 8),
                   Text(describeAgentOutcome(outcome), style: theme.textTheme.bodyMedium),
                   if (check.agentReason != null) ...[
@@ -501,7 +501,31 @@ class _StatusPanel extends StatelessWidget {
                       style: theme.textTheme.bodySmall,
                     ),
                   ],
-                ] else
+                  // What the review cited, verbatim, one line each — where a reader checks it
+                  // against what they saw in the room.
+                  if (check.agentEvidence != null && check.agentEvidence!.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const MxPanelLabel('What it looked at'),
+                    const SizedBox(height: 6),
+                    for (final item in check.agentEvidence!)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: SelectableText('• $item', style: theme.textTheme.bodySmall),
+                      ),
+                  ],
+                ] else if (check.agentState == AgentReviewStates.couldNotJudge)
+                  Text(
+                    'The automated review could not reach a verdict on this repair. Your answer '
+                    'stands — it is what the status is set from.',
+                    style: theme.textTheme.bodyMedium,
+                  )
+                else if (check.agentState == AgentReviewStates.retrying)
+                  Text(
+                    'Sent for review ${formatTimestamp(check.agentQueuedAt)}. The review is '
+                    'delayed and will be tried again.',
+                    style: theme.textTheme.bodyMedium,
+                  )
+                else
                   Text(
                     'Sent for review ${formatTimestamp(check.agentQueuedAt)}. If the review flags '
                     'anything, it will show here and on your report.',

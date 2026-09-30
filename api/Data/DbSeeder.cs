@@ -523,6 +523,9 @@ public static class DbSeeder
 
         var seeded = 0;
 
+        // The workflow each seeded repair came out of, written once the reports have ids.
+        var workflowsToSeed = new List<(Report Report, VerificationStatus CheckStatus, DateTime CompletedAt)>();
+
         foreach (var seed in seeds)
         {
             if (!assets.TryGetValue(seed.AssetTag, out var asset))
@@ -610,6 +613,24 @@ public static class DbSeeder
                     : now.AddDays(-seed.DaysAgoResponded.Value).AddHours(-1)
             };
 
+            // A check that already carries a verdict was queued and judged, like a real one:
+            // queued with the answer, judged an hour later. Without the stamps it would read as
+            // never queued, and the sweep would queue it and the agent judge it all over again.
+            if (seed.AgentOutcome is not null && check.ReporterRespondedAt is { } respondedAt)
+            {
+                check.AgentQueuedAt = respondedAt;
+                check.AgentJudgedAt = respondedAt.AddHours(1);
+                check.AgentAttempts = 1;
+            }
+            else
+            {
+                // Every check still to be judged gets the workflow its repair came out of. The
+                // verification agent's run and its tool calls belong to the report's workflow,
+                // so without one the agent could never judge these — and they are the checks a
+                // demo answers on the phone.
+                workflowsToSeed.Add((report, seed.CheckStatus, completedAt));
+            }
+
             db.Reports.Add(report);
             db.WorkOrders.Add(workOrder);
             db.VerificationChecks.Add(check);
@@ -619,6 +640,30 @@ public static class DbSeeder
         if (seeded == 0)
         {
             return;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+
+        foreach (var (report, checkStatus, completedAt) in workflowsToSeed)
+        {
+            // CREATED in its state, as the seeder may (creation is not a transition). A confirmed
+            // repair's run is Closed; a repair still to be verified is Completed with the
+            // order's own CompletedAt — exactly what WorkOrderService.CompleteAsync leaves — so
+            // the first sweep's step 0 moves it to AwaitingVerification, and the reporter's
+            // answer then moves it on. No steps and no plan: the run predates this history.
+            db.AgentWorkflows.Add(new AgentWorkflow
+            {
+                ReportId = report.Id,
+                Objective = report.Description,
+                CurrentState = checkStatus == VerificationStatus.Confirmed
+                    ? WorkflowState.Closed
+                    : WorkflowState.Completed,
+                StartedAt = completedAt.AddDays(-4),
+                CompletedAt = completedAt,
+                Outcome = checkStatus == VerificationStatus.Confirmed
+                    ? "Seeded history: the reporter confirmed the repair held."
+                    : "Seeded history: the repair is complete and waits to be verified."
+            });
         }
 
         await db.SaveChangesAsync(cancellationToken);
@@ -798,6 +843,9 @@ public static class DbSeeder
         };
 
         var seeded = 0;
+
+        // The workflow each seeded repair came out of, written once the reports have ids.
+        var workflowsToSeed = new List<(Report Report, VerificationStatus CheckStatus, DateTime CompletedAt)>();
 
         foreach (var seed in seeds)
         {

@@ -13,7 +13,7 @@ import MetricsPanel from '../components/MetricsPanel';
 import ReopenTrendChart from '../components/ReopenTrendChart';
 import RepeatFailureTable from '../components/RepeatFailureTable';
 import useMetrics from '../hooks/useMetrics';
-import { formatPercent } from '../services/verificationApi';
+import { describeNoQuestionCount, formatPercent } from '../services/verificationApi';
 import styles from '../verification.module.css';
 
 const EMPTY_RANGE = { fromDate: '', toDate: '' };
@@ -97,7 +97,7 @@ export function MetricsPage() {
             <Headline
               label="Reports that needed no questions"
               value={clarification.reportsClarified === 0 ? '—' : formatPercent(clarification.noQuestionRate)}
-              detail={`${clarification.reportsWithNoQuestions} of ${clarification.reportsClarified} clarified reports`}
+              detail={describeNoQuestionCount(clarification)}
               tone="violet"
             />
             <Headline

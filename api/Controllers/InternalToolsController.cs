@@ -69,6 +69,7 @@ public class InternalToolsController : ControllerBase
     private readonly IReportService _reportService;
     private readonly IWorkOrderService _workOrderService;
     private readonly IWorkflowService _workflowService;
+    private readonly IVerificationAgentService _verificationAgent;
     private readonly ILogger<InternalToolsController> _logger;
 
     public InternalToolsController(
@@ -78,6 +79,7 @@ public class InternalToolsController : ControllerBase
         IReportService reportService,
         IWorkOrderService workOrderService,
         IWorkflowService workflowService,
+        IVerificationAgentService verificationAgent,
         ILogger<InternalToolsController> logger)
     {
         _roomService = roomService;
@@ -86,6 +88,7 @@ public class InternalToolsController : ControllerBase
         _reportService = reportService;
         _workOrderService = workOrderService;
         _workflowService = workflowService;
+        _verificationAgent = verificationAgent;
         _logger = logger;
     }
 
@@ -150,7 +153,15 @@ public class InternalToolsController : ControllerBase
         // API's wait on /run timed out and marked the run Failed while the agent was still
         // working, and its later calls would otherwise keep writing audit rows onto a
         // workflow already declared dead. Nothing is recorded — the run it belongs to is over.
-        if (state is WorkflowState.Failed or WorkflowState.Closed)
+        //
+        // ONE EXCEPTION: the verification agent judging a repair on this report. A confirmed
+        // repair's workflow is Closed by the reporter's answer, and the agent still has to read
+        // the repair it is judging. Allowed only while the DATABASE says a check on this
+        // report is waiting on the agent and this is the report's latest workflow — the
+        // caller's name alone opens nothing.
+        if (state is WorkflowState.Failed or WorkflowState.Closed
+            && !(string.Equals(agentName, AgentRunResponse.VerificationAgentName, StringComparison.Ordinal)
+                 && await _verificationAgent.IsJudgingOnWorkflowAsync(workflowId, cancellationToken)))
         {
             _logger.LogWarning(
                 "Agent {AgentName} called {ToolName} for workflow {WorkflowId}, which is {State}. Refused.",

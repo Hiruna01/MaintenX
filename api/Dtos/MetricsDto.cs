@@ -80,14 +80,23 @@ public record MonthlyReopenRateDto(
 /// asking it in a way reporters answer. Over reports FILED in the range (Report.CreatedAt).
 /// </summary>
 public record ClarificationMetricsDto(
-    // Reports the clarifier actually ran on: a successful clarifier AGENT RUN, or questions
-    // on the report. A failed run is not a report that "needed no questions", and neither
-    // is one never clarified at all — so neither is in this count.
+    // Reports whose need for questions was DECIDED: a successful clarifier AGENT RUN,
+    // questions on the report, or a run the planner planned WITHOUT the clarifier (an
+    // accepted planner plan, stored as the workflow's PlanJson, that leaves it out). A failed
+    // run is not a report that "needed no questions", and neither is one never clarified at
+    // all — so neither is in this count. Nor is a fallback plan: it always runs the clarifier.
     int ReportsClarified,
 
-    // Of those, how many it asked nothing about — the report was already clear.
+    // Of those, how many needed nothing asked — the clarifier asked nothing, or the planner
+    // judged the report clear and left it out.
     int ReportsWithNoQuestions,
     decimal NoQuestionRate,
+
+    // Of ReportsWithNoQuestions, how many the PLANNER judged clear, the clarifier never
+    // running on them. Kept apart so "the clarifier asked nothing" and "the clarifier was not
+    // asked" can still be told apart — the same distinction the workflow's
+    // PlannedWithoutClarification trigger makes.
+    int ReportsPlannedWithoutClarification,
 
     // Questions per report that needed any, i.e. QuestionsAsked / ReportsWithQuestions.
     int ReportsWithQuestions,

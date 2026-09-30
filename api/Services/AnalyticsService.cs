@@ -223,11 +223,36 @@ public class AnalyticsService : IAnalyticsService
 
         // A report with questions was clarified whatever its step says; the union keeps a
         // report from being counted as asked-about but not clarified.
-        var clarified = clarifierSteps
+        var clarifierRan = clarifierSteps
             .Where(s => AgentAnalysis.IsAgentRunStep(s.ToolCallsJson))
             .Select(s => s.ReportId)
             .Concat(askedPerReport.Keys)
             .ToHashSet();
+
+        // Reports the PLANNER judged clear: a workflow whose stored plan is the planner's, as
+        // PlanRules accepted it, and leaves the clarifier out. Read from PlanJson — the plan the
+        // run was delegated from — never from the planner's step, which is what the model SAID
+        // and may have been refused. A fallback plan always includes the clarifier, so a failed
+        // or rejected planner never lands here. Parsed in memory: the plan is inside a jsonb
+        // column, and PlanRules.Read is the one reader of it.
+        var plans = await _db.AgentWorkflows
+            .AsNoTracking()
+            .Where(w => w.ReportId != null && w.PlanJson != null && reportIds.Contains(w.ReportId.Value))
+            .Select(w => new { ReportId = w.ReportId!.Value, w.PlanJson })
+            .ToListAsync(cancellationToken);
+
+        var plannedWithout = plans
+            .Select(p => (p.ReportId, Plan: PlanRules.Read(p.PlanJson)))
+            .Where(p => p.Plan is not null
+                        && p.Plan.Source == PlanRules.SourcePlanner
+                        && !PlanRules.IncludesClarifier(p.Plan))
+            .Select(p => p.ReportId)
+            // A clarifier that DID run on the report (a later run's plan kept it) is the better
+            // record of what was asked; the report counts once, as the clarifier's.
+            .Where(id => !clarifierRan.Contains(id))
+            .ToHashSet();
+
+        var clarified = clarifierRan.Union(plannedWithout).ToHashSet();
 
         var withNoQuestions = clarified.Count(id => !askedPerReport.ContainsKey(id));
         var withQuestions = askedPerReport.Count;
@@ -238,6 +263,7 @@ public class AnalyticsService : IAnalyticsService
             ReportsClarified: clarified.Count,
             ReportsWithNoQuestions: withNoQuestions,
             NoQuestionRate: MetricRules.Percent(withNoQuestions, clarified.Count),
+            ReportsPlannedWithoutClarification: plannedWithout.Count,
             ReportsWithQuestions: withQuestions,
             QuestionsAsked: questionsAsked,
             AverageQuestionsPerReport: MetricRules.Ratio(questionsAsked, withQuestions),

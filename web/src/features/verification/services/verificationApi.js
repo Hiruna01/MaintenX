@@ -41,6 +41,29 @@ export function agentOutcomeLabel(outcome) {
 }
 
 /**
+ * Mirrors the API's `VerificationAgentState` enum, by NAME: where the VerificationAgent's review
+ * of a check has got to. Decided in C# (`VerificationAgentRules.StateOf`) from the check's queue
+ * and judgement stamps, so nothing here compares two times — the client only picks the words.
+ */
+export const AGENT_REVIEW_STATES = {
+  NotQueued: 'NotQueued',
+  Queued: 'Queued',
+  Retrying: 'Retrying',
+  Judged: 'Judged',
+  CouldNotJudge: 'CouldNotJudge',
+};
+
+/**
+ * The detail for a clarified-report count: how many of those needing no questions the PLANNER
+ * judged clear, the clarifier never running on them. Words around the API's counts; no sum.
+ */
+export function describeNoQuestionCount(clarification, noun = 'clarified reports') {
+  const base = `${clarification.reportsWithNoQuestions} of ${clarification.reportsClarified} ${noun}`;
+  const planned = clarification.reportsPlannedWithoutClarification ?? 0;
+  return planned > 0 ? `${base} — ${planned} judged clear by the planner` : base;
+}
+
+/**
  * True when the repair did not hold — by the reporter's answer (Reopened, Escalated) or by the
  * agent's reading (reopen, escalate). Either is a fault that has gone back round the loop, so
  * the detail page shows what it looped back to. Chooses a section to render; decides nothing.

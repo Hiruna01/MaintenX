@@ -55,6 +55,16 @@ public record VerificationDetailDto(
     // not judged the check — never an empty list standing in for "not judged".
     IReadOnlyList<string>? AgentEvidence,
 
+    // Where the agent's review has got to, by NAME — decided in C#
+    // (VerificationAgentRules.StateOf), so no client compares the stamps below itself.
+    VerificationAgentState AgentState,
+
+    // When the agent's review last ended — with a verdict, or given up on — and, when it gave
+    // no verdict, why: the SYSTEM's words (the agent service unreachable, the agent failing
+    // safely), never the model's. Null when there is nothing to say.
+    DateTime? AgentJudgedAt,
+    string? AgentError,
+
     // Reports filed against the same asset AFTER this repair was completed, the original
     // report excluded, oldest first. Closed ones included: a report closed as a duplicate
     // is still somebody seeing the fault again.

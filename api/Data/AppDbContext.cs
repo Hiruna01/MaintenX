@@ -40,6 +40,12 @@ public class AppDbContext : DbContext
                   .HasConversion<string>()
                   .HasMaxLength(50)
                   .IsRequired();
+
+            // IsActive has NO HasDefaultValue(true) here, deliberately. EF skips a column
+            // whose value equals the CLR default when the database has a default of its own,
+            // so a user inserted with IsActive = false would be written as true. The default
+            // for EXISTING rows is set in the AddUserIsActive migration instead; every new row
+            // gets the property initializer's true from C#.
         });
 
         modelBuilder.Entity<Building>(entity =>

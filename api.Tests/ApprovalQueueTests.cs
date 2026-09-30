@@ -332,38 +332,44 @@ public class ApprovalQueueTests : IClassFixture<ApiFactory>
     // ---------------------------------------------------------------------------------
 
     [Fact]
-    public async Task Users_ByRole_ReturnsOnlyThatRole()
+    public async Task Technicians_ReturnsOnlyActiveTechnicians()
     {
         var (manager, _) = await ClientAsync(Role.FacilitiesManager);
         var (_, technicianId) = await ClientAsync(Role.Technician, "Zara Technician");
+        var (_, retiredTechnicianId) = await ClientAsync(Role.Technician, "Yusuf Technician");
         var (_, reporterId) = await ClientAsync(Role.Reporter);
 
-        var technicians = await manager.GetFromJsonAsync<List<UserDto>>("/api/users?role=Technician", JsonOptions);
+        var admin = await _factory.CreateAdminClientAsync();
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.DeleteAsync($"/api/users/{retiredTechnicianId}")).StatusCode);
+
+        var technicians = await manager.GetFromJsonAsync<List<UserDto>>("/api/users/technicians", JsonOptions);
 
         Assert.Contains(technicians!, u => u.Id == technicianId);
+        Assert.DoesNotContain(technicians!, u => u.Id == retiredTechnicianId);
         Assert.DoesNotContain(technicians!, u => u.Id == reporterId);
         Assert.All(technicians!, u => Assert.Equal(Role.Technician, u.Role));
     }
 
-    [Theory]
-    [InlineData("/api/users")]
-    [InlineData("/api/users?role=Wizard")]
-    public async Task Users_WithoutAKnownRole_Returns400RatherThanEveryone(string path)
+    [Fact]
+    public async Task AManager_CannotListTheWholeUserTable()
     {
+        // The whole table is the Admin's user management list. A manager has the technician
+        // picker and nothing wider.
         var (manager, _) = await ClientAsync(Role.FacilitiesManager);
 
-        Assert.Equal(HttpStatusCode.BadRequest, (await manager.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await manager.GetAsync("/api/users")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await manager.GetAsync("/api/users?role=Technician")).StatusCode);
     }
 
     [Fact]
-    public async Task Users_Keeps401And403Apart()
+    public async Task Technicians_Keeps401And403Apart()
     {
         var (technician, _) = await ClientAsync(Role.Technician);
 
         Assert.Equal(HttpStatusCode.Unauthorized,
-            (await _factory.CreateClient().GetAsync("/api/users?role=Technician")).StatusCode);
+            (await _factory.CreateClient().GetAsync("/api/users/technicians")).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden,
-            (await technician.GetAsync("/api/users?role=Technician")).StatusCode);
+            (await technician.GetAsync("/api/users/technicians")).StatusCode);
     }
 
     // ---------------------------------------------------------------------------------

@@ -328,7 +328,7 @@ public enum WorkOrderActionOutcome
     /// </summary>
     InvalidState,
 
-    /// <summary>Assign only: the named user does not exist or is not a Technician. A 400.</summary>
+    /// <summary>Assign only: the named user does not exist or is not an active Technician. A 400.</summary>
     NotATechnician,
 
     /// <summary>
@@ -404,7 +404,7 @@ public enum AvailableSlotsOutcome
     /// <summary>No asset has that id — there is no room to check.</summary>
     AssetNotFound,
 
-    /// <summary>The technician named does not exist or is not a Technician.</summary>
+    /// <summary>The technician named does not exist or is not an active Technician.</summary>
     NotATechnician,
 
     /// <summary>toDate is before fromDate, or the range is longer than the search allows.</summary>

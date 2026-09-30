@@ -362,6 +362,27 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             NameClaimType = JwtRegisteredClaimNames.Email,
             RoleClaimType = "role"
         };
+
+        // A token is signed for 12 hours, but the account behind it can change sooner: an
+        // Admin deactivates it or gives it another role. Checked on every request, so that
+        // takes effect on the person's NEXT request — a 401, which both clients already turn
+        // into "session expired, sign in again". Without it a deactivated user keeps working,
+        // and a demoted one keeps their old role, until the token runs out.
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var sub = context.Principal?.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
+                var role = context.Principal?.FindFirst("role")?.Value;
+                var authService = context.HttpContext.RequestServices.GetRequiredService<IAuthService>();
+
+                if (!int.TryParse(sub, out var userId)
+                    || !await authService.IsSessionValidAsync(userId, role, context.HttpContext.RequestAborted))
+                {
+                    context.Fail("The account is no longer active, or its role has changed.");
+                }
+            }
+        };
     });
 
 // ---------------------------------------------------------------------------
@@ -434,7 +455,8 @@ builder.Services.AddHostedService<VerificationAgentRunner>();
 // verification check above inside its own transaction.
 builder.Services.AddScoped<IWorkOrderService, WorkOrderService>();
 
-// Users by role — the technician picker behind assigning and filtering work orders.
+// Users — the Admin's account management, and the active-technician picker behind
+// assigning and filtering work orders.
 builder.Services.AddScoped<IUserService, UserService>();
 
 // File storage — report photos and completion photos, one path. Scoped like the services

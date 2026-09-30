@@ -27,6 +27,16 @@ public interface IAuthService
 
     /// <summary>Returns null when the token's user no longer exists.</summary>
     Task<UserDto?> GetByIdAsync(int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether a signed, unexpired token still speaks for its user: the account exists, is
+    /// active, and still has the role the token claims. Called on EVERY authenticated request
+    /// (JwtBearerEvents.OnTokenValidated in Program.cs), so deactivating an account or
+    /// changing its role takes effect on that person's next request rather than when their
+    /// 12-hour token runs out. One primary-key lookup per request is the price; there are no
+    /// refresh tokens to revoke instead.
+    /// </summary>
+    Task<bool> IsSessionValidAsync(int userId, string? roleClaim, CancellationToken cancellationToken = default);
 }
 
 /// <summary>What <see cref="IAuthService.RegisterAsync"/> did, so the controller can pick a status code.</summary>

@@ -1,0 +1,56 @@
+
+ RUN  v5.0.3 /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/web
+
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > accepts a complete, well-formed completion 2ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > requires an actual cost: a missing one must never be recorded as a free job 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > refuses 12.345 as money (rupees, at most two decimals) 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > refuses -5 as money (rupees, at most two decimals) 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > refuses 1e3 as money (rupees, at most two decimals) 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > refuses abc as money (rupees, at most two decimals) 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > refuses an amount above Rs 10,000,000 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > has no default outcome — one left out is an error, not "Resolved" 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > wants at least 20 characters of note after trimming 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateCompletion > accepts only an http(s) link for the photo 0ms
+ ✓ src/features/workorders/services/workOrderValidation.test.js > validateDecisionNote > requires a reason and caps it at 1000 characters 0ms
+ ✓ src/services/apiClient.test.js > apiClient.request > sends a JSON body with its content type and the Bearer token 5ms
+ ✓ src/services/apiClient.test.js > apiClient.request > shows the first field error of a 400 ValidationProblem, as the API worded it 1ms
+ ✓ src/services/apiClient.test.js > apiClient.request > shows a 409's ProblemDetails detail 1ms
+ ✓ src/services/apiClient.test.js > apiClient.request > reads a 401 with NO token as a failed sign-in, not an expired session 0ms
+ ✓ src/services/apiClient.test.js > apiClient.request > returns null for a 204 0ms
+ ✓ src/hooks/useFetch.test.jsx > useFetch > starts loading, then returns the body from the API it was given a path on 62ms
+ ✓ src/routes/ProtectedRoute.test.jsx > ProtectedRoute > sends a signed-out visitor to /login, remembering where they were heading 18ms
+ ✓ src/routes/ProtectedRoute.test.jsx > ProtectedRoute > shows "Not authorised" — not a blank page, not a redirect — to a signed-in user with the wrong role 52ms
+ ✓ src/routes/ProtectedRoute.test.jsx > ProtectedRoute > refuses an Admin too: the API policy names FacilitiesManager only, with no seniority fallback 3ms
+ ✓ src/routes/ProtectedRoute.test.jsx > ProtectedRoute > renders the page for the role it is for 1ms
+ ✓ src/routes/ProtectedRoute.test.jsx > ProtectedRoute > waits on the stored-session check instead of flashing the login page 2ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > renders nothing for "None" on the board, so orders with no clock stay quiet 5ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > says so when asked to show "None" 10ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > labels OnTrack 2ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > labels Overdue 2ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > labels Met 1ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > labels Missed 1ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > shows Overdue from the API even when the browser clock says the due time is years away 1ms
+ ✓ src/features/workorders/components/SlaPill.test.jsx > SlaPill > knows every SlaState the API sends 0ms
+ ✓ src/components/shell/Sidebar.test.jsx > Sidebar > offers a Reporter their own checks and the registry, and none of the staff pages 62ms
+ ✓ src/components/shell/Sidebar.test.jsx > Sidebar > offers a Technician work orders but not approvals or verification 6ms
+ ✓ src/components/shell/Sidebar.test.jsx > Sidebar > offers a FacilitiesManager the approval queue and metrics, but not user management 7ms
+ ✓ src/components/shell/Sidebar.test.jsx > Sidebar > offers an Admin users and buildings, but not the approval queue 9ms
+ ✓ src/hooks/useFetch.test.jsx > useFetch > sends the stored token as a Bearer header 55ms
+ ✓ src/hooks/useFetch.test.jsx > useFetch > treats a 401 on a request that carried a token as an expired session, and drops the token 55ms
+ ✓ src/features/auth/pages/LoginPage.test.jsx > LoginPage > shows both field errors and sends nothing when submitted empty 82ms
+ ✓ src/hooks/useFetch.test.jsx > useFetch > reports a 403 as a permission problem, not a session problem, and keeps the token 53ms
+ ✓ src/hooks/useFetch.test.jsx > useFetch > turns a network failure into "Could not reach the API." rather than throwing 52ms
+ ✓ src/features/workflows/pages/WorkflowsPage.test.jsx > WorkflowsPage states > shows a skeleton while loading, not a blank screen 71ms
+ ✓ src/features/workflows/pages/WorkflowsPage.test.jsx > WorkflowsPage states > shows the error state with the reason when the API fails 16ms
+ ✓ src/features/workflows/pages/WorkflowsPage.test.jsx > WorkflowsPage states > shows the empty state — not an error — when there are no workflows 12ms
+ ✓ src/features/workflows/pages/WorkflowsPage.test.jsx > WorkflowsPage states > lists the workflows the API sent 14ms
+ ✓ src/features/auth/pages/LoginPage.test.jsx > LoginPage > refuses a malformed email and a password under 8 characters 70ms
+ ✓ src/features/auth/pages/LoginPage.test.jsx > LoginPage > signs in with the trimmed email once the form is valid 94ms
+ ✓ src/features/auth/pages/LoginPage.test.jsx > LoginPage > shows the error state "Could not sign in" with the API's reason when sign-in is refused 93ms
+ ✓ src/features/auth/pages/LoginPage.test.jsx > LoginPage > shows "Session expired" — a different banner — after a token ran out 7ms
+
+ Test Files  8 passed (8)
+      Tests  47 passed (47)
+   Start at  18:45:46
+   Duration  1.10s (environment 57%, tests 16%, setup 12%, transform 9%, import 7%)
+

@@ -113,7 +113,7 @@ jobs:
   # React web client — a production build must succeed.
   # ---------------------------------------------------------------------------
   web:
-    name: web (Vite build)
+    name: web (lint, tests, Vite build)
     runs-on: ubuntu-latest
 
     defaults:
@@ -136,6 +136,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
+      # Vitest + Testing Library in jsdom. Every test stubs fetch, so no API is needed.
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build
 
@@ -143,7 +150,7 @@ jobs:
   # Flutter mobile client — static analysis.
   # ---------------------------------------------------------------------------
   mobile:
-    name: mobile (flutter analyze)
+    name: mobile (flutter analyze, flutter test)
     runs-on: ubuntu-latest
 
     defaults:
@@ -165,3 +172,7 @@ jobs:
 
       - name: Analyze
         run: flutter analyze
+
+      # Widget and unit tests. The API is faked in every test; none reaches the network.
+      - name: Test
+        run: flutter test

@@ -1,0 +1,118 @@
+Analyzing mobile...                                             
+No issues found! (ran in 1.2s)
+00:00 +0: loading /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart
+00:00 +0: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi the list sends filters by NAME and leaves empty ones out
+00:00 +1: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi the list sends filters by NAME and leaves empty ones out
+00:00 +2: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi the list sends filters by NAME and leaves empty ones out
+00:00 +3: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi the list sends filters by NAME and leaves empty ones out
+00:00 +4: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi answers go in ONE request carrying the whole form
+00:00 +5: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi a photo is one multipart part named "photo", and progress moves to the total
+00:00 +6: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ReportsApi a 503 from storage is an ApiException carrying the API's own message
+00:00 +7: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: validateClarificationAnswers every question needs an answer — the API refuses a partial form
+00:00 +8: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: validateClarificationAnswers a single-select answer must be one of the options the API supplied
+00:00 +9: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: validateClarificationAnswers 100 characters is the cap, counted the way the API counts them
+00:00 +10: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: validateClarificationAnswers an unknown answer type is not renderable — there is no text-box fallback
+00:00 +11: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +12: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +13: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +14: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +15: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +16: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +17: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +18: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +19: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +20: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +21: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +22: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +23: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +24: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +25: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +26: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +27: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen each question is ONE bounded control — and none of it is a chat
+00:00 +28: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +29: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +30: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +31: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +32: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +33: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +34: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +35: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +36: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +37: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +38: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +39: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +40: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +41: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +42: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +43: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +44: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen signs up WITHOUT asking for a role, and is signed in by the reply
+00:00 +45: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen no jobs is an empty state, not an error
+00:00 +46: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen no jobs is an empty state, not an error
+00:01 +47: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen no jobs is an empty state, not an error
+00:01 +48: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen no jobs is an empty state, not an error
+00:01 +49: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen no jobs is an empty state, not an error
+00:01 +50: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen no jobs is an empty state, not an error
+00:01 +51: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen camera permission denied is explained, with a retry that asks again
+00:01 +52: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen camera permission denied is explained, with a retry that asks again
+00:01 +53: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen camera permission denied is explained, with a retry that asks again
+00:01 +54: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen an invalid form is not sent
+00:01 +55: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/register_test.dart: RegisterScreen an invalid form is not sent
+00:01 +56: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +57: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +58: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +59: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +60: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +61: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +62: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +63: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +64: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +65: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +66: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +67: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +68: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen a failed request is an ErrorView with a retry
+00:01 +69: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen an unknown tag reads "No asset registered for this code"
+00:01 +70: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen an unknown tag reads "No asset registered for this code"
+00:01 +71: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen an unknown tag reads "No asset registered for this code"
+00:01 +72: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen an unknown tag reads "No asset registered for this code"
+00:01 +73: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: ConfirmFixScreen "no, still broken" goes in one POST, and the screen then shows Reopened
+00:01 +74: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: ConfirmFixScreen "no, still broken" goes in one POST, and the screen then shows Reopened
+00:01 +75: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: ConfirmFixScreen "no, still broken" goes in one POST, and the screen then shows Reopened
+00:01 +76: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: ConfirmFixScreen "no, still broken" goes in one POST, and the screen then shows Reopened
+00:01 +77: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen no network is an ErrorView with a retry, not "not registered"
+00:01 +78: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen, straight after filing it gives up after its time limit and points at My reports
+00:01 +79: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: ClarificationScreen, straight after filing it gives up after its time limit and points at My reports
+00:01 +80: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen an empty filter says so and offers the way back
+00:01 +81: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: MyJobsScreen an empty filter says so and offers the way back
+00:01 +82: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen from the report form, a hit returns the asset instead of opening its page
+00:01 +83: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: MyReportsScreen no reports at all is an empty state, not an error
+00:01 +84: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: ConfirmFixScreen a 409 says why and shows the check as it really is now
+00:01 +85: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: JobDetailScreen shows the asset, room, slot, parts and the diagnosis with its evidence
+00:01 +86: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen an empty typed tag is refused by validate(), not sent
+00:01 +87: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/assets_test.dart: ScanAssetScreen an empty typed tag is refused by validate(), not sent
+00:01 +88: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: MyReportsScreen a failed request is an ErrorView with a retry
+00:01 +89: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: JobDetailScreen no diagnosis, no slot and no parts each say so
+00:01 +90: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: MyReportsScreen a reopened repair shows on the report, with the review flag beside it
+00:01 +91: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: MyReportsScreen a reopened repair shows on the report, with the review flag beside it
+00:01 +92: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: MyReportsScreen a reopened repair shows on the report, with the review flag beside it
+00:01 +93: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: MyReportsScreen a reopened repair shows on the report, with the review flag beside it
+00:01 +94: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: MyReportsScreen each report shows the stage the API sent, worded for the reporter
+00:01 +95: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: MyReportsScreen each report shows the stage the API sent, worded for the reporter
+00:01 +96: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: MyReportsScreen a repair waiting on the reporter is offered as a question
+00:01 +97: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/verification_test.dart: MyReportsScreen a repair waiting on the reporter is offered as a question
+00:01 +98: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen "done" is refused by validate() and nothing is sent
+00:01 +99: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen "done" is refused by validate() and nothing is sent
+00:02 +100: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen "done" is refused by validate() and nothing is sent
+00:02 +101: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: MyReportsScreen the search is debounced — one request for a word, not one per letter
+00:02 +102: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen the photo is uploaded FIRST, then the job is completed
+00:02 +103: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen the photo is uploaded FIRST, then the job is completed
+00:02 +104: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen the photo is uploaded FIRST, then the job is completed
+00:02 +105: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: SubmitReportScreen scan choosing a different room drops the scanned equipment
+00:02 +106: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen a failed upload says the job is NOT completed, and can complete without it
+00:02 +107: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: SubmitReportScreen photo the report is filed first, then the photo is uploaded to it
+00:02 +108: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen the API's refusal is shown on the form, and a retry does not re-upload
+00:02 +109: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/workorders_test.dart: CompleteJobScreen the API's refusal is shown on the form, and a retry does not re-upload
+00:02 +110: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: SubmitReportScreen photo a failed upload says the report IS filed, and retry does not file it again
+00:02 +111: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: SubmitReportScreen photo a failed upload says the report IS filed, and retry does not file it again
+00:02 +112: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: SubmitReportScreen photo a photo the API would refuse is refused when picked
+00:02 +113: /Users/hirunadilmith/SLIIT/Y3S1/SEF/Project/Main/MaintenX/mobile/test/reports_test.dart: SubmitReportScreen photo camera permission denied is explained, not a crash
+00:02 +114: All tests passed!

@@ -154,6 +154,29 @@ if (approvalSettings.CostThreshold <= 0)
 builder.Services.AddSingleton(approvalSettings);
 
 // ---------------------------------------------------------------------------
+// Repair SLA
+//
+// How many days an approved work order has to be completed. From configuration, never a
+// literal in a service — see SlaSettings. Falls back to SLA_RESOLUTION_DAYS, then to the
+// class's own default.
+// ---------------------------------------------------------------------------
+var slaSettings = new SlaSettings
+{
+    ResolutionDays = builder.Configuration.GetValue<int?>("Sla:ResolutionDays")
+        ?? builder.Configuration.GetValue<int?>("SLA_RESOLUTION_DAYS")
+        ?? SlaSettings.DefaultResolutionDays
+};
+
+// A zero or negative SLA makes every approved order overdue the moment it is approved.
+if (slaSettings.ResolutionDays <= 0)
+{
+    throw new InvalidOperationException(
+        "The repair SLA (Sla:ResolutionDays / SLA_RESOLUTION_DAYS) must be greater than zero.");
+}
+
+builder.Services.AddSingleton(slaSettings);
+
+// ---------------------------------------------------------------------------
 // Verification
 //
 // How long after a work order completes before the reporter is asked whether the repair
@@ -677,7 +700,7 @@ if (app.Environment.IsDevelopment())
     try
     {
         await DbSeeder.SeedAsync(
-            db, app.Configuration, passwordHasher, verificationSettings, logger, approvalSettings);
+            db, app.Configuration, passwordHasher, verificationSettings, logger, approvalSettings, slaSettings);
     }
     catch (Exception ex)
     {

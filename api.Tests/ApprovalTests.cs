@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -9,7 +10,9 @@ using CampusFacilities.Api.Dtos;
 using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace api.Tests;
@@ -25,7 +28,8 @@ namespace api.Tests;
 ///     replacement, which always does. Both halves at the one value where they diverge.
 ///   * EscalateReplacement at every cost that matters, Rs 0 included.
 ///   * No token is 401 on every decision, not only on create.
-///   * A decision, once made, is not rewritten by the opposite one.
+///   * A decision, once made, is not rewritten by the opposite one — sequentially, and when
+///     another decision lands between a manager's read and their write (the claim).
 ///   * Every approval event is a step on the workflow's audit trail (ApprovalAudit).
 /// </summary>
 public class ApprovalTests : IClassFixture<ApiFactory>
@@ -215,6 +219,72 @@ public class ApprovalTests : IClassFixture<ApiFactory>
         Assert.Null(detail.RejectionReason);
     }
 
+    /// <summary>
+    /// TWO MANAGERS AT ONCE. Another decision lands after this one has read the order as
+    /// AwaitingApproval and before it writes — the window the status check at the top of each
+    /// decision cannot close on its own. The claim (a conditional UPDATE, first in the
+    /// decision's transaction) finds the order already decided and the decision is refused:
+    /// no audit step, no workflow move, nothing written.
+    ///
+    /// The competing decision is played by an interceptor that runs just before the claim's
+    /// UPDATE, on the same connection. It shares the loser's transaction, so the rollback
+    /// takes it back out again — what is asserted is what the LOSER wrote, which is nothing.
+    /// Without the claim this approve returns Success, writes ManagerApproved over the other
+    /// decision, and moves the workflow.
+    /// </summary>
+    [Theory]
+    [InlineData("approve")]
+    [InlineData("reject")]
+    [InlineData("request-revision")]
+    public async Task ADecisionThatLosesTheRace_WritesNothing(string action)
+    {
+        var (manager, managerId) = await ClientAsync(Role.FacilitiesManager);
+        var fault = await NewFaultAsync();
+        var order = await RaiseAsync(manager, fault, 42_000m);
+
+        WorkOrderActionOutcome outcome;
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var sp = scope.ServiceProvider;
+            await using var db = ContextWith(
+                sp.GetRequiredService<AppDbContext>(), new AnotherManagerDecidesFirst(order.Id));
+
+            var service = new WorkOrderService(
+                db,
+                sp.GetRequiredService<ApprovalSettings>(),
+                sp.GetRequiredService<IWorkflowQueue>(),
+                sp.GetRequiredService<IVerificationService>(),
+                TimeProvider.System,
+                sp.GetRequiredService<SchedulingSettings>(),
+                sp.GetRequiredService<IAssetService>(),
+                sp.GetRequiredService<IFileStorageService>(),
+                sp.GetRequiredService<SlaSettings>(),
+                NullLogger<WorkOrderService>.Instance);
+
+            outcome = action switch
+            {
+                "approve" => await service.ApproveAsync(order.Id, managerId),
+                "reject" => await service.RejectAsync(order.Id, managerId, "Out of budget this term."),
+                _ => await service.RequestRevisionAsync(order.Id, managerId, "Try a cheaper fix first.")
+            };
+        }
+
+        Assert.Equal(WorkOrderActionOutcome.InvalidState, outcome);
+
+        Assert.Equal(
+            new[] { ApprovalAudit.ApprovalRequired },
+            (await ApprovalStepsAsync(fault.ReportId)).Select(s => s.Decision));
+        Assert.Equal(WorkflowState.AwaitingManagerApproval, await WorkflowStateAsync(fault.ReportId));
+
+        using var verify = _factory.Services.CreateScope();
+        var stored = await verify.ServiceProvider.GetRequiredService<AppDbContext>()
+            .WorkOrders.AsNoTracking().SingleAsync(w => w.Id == order.Id);
+        Assert.Null(stored.ApprovedByUserId);
+        Assert.Null(stored.RevisionNote);
+        Assert.Null(stored.DueAt);
+    }
+
     // ---------------------------------------------------------------------------------
     // The audit trail — ApprovalAudit
     // ---------------------------------------------------------------------------------
@@ -320,6 +390,58 @@ public class ApprovalTests : IClassFixture<ApiFactory>
                 return payload;
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// A second context on the same database as <paramref name="db"/>, with an interceptor.
+    /// SQLite shares the held-open connection; PostgreSQL reconnects by connection string.
+    /// </summary>
+    private static AppDbContext ContextWith(AppDbContext db, IInterceptor interceptor)
+    {
+        var options = new DbContextOptionsBuilder<AppDbContext>();
+
+        if (db.Database.IsNpgsql())
+        {
+            options.UseNpgsql(db.Database.GetConnectionString());
+        }
+        else
+        {
+            options.UseSqlite(db.Database.GetDbConnection());
+        }
+
+        return new AppDbContext(options.AddInterceptors(interceptor).Options);
+    }
+
+    /// <summary>
+    /// Plays the other manager: the first time this context sends an UPDATE to WorkOrders —
+    /// the decision's claim — it first marks the order Rejected, on the same connection and
+    /// transaction, as a decision that committed a moment earlier would have left it.
+    /// </summary>
+    private sealed class AnotherManagerDecidesFirst(int orderId) : DbCommandInterceptor
+    {
+        private bool _done;
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_done
+                && command.CommandText.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                && command.CommandText.Contains("\"WorkOrders\"", StringComparison.Ordinal))
+            {
+                _done = true;
+
+                await using var competitor = command.Connection!.CreateCommand();
+                competitor.Transaction = command.Transaction;
+                competitor.CommandText =
+                    $"UPDATE \"WorkOrders\" SET \"Status\" = 'Rejected' WHERE \"Id\" = {orderId}";
+                await competitor.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            return await base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
     }
 
     private record Fault(int ReportId, int AssetId);

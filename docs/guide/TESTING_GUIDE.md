@@ -21,8 +21,10 @@ New to the system? Read [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) first.
 | PostgreSQL running locally | `psql --version` |
 | An LLM API key (OpenRouter or similar) | — you can use `STUB_MODE=true` without one, but answers will be fake |
 
-**Not needed for this walkthrough:** Supabase (photo uploads return a clear 503 without it) and
+**Optional for the main walkthrough:** Supabase (photo uploads return a clear 503 without it) and
 Google Calendar (the timetable sync reports `NotConfigured`, and the slot finder still works).
+Both are needed for [Scenario E](#5c-scenario-e--third-party-integrations-google-calendar-supabase),
+which checks the two integrations against the real services.
 
 ---
 
@@ -378,6 +380,67 @@ Sign in as `admin@campus.test` and open **Users** (in the Estate group of the si
 
 ---
 
+## 5c. Scenario E — third-party integrations (Google Calendar, Supabase)
+
+> **Walked through against the real services on 2026-09-30**: Google Calendar API v3 with the
+> "Campus Timetable" calendar, and a Supabase Storage bucket `photos`. The results below are
+> what came back. Both calls go through the API only; neither client talks to Google or
+> writes to Supabase.
+
+**Setup, once.** Follow the README's *Google Calendar* and *Supabase* sections: the calendar
+imported from `docs/timetable/campus-timetable.ics` and **shared with the service account's
+email** ("See all event details"), the Calendar API enabled, and a **public** bucket. Then:
+
+```bash
+dotnet user-secrets set "Google:ServiceAccountJsonBase64" "$(base64 -i path/to/key.json)" --project api
+```
+
+```bash
+dotnet user-secrets set "Google:CalendarId" "YOUR_CALENDAR_ID@group.calendar.google.com" --project api
+```
+
+```bash
+dotnet user-secrets set "Supabase:Url" "https://YOUR_PROJECT_REF.supabase.co" --project api
+```
+
+```bash
+dotnet user-secrets set "Supabase:ServiceKey" "YOUR_SERVICE_ROLE_KEY" --project api
+```
+
+**Restart the API afterwards.** User-secrets are read at startup, so an API started before you
+set them still runs without them. Delete the downloaded key file once it is in user-secrets.
+
+### Google Calendar — the timetable
+
+| # | Do this | Expected (what we got) |
+|---|---|---|
+| E1 | Start the API and read its log | `Timetable sync reads Google Calendar … as …@….iam.gserviceaccount.com`, then **`Timetable sync: 232 class(es) synced, 0 removed, 0 skipped.`** That's 15 weekly lectures over the 180-day window. `skipped` > 0 means an event's location matched no room code |
+| E2 | Web as manager → any live work order → **Sync timetable now** (or `POST /api/timetable/sync`) | **200**, `degraded: false`, `syncedCount: 232`, `lastSyncedAt` set, `cacheAgeMinutes: 0` |
+| E3 | The same call with no token / as Admin / as Technician | **401** / **403** / **403**. It's for the FacilitiesManager only |
+| E4 | Sync again | `syncedCount` is still 232: the same events are updated, never duplicated |
+| E5 | Slot finder for `PRJ-MAB101-01`, 60 min, **Mon 5 Oct 2026** (`GET /api/workorders/slots/available?assetId=1&durationMinutes=60&fromDate=2026-10-05&toDate=2026-10-05`) | MAB-101 has lectures at 08:30–10:30 and 13:00–15:00 Colombo time, blocked with a 15-minute buffer on each side. Offered: **11:00, 11:30, 15:30, 16:00** and nothing else |
+| E6 | Restart the API with a wrong calendar ID: `Google__CalendarId=does-not-exist@group.calendar.google.com dotnet run --project api` (the env var overrides user-secrets for that run only), then sync | **200** with `degraded: true`, `failureReason: "Rejected"`, `lastSyncedAt` unchanged. The log warns that a 404 usually means "not shared with the service account". **The slot finder still offers exactly E5's slots**, from the stored timetable |
+
+### Supabase Storage — photos
+
+Use a report filed by `reporter@campus.test`. Only the reporter may attach a photo to it.
+
+| # | Do this | Expected (what we got) |
+|---|---|---|
+| E7 | As the reporter, attach a JPEG taken on a phone (or any JPEG carrying GPS EXIF) — `POST /api/reports/{id}/photo`, form field `photo` | **201** `{ photoUrl }`. The URL is `…/storage/v1/object/public/photos/reports/{id}/<guid>.jpg`: a server-generated name, never the uploaded one |
+| E8 | Open that URL with no credentials | **200** `image/jpeg`. The report page on the web shows it |
+| E9 | Download it and check its metadata (`exiftool file.jpg`, or Preview → Tools → Show Inspector) | **No EXIF, no GPS, no camera make/model, no comment.** The picture itself is unchanged, pixel for pixel: the API removes metadata segments without re-encoding |
+| E10 | The same with a PNG carrying a text chunk (e.g. a `Location`) | **201**, and the stored PNG has no text chunks |
+| E11 | As the manager, upload to the reporter's report / with no token | **403** / **401** |
+| E12 | A text file sent as `image/jpeg` | **400** "The file is not a valid image/jpeg image." Nothing is uploaded |
+| E13 | Restart the API with a wrong key (`Supabase__ServiceKey=wrong-key dotnet run --project api`) and upload | **503** "Photo storage is unavailable … The report itself is unchanged." The report's `photoUrl` is the same as before, and the log shows Supabase's refusal but not the key |
+
+The completion photo (`POST /api/workorders/{id}/photo`, the assigned Technician on a live
+order) goes through the same `IFileStorageService` and the same `ImageUploadRules`. To see it
+live, do step A7 with a photo attached.
+
+---
+
 ## 6. What "correct" looks like, at a glance
 
 | After step | Workflow state | Report status | Reporter sees |
@@ -407,8 +470,12 @@ Sign in as `admin@campus.test` and open **Users** (in the Estate group of the si
 | Android app "can't reach API" | Use `http://10.0.2.2:5138`, not `localhost`, on the emulator. |
 | Reporter's "Confirm repairs" is empty | Normal. The check isn't due for 5 days. Use step A8. |
 | Clarifier questions never arrive (phone waits 3 min) | Check the agent terminal for LLM errors (402 = out of credit) and the workflow page for the reason. |
-| Photo upload says "storage unavailable" (503) | Supabase isn't configured. That's expected locally, so continue without a photo. |
-| "Sync timetable now" says `NotConfigured` | Google Calendar isn't configured. The slot finder still works from the cached timetable, which is empty. |
+| Photo upload says "storage unavailable" (503) | Supabase isn't configured, the service key is wrong (the log shows Supabase's refusal), or the bucket doesn't exist. Without Supabase, continue without a photo. |
+| Photo uploads (201) but the URL gives 400/404 in a browser | The bucket isn't **public**. The stored URL is the object's public URL. |
+| "Sync timetable now" says `NotConfigured` | Google Calendar isn't configured, or the API was started **before** you set the user-secrets. Restart it. Unconfigured, the slot finder still works, but the cached timetable is empty. |
+| Sync says `Rejected` | Usually the calendar isn't shared with the service account's email (the startup log prints that email), the Calendar ID is wrong, or the Calendar API isn't enabled in the Cloud project. |
+| Sync says `AuthenticationFailed` | The key was deleted or disabled in Google Cloud. Create a new key and set the secret again. |
+| Sync succeeds but `skippedCount` > 0 | An event's location isn't a room code (`MAB-101` etc.). Check the API log for the skipped event. |
 | A user was signed out while working | An Admin deactivated them or changed their role. That takes effect on the next request, by design |
 | `mobile/README.md` says the platform folders aren't in the repo | That line is out of date. `android/` and `ios/` are committed, so you don't need to run `flutter create`. |
 

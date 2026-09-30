@@ -144,6 +144,18 @@ public class WorkOrder
     /// </summary>
     public DateTime? CompletedAt { get; set; }
 
+    /// <summary>
+    /// The repair SLA's deadline: when this order must be completed by. Stamped once, in C#,
+    /// at the moment the order is approved — by the gate or by a manager — as approval time
+    /// plus SlaSettings.ResolutionDays (SlaRules.DueAt).
+    ///
+    /// NULL IS NOT "NO DEADLINE PASSED": it means no clock was ever started — an order still
+    /// waiting on a manager, one rejected, or one approved before this column existed.
+    /// Stamped rather than computed on read, so changing the setting moves no promise
+    /// already made.
+    /// </summary>
+    public DateTime? DueAt { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

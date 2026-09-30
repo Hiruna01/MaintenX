@@ -20,6 +20,7 @@ import DiagnosisPanel from '../components/DiagnosisPanel';
 import JobProgress from '../components/JobProgress';
 import SlotFinder from '../components/SlotFinder';
 import TimetableSyncButton from '../components/TimetableSyncButton';
+import SlaPill from '../components/SlaPill';
 import StrategyPill from '../components/StrategyPill';
 import useWorkOrder from '../hooks/useWorkOrder';
 import { ACTIVE_STATUSES, enumLabel, formatMoney, formatSlot } from '../services/workOrdersApi';
@@ -116,6 +117,7 @@ function WorkOrderBody({ order, notice, onChanged }) {
           <TagChip tag={order.asset.assetTag} />
           <StatusPill status={order.status} label={enumLabel(order.status)} />
           <StrategyPill strategy={order.strategy} />
+          <SlaPill sla={order.sla} dueAt={order.dueAt} showNone />
         </div>
         <p className={styles.headerMeta}>
           <span>

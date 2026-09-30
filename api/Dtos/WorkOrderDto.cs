@@ -31,5 +31,11 @@ public record WorkOrderDto(
     decimal? ActualCost,
 
     DateTime? CompletedAt,
+
+    // The repair SLA: the stamped deadline (null when no clock was started) and where the
+    // order stands against it — decided by SlaRules in C#, so a board only colours it.
+    DateTime? DueAt,
+    SlaState Sla,
+
     DateTime CreatedAt,
     DateTime UpdatedAt);

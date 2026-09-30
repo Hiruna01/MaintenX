@@ -20,6 +20,7 @@ public static class DbSeeder
         VerificationSettings verificationSettings,
         ILogger logger,
         ApprovalSettings? approvalSettings = null,
+        SlaSettings? slaSettings = null,
         CancellationToken cancellationToken = default)
     {
         await SeedBuildingsAndRoomsAsync(db, cancellationToken);
@@ -29,7 +30,8 @@ public static class DbSeeder
         // reporter. The verification seeder checks for one and backs out if it is absent.
         await SeedUsersAsync(db, configuration, passwordHasher, logger, cancellationToken);
         await SeedVerificationAsync(db, verificationSettings, logger, cancellationToken);
-        await SeedLiveWorkOrdersAsync(db, approvalSettings ?? new ApprovalSettings(), logger, cancellationToken);
+        await SeedLiveWorkOrdersAsync(
+            db, approvalSettings ?? new ApprovalSettings(), slaSettings ?? new SlaSettings(), logger, cancellationToken);
     }
 
     private static async Task SeedBuildingsAndRoomsAsync(
@@ -720,6 +722,7 @@ public static class DbSeeder
     private static async Task SeedLiveWorkOrdersAsync(
         AppDbContext db,
         ApprovalSettings approvalSettings,
+        SlaSettings slaSettings,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -881,7 +884,14 @@ public static class DbSeeder
                 Status = seed.Status,
                 Strategy = seed.Strategy,
                 EstimatedCost = seed.EstimatedCost,
-                PartsRequired = seed.PartsRequired
+                PartsRequired = seed.PartsRequired,
+
+                // The approved one was approved by the gate as it was seeded, so its repair SLA
+                // starts now — the same stamp WorkOrderService writes. The two waiting on a
+                // manager have no clock yet.
+                DueAt = seed.Status == WorkOrderStatus.Approved
+                    ? SlaRules.DueAt(DateTime.UtcNow, slaSettings.ResolutionDays)
+                    : null
             };
 
             db.WorkOrders.Add(order);

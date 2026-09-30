@@ -42,7 +42,7 @@ information is given in tabular form below, with the file that establishes each 
 | API → PostgreSQL | TCP, Npgsql via EF Core | Connection-string credentials (`ConnectionStrings:DefaultConnection` or `DATABASE_URL`) | `api/Program.cs` |
 | API → Supabase Storage | HTTPS REST (object upload) | Service-role key, sent as both `Authorization: Bearer` and `apikey` | `api/Services/SupabaseStorageService.cs` |
 | API → Google Calendar | HTTPS, Calendar API v3 | Google service account, scope `calendar.readonly` | `api/Services/GoogleCalendarClient.cs` |
-| API → Agent service | HTTP `POST /run` (JSON) | **None**; the endpoint is protected only by network placement | `api/Services/AgentClient.cs`, `agent/main.py` |
+| API → Agent service | HTTP `POST /run` (JSON) | Shared secret in the `X-Agent-Secret` header, compared in constant time; closed when no secret is configured | `api/Program.cs` (the `IAgentClient` registration), `agent/main.py` (`require_agent_secret`) |
 | Agent service → API | HTTP `POST /api/internal/tools/{toolName}` | Shared secret in the `X-Agent-Secret` header, compared in fixed time | `agent/tools.py`, `api/Middleware/AgentSecretFilter.cs` |
 | Agent service → LLM | HTTPS `POST /chat/completions` | `Authorization: Bearer LLM_API_KEY` | `agent/llm_client.py` |
 | Clients → Supabase Storage | HTTPS `GET` of a public object URL | None (public bucket) | `web/src/features/reports/components/ReportPhoto.jsx`, `mobile/lib/features/workorders/job_detail_screen.dart` |
@@ -61,17 +61,19 @@ reads only `VITE_API_BASE_URL`, and `mobile/lib/core/env.dart` reads only the AP
 and every photo upload is routed through the API rather than written to storage directly.
 The Supabase service-role key therefore exists only in the API's configuration.
 
-Two qualifications apply, and both are drawn in Figure 3.1. First, a stored photo is displayed
-by loading its public URL directly from Supabase Storage. This is a read of an object the API
-has already validated and stored; it carries no credential and writes nothing, but it is a
-connection from a client to a service other than the API. Second, the agent service's `/run`
-endpoint performs no authentication of its caller (`agent/main.py`), and `AgentClient` sends no
-credential with it (`api/Services/AgentClient.cs`). The boundary between the clients and the
-agent service is consequently enforced by deployment — the agent service must not be exposed
-on a public address — rather than by the code. The reverse direction is authenticated: the
-agent service can reach campus data only through the tool router, which rejects any request
-lacking the shared secret with a 401, and which fails closed when no secret is configured
-(`api/Middleware/AgentSecretFilter.cs`). The agent service itself holds no database
+One qualification applies, and it is drawn in Figure 3.1: a stored photo is displayed by
+loading its public URL directly from Supabase Storage. This is a read of an object the API has
+already validated, stripped of its metadata and stored; it carries no credential and writes
+nothing, but it is a connection from a client to a service other than the API.
+
+Both directions between the API and the agent service are authenticated with the same shared
+secret. The agent service's `/run` endpoint requires the `X-Agent-Secret` header, checked in
+constant time by the `require_agent_secret` dependency in `agent/main.py` before the body is
+validated, and closed when no secret is configured; the API's typed `IAgentClient` sends it on
+every call (`api/Program.cs`). Only the API can therefore start an agent run. In the reverse
+direction, the agent service can reach campus data only through the tool router, which rejects
+any request lacking the shared secret with a 401, and which fails closed when no secret is
+configured (`api/Middleware/AgentSecretFilter.cs`). The agent service itself holds no database
 credentials; `agent/config.py` declares no connection-string field, and its `extra="ignore"`
 setting prevents a `DATABASE_URL` in the shared `.env` file from being loaded into the process.
 

@@ -62,6 +62,11 @@ public record WorkOrderDetailDto(
     string? RevisionNote,
 
     DateTime? CompletedAt,
+
+    // The repair SLA, as on WorkOrderDto: the stamped deadline and SlaRules' verdict on it.
+    DateTime? DueAt,
+    SlaState Sla,
+
     DateTime CreatedAt,
     DateTime UpdatedAt,
 

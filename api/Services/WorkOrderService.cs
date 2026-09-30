@@ -47,6 +47,7 @@ public class WorkOrderService : IWorkOrderService
 
     private readonly AppDbContext _db;
     private readonly ApprovalSettings _approval;
+    private readonly SlaSettings _sla;
     private readonly IWorkflowQueue _workflowQueue;
     private readonly IVerificationService _verificationService;
     private readonly TimeProvider _time;
@@ -64,6 +65,7 @@ public class WorkOrderService : IWorkOrderService
         SchedulingSettings scheduling,
         IAssetService assets,
         IFileStorageService fileStorage,
+        SlaSettings sla,
         ILogger<WorkOrderService> logger)
     {
         _db = db;
@@ -74,6 +76,7 @@ public class WorkOrderService : IWorkOrderService
         _scheduling = scheduling;
         _assets = assets;
         _fileStorage = fileStorage;
+        _sla = sla;
         _logger = logger;
     }
 
@@ -187,6 +190,7 @@ public class WorkOrderService : IWorkOrderService
         var totalCount = await query.CountAsync(cancellationToken);
 
         List<WorkOrderDto> items;
+        var toDto = ToDtoExpression(UtcNow);
 
         if (sort == WorkOrderSort.Cost)
         {
@@ -196,7 +200,7 @@ public class WorkOrderService : IWorkOrderService
             // C# as decimal, and paged. A campus has hundreds of live orders, not millions,
             // so this costs nothing that matters — and it behaves identically on both test
             // databases, which a provider-specific ORDER BY would not.
-            var rows = await query.Select(ToDtoExpression).ToListAsync(cancellationToken);
+            var rows = await query.Select(toDto).ToListAsync(cancellationToken);
 
             items = rows
                 .OrderByDescending(w => w.EstimatedCost)
@@ -214,7 +218,7 @@ public class WorkOrderService : IWorkOrderService
                 .ThenByDescending(w => w.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .Select(ToDtoExpression)
+                .Select(toDto)
                 .ToListAsync(cancellationToken);
         }
 
@@ -359,6 +363,8 @@ public class WorkOrderService : IWorkOrderService
             order.RejectionReason,
             order.RevisionNote,
             order.CompletedAt,
+            order.DueAt,
+            SlaRules.StateOf(order.Status, order.DueAt, order.CompletedAt, UtcNow),
             order.CreatedAt,
             order.UpdatedAt,
             // Oldest booking first; Id is monotonic per insert, so it orders the way the
@@ -479,6 +485,7 @@ public class WorkOrderService : IWorkOrderService
                 order.Id, order.ReportId, order.AssetId, asset.AssetTag,
                 order.AssignedTechnicianId, null, order.Status, order.Strategy,
                 order.EstimatedCost, order.ActualCost, order.CompletedAt,
+                order.DueAt, SlaRules.StateOf(order.Status, order.DueAt, order.CompletedAt, UtcNow),
                 order.CreatedAt, order.UpdatedAt));
     }
 
@@ -549,6 +556,13 @@ public class WorkOrderService : IWorkOrderService
         var needsApproval = basis.RequiresApproval;
 
         order.Status = needsApproval ? WorkOrderStatus.AwaitingApproval : WorkOrderStatus.Approved;
+
+        // Approved on the spot starts the repair SLA now; an order waiting on a manager starts
+        // it when the manager approves (ApproveAsync). See SlaRules.
+        if (!needsApproval)
+        {
+            order.DueAt = SlaRules.DueAt(UtcNow, _sla.ResolutionDays);
+        }
 
         var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
 
@@ -865,6 +879,42 @@ public class WorkOrderService : IWorkOrderService
         return new CompletionPhotoResult(CompletionPhotoOutcome.Success, url);
     }
 
+    /// <summary>
+    /// CLAIMS a manager's decision on an order: moves it out of AwaitingApproval to
+    /// <paramref name="decided"/> only if it is STILL AwaitingApproval in the database at this
+    /// instant, as one conditional UPDATE. True when this caller won the decision.
+    ///
+    /// Why the status check at the top of each decision is not enough on its own: it reads the
+    /// row, and two managers can both read AwaitingApproval before either writes. Without the
+    /// claim both saves succeed — one approves, the other rejects over it — and the audit trail
+    /// records two decisions that contradict each other. The UPDATE's WHERE re-checks the status
+    /// in the same statement that changes it; on PostgreSQL the second writer waits on the first
+    /// one's row lock and then finds the status already changed, so it updates 0 rows.
+    ///
+    /// Runs INSIDE the caller's transaction, first, so everything the decision writes after it
+    /// (the rest of the order, the workflow's move, the audit step) commits with it or not at
+    /// all. A conditional update rather than a concurrency-token column because it needs nothing
+    /// provider-specific — the same SQL runs on PostgreSQL and on the SQLite test database.
+    /// </summary>
+    private async Task<bool> ClaimDecisionAsync(
+        int orderId,
+        WorkOrderStatus decided,
+        CancellationToken cancellationToken)
+    {
+        var claimed = await _db.WorkOrders
+            .Where(w => w.Id == orderId && w.Status == WorkOrderStatus.AwaitingApproval)
+            .ExecuteUpdateAsync(s => s.SetProperty(w => w.Status, decided), cancellationToken);
+
+        return claimed == 1;
+    }
+
+    /// <summary>
+    /// A manager's approval — the approval EXECUTION step, and one explicit transaction: the
+    /// claim, the order's decision columns and its SLA deadline, the workflow's move and the
+    /// ManagerApproved audit step are written together or not at all. An illegal workflow move
+    /// throws before the commit, so the claim rolls back with it and the 409 means nothing
+    /// changed.
+    /// </summary>
     public async Task<WorkOrderActionOutcome> ApproveAsync(
         int id,
         int managerId,
@@ -879,16 +929,32 @@ public class WorkOrderService : IWorkOrderService
 
         // Only an order that is actually waiting on a manager. Approving one that was
         // auto-approved, or one already rejected, would rewrite a decision that was made.
+        // Checked here for the ordinary case; the claim below is what holds it under a race.
         if (order.Status != WorkOrderStatus.AwaitingApproval)
         {
             return WorkOrderActionOutcome.InvalidState;
         }
 
+        var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+        if (!await ClaimDecisionAsync(order.Id, WorkOrderStatus.Approved, cancellationToken))
+        {
+            // Another decision got there between the read above and now. Nothing written;
+            // disposing the transaction rolls it back.
+            return WorkOrderActionOutcome.InvalidState;
+        }
+
+        var now = UtcNow;
+
         order.Status = WorkOrderStatus.Approved;
         order.ApprovedByUserId = managerId;
-        order.ApprovedAt = _time.GetUtcNow().UtcDateTime;
+        order.ApprovedAt = now;
 
-        var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
+        // The repair SLA starts at the decision, not when the order was raised: the time it
+        // waited for a manager was not time anyone could have spent on the job. See SlaRules.
+        order.DueAt = SlaRules.DueAt(now, _sla.ResolutionDays);
 
         if (workflow is not null)
         {
@@ -899,9 +965,16 @@ public class WorkOrderService : IWorkOrderService
         }
 
         await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
         return WorkOrderActionOutcome.Success;
     }
 
+    /// <summary>
+    /// A manager's rejection. One transaction, claimed first, exactly like ApproveAsync: the
+    /// order, the workflow's move to Closed, the report's (ReportProgress) and the
+    /// ManagerRejected step. A rejected order never starts the SLA.
+    /// </summary>
     public async Task<WorkOrderActionOutcome> RejectAsync(
         int id,
         int managerId,
@@ -920,7 +993,16 @@ public class WorkOrderService : IWorkOrderService
             return WorkOrderActionOutcome.InvalidState;
         }
 
-        var now = _time.GetUtcNow().UtcDateTime;
+        var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+        if (!await ClaimDecisionAsync(order.Id, WorkOrderStatus.Rejected, cancellationToken))
+        {
+            return WorkOrderActionOutcome.InvalidState;
+        }
+
+        var now = UtcNow;
 
         // ApprovedBy/ApprovedAt record who DECIDED and when, whichever way it went — see
         // WorkOrder.ApprovedByUserId. Status is what says which way.
@@ -928,8 +1010,6 @@ public class WorkOrderService : IWorkOrderService
         order.RejectionReason = reason;
         order.ApprovedByUserId = managerId;
         order.ApprovedAt = now;
-
-        var workflow = await LatestWorkflowForReportAsync(order.ReportId, cancellationToken);
 
         if (workflow is not null)
         {
@@ -945,9 +1025,15 @@ public class WorkOrderService : IWorkOrderService
         }
 
         await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
         return WorkOrderActionOutcome.Success;
     }
 
+    /// <summary>
+    /// A manager sending the order back. One transaction, claimed first, like the other two
+    /// decisions — then re-queued only after the commit.
+    /// </summary>
     public async Task<WorkOrderActionOutcome> RequestRevisionAsync(
         int id,
         int managerId,
@@ -976,8 +1062,15 @@ public class WorkOrderService : IWorkOrderService
             return WorkOrderActionOutcome.NoWorkflow;
         }
 
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
         // Back to Draft rather than Cancelled or Rejected: the work is still wanted, just
         // not planned like this. The note is where the Strategist will read what to change.
+        if (!await ClaimDecisionAsync(order.Id, WorkOrderStatus.Draft, cancellationToken))
+        {
+            return WorkOrderActionOutcome.InvalidState;
+        }
+
         order.Status = WorkOrderStatus.Draft;
         order.RevisionNote = note;
 
@@ -990,8 +1083,9 @@ public class WorkOrderService : IWorkOrderService
             ApprovalBasisFor(order.EstimatedCost, order.Strategy), managerId, note: note));
 
         await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
 
-        // Re-queued AFTER the save, so the runner can never dequeue an id whose state has
+        // Re-queued AFTER the commit, so the runner can never dequeue an id whose state has
         // not been written yet. CancellationToken.None, not the request's: that token is
         // cancelled as soon as the response is written, which would abort the hand-off.
         //
@@ -1227,8 +1321,13 @@ public class WorkOrderService : IWorkOrderService
     /// <summary>
     /// The list row, as an expression so EF translates it into the SELECT — the asset tag
     /// and technician name come back as columns of the same query, not a lookup per row.
+    ///
+    /// SlaRules.StateOf is not SQL: EF reads Status, DueAt and CompletedAt as columns and runs
+    /// the rule in C# on each row it materialises (a call in the final projection is evaluated
+    /// on the client). <paramref name="now"/> is read once per request, so every row on a page
+    /// is judged against the same instant.
     /// </summary>
-    private static readonly Expression<Func<WorkOrder, WorkOrderDto>> ToDtoExpression =
+    private static Expression<Func<WorkOrder, WorkOrderDto>> ToDtoExpression(DateTime now) =>
         w => new WorkOrderDto(
             w.Id,
             w.ReportId,
@@ -1241,8 +1340,13 @@ public class WorkOrderService : IWorkOrderService
             w.EstimatedCost,
             w.ActualCost,
             w.CompletedAt,
+            w.DueAt,
+            SlaRules.StateOf(w.Status, w.DueAt, w.CompletedAt, now),
             w.CreatedAt,
             w.UpdatedAt);
+
+    /// <summary>"Now" for the SLA, from the injected clock — never DateTime.UtcNow here.</summary>
+    private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
 
     /// <summary>
     /// Written here rather than reached for across services, for the same reason as

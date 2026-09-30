@@ -55,6 +55,14 @@ const TONES = {
   AwaitingVerification: 'amber',
   Failed: 'red',
 
+  // SlaState — the repair SLA, as the API judged it. Overdue is red because someone still has
+  // to act; Missed is amber because it is history.
+  None: 'slate',
+  OnTrack: 'blue',
+  Overdue: 'red',
+  Met: 'green',
+  Missed: 'amber',
+
   // Role — which account is which at a glance on the user list. A tone decides nothing; the
   // API's policies decide what each role may do.
   Reporter: 'slate',

@@ -58,6 +58,12 @@ export const ACTIVE_STATUSES = ['Approved', 'Scheduled', 'InProgress'];
  * Mirrors the API's `WorkOrderSort` query enum. Exactly two orders and no direction:
  * `CreatedAt` is newest first, `Cost` is highest estimate first — sorted in C# as decimal.
  */
+/**
+ * Mirrors the API's `SlaState` enum, by NAME — where an order stands against the repair SLA.
+ * The API decides it (SlaRules in C#); this client never compares `dueAt` with its own clock.
+ */
+export const SLA_STATES = ['None', 'OnTrack', 'Overdue', 'Met', 'Missed'];
+
 export const WORK_ORDER_SORTS = {
   CreatedAt: 'CreatedAt',
   Cost: 'Cost',

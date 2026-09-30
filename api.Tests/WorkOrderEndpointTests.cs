@@ -484,6 +484,7 @@ public class WorkOrderEndpointTests : IClassFixture<ApiFactory>
                 sp.GetRequiredService<SchedulingSettings>(),
                 sp.GetRequiredService<IAssetService>(),
                 sp.GetRequiredService<IFileStorageService>(),
+                sp.GetRequiredService<SlaSettings>(),
                 NullLogger<WorkOrderService>.Instance);
 
             await Assert.ThrowsAsync<InvalidOperationException>(() => service.CompleteAsync(

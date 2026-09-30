@@ -7,6 +7,7 @@ import rows from '../../../components/ui/rows.module.css';
 import TagChip from '../../assets/components/TagChip';
 import { enumLabel, formatMoney } from '../services/workOrdersApi';
 import styles from '../workorders.module.css';
+import SlaPill from './SlaPill';
 import StrategyPill from './StrategyPill';
 
 /** The dispatch board's rows. Presentational only — it receives the page and fetches nothing. */
@@ -54,7 +55,10 @@ export function WorkOrderRows({ workOrders }) {
                 </span>
               </td>
               <td>
-                <StatusPill status={order.status} label={enumLabel(order.status)} />
+                <span className={rows.stack}>
+                  <StatusPill status={order.status} label={enumLabel(order.status)} />
+                  <SlaPill sla={order.sla} dueAt={order.dueAt} />
+                </span>
               </td>
               <td>
                 {order.assignedTechnicianName ? (

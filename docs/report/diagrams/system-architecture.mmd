@@ -4,7 +4,7 @@
 %%   Npgsql credentials .... api/Program.cs (ConnectionStrings:DefaultConnection / DATABASE_URL)
 %%   service-role key ...... api/Services/SupabaseStorageService.cs (Authorization: Bearer + apikey)
 %%   service account ....... api/Services/GoogleCalendarClient.cs (CredentialFactory.FromJson<ServiceAccountCredential>, calendar.readonly)
-%%   /run (no auth) ........ api/Services/AgentClient.cs, agent/main.py
+%%   /run shared secret .... api/Program.cs (IAgentClient, X-Agent-Secret), agent/main.py (require_agent_secret)
 %%   shared-secret header .. agent/tools.py (X-Agent-Secret), api/Middleware/AgentSecretFilter.cs
 %%   LLM bearer key ........ agent/llm_client.py (_http_responder)
 %% Export: npx @mermaid-js/mermaid-cli -i system-architecture.mmd -o system-architecture.png -s 3 -b white
@@ -36,7 +36,7 @@ flowchart LR
     API -- "TCP · Npgsql / EF Core<br/>connection-string credentials" --> PG
     API -- "HTTPS REST: object upload<br/>service-role key (Bearer + apikey)" --> SB
     API -- "HTTPS: Calendar v3 events.list<br/>service account, calendar.readonly" --> GC
-    API -- "HTTP POST /run (JSON)<br/>NO authentication: network placement only" --> AG
+    API -- "HTTP POST /run (JSON)<br/>shared-secret header X-Agent-Secret" --> AG
     AG -- "HTTP POST /api/internal/tools/{toolName}<br/>shared-secret header X-Agent-Secret" --> API
     AG -- "HTTPS POST /chat/completions<br/>Bearer LLM_API_KEY" --> LLM
 

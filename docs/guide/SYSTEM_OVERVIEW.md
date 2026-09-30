@@ -27,7 +27,7 @@ fixed business rules written in C# decide the rest.
 | **Reporter** | A student or lecturer | Reports a fault, answers a few quick questions, later says whether the fix held | 📱 Phone app |
 | **Technician** | Maintenance staff | Sees the jobs assigned to them, does the work, writes what they did | 📱 Phone app (or web) |
 | **Facilities Manager** | Runs maintenance | Approves expensive work, assigns technicians, books visits, watches the metrics | 💻 Web app |
-| **Admin** | System owner | Manages the equipment register, buildings, rooms and staff accounts | 💻 Web app |
+| **Admin** | System owner | Manages the equipment register, buildings, rooms and user accounts (create, edit, deactivate, reset password) | 💻 Web app |
 
 > A role is **not** a seniority level. An Admin cannot approve a work order, because approving
 > is the Facilities Manager's job. Every permission is given to a named role on purpose.
@@ -195,6 +195,7 @@ How they are kept safe:
 | Ask the reporter N days after completion | `VerificationSettings` | 5 days |
 | Maintenance slots avoid classes ± buffer, working hours only | `SlotRules` | 15 min, 08:00–17:00 Colombo |
 | Who can see which reports / orders | `ReportService`, `WorkOrderService` | Reporter sees only their own |
+| Who may manage accounts; deactivation rules | `UserService`, `UsersController` | Admin only |
 
 ## 9. Security in one minute
 
@@ -205,7 +206,14 @@ How they are kept safe:
 - Everything needs a login unless it is one of **four** public endpoints: login, register,
   `/health`, and the agent's tool router (which checks a shared secret instead).
 - **Anyone can sign up on the phone, but only as a Reporter.** Only an Admin can create
-  staff accounts.
+  staff accounts, on the web's **Users** page.
+- **Users are never deleted, only deactivated.** Their reports and jobs stay in the history.
+  Deactivating someone or changing their role takes effect on their **next request**: the
+  API checks every request's token against the account, so the old token stops working
+  at once.
+- **An Admin can't deactivate themselves or change their own role**, so there is always at
+  least one Admin who can sign in. **A technician with unfinished jobs can't be deactivated**
+  until those jobs are reassigned.
 - The phone stores the token in **secure storage** (Keychain / encrypted prefs), never in
   plain SharedPreferences.
 - Photos have their hidden metadata (such as GPS) stripped before they are stored.
@@ -237,6 +245,7 @@ When the API starts in Development it **seeds** the database:
 | One agent's logic / its prompt | `agent/agents/*.py`, `agent/prompts/*.md` |
 | The allowed tools | `api/Controllers/InternalToolsController.cs` |
 | The verification sweep | `api/Services/VerificationService.cs`, `VerificationSweepService.cs` |
+| User accounts (Admin) | `api/Services/UserService.cs`, `web/src/features/users/` |
 | Web pages | `web/src/features/<feature>/pages/` |
 | Phone screens | `mobile/lib/features/<feature>/` |
 

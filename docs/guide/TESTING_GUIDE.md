@@ -358,6 +358,26 @@ Repeat A1–A8 (or continue from A8 before answering). In A9, answer instead:
 
 ---
 
+## 5b. Scenario D — user management (Admin, web)
+
+Sign in as `admin@campus.test` and open **Users** (in the Estate group of the sidebar).
+
+| # | Do this | Expected |
+|---|---|---|
+| D1 | Open **Users** | Every account, each with a role pill and **Active**. The tabs show counts (All / Active / Deactivated). Search matches a name or an email |
+| D2 | **Create account**: name, email `tech2@campus.test`, role **Technician**, password twice → **Create account** | The panel switches to the new account with "Account created…". The list behind updates. In a private window, `tech2@campus.test` can sign in |
+| D3 | Create again with the same email in CAPITALS | "Another account already uses 'tech2@campus.test'." under Email (**409**) |
+| D4 | Open `tech2`, change the name and role to **Reporter** → **Save changes** | The panel closes and the row shows the new name and role |
+| D5 | Sign in as `tech2` in a private window. As the Admin, **Deactivate → Confirm**. Then click anything in the private window | The private window is signed out with "Session expired" (**the old token is refused on its next request**). Signing in again says the email or password is wrong |
+| D6 | **Reactivate → Confirm** | They can sign in again |
+| D7 | **Reset password** → a new password twice → **Set password** | The old password stops working and the new one works |
+| D8 | Open **your own** account (marked "(you)") | The role is locked and there's no Deactivate button. The API would refuse both with 409 |
+| D9 | Open **Demo Technician** while they have an assigned job (e.g. after step A6), then **Deactivate** | Refused: "Technician still has work assigned… Reassign those orders first." The panel shows the live-job count |
+| D10 | As the **manager**, open a work order → *Assign to* | A deactivated technician isn't in the list |
+| D11 | As the **manager**, go to `/users` | "Not authorised". The **Users** link isn't in the manager's sidebar |
+
+---
+
 ## 6. What "correct" looks like, at a glance
 
 | After step | Workflow state | Report status | Reporter sees |
@@ -389,6 +409,7 @@ Repeat A1–A8 (or continue from A8 before answering). In A9, answer instead:
 | Clarifier questions never arrive (phone waits 3 min) | Check the agent terminal for LLM errors (402 = out of credit) and the workflow page for the reason. |
 | Photo upload says "storage unavailable" (503) | Supabase isn't configured. That's expected locally, so continue without a photo. |
 | "Sync timetable now" says `NotConfigured` | Google Calendar isn't configured. The slot finder still works from the cached timetable, which is empty. |
+| A user was signed out while working | An Admin deactivated them or changed their role. That takes effect on the next request, by design |
 | `mobile/README.md` says the platform folders aren't in the repo | That line is out of date. `android/` and `ios/` are committed, so you don't need to run `flutter create`. |
 
 ---

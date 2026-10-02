@@ -8,8 +8,9 @@ using Microsoft.EntityFrameworkCore;
 namespace CampusFacilities.Api.Data;
 
 /// <summary>
-/// Development-only demo data. Idempotent: every insert is guarded by a check on the
-/// natural key, so running it on an already-seeded database is a no-op.
+/// Demo data — always in Development, and in a deployment only when Seed:DemoData /
+/// SEED_DEMO_DATA is set (see Program.cs). Idempotent: every insert is guarded by a check on
+/// the natural key, so running it on an already-seeded database is a no-op.
 /// </summary>
 public static class DbSeeder
 {

@@ -1,0 +1,70 @@
+name: Mobile release
+
+# Builds a release APK pointed at the deployed API and attaches it to a GitHub Release.
+# Triggered by pushing a tag:   git tag mobile-v0.1.0 && git push origin mobile-v0.1.0
+#
+# The API URL is the repository VARIABLE `MOBILE_API_BASE_URL` (Settings → Secrets and
+# variables → Actions → Variables), not a secret: a --dart-define is readable from the
+# compiled app anyway, so nothing secret may ever go in it.
+#
+# Signing: the release build is signed with the runner's DEBUG key (android/app/build.gradle
+# says so). Installable by sideloading, fine for a demo, not for the Play Store — and each
+# runner has a different debug key, so installing a newer APK over an older one needs the
+# old one uninstalled first.
+
+on:
+  push:
+    tags: ['mobile-v*']
+
+# The only workflow that writes: it creates a Release.
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: build and publish APK
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to build without an API URL
+        env:
+          API_BASE_URL: ${{ vars.MOBILE_API_BASE_URL }}
+        # Without it the APK would point at the emulator alias 10.0.2.2 and fail on a phone.
+        run: |
+          case "$API_BASE_URL" in
+            https://*) echo "Building against $API_BASE_URL" ;;
+            *) echo "::error::Set the MOBILE_API_BASE_URL repository variable to the API's https:// URL." ; exit 1 ;;
+          esac
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - run: flutter test
+
+      - name: Build release APK
+        run: flutter build apk --release --dart-define=API_BASE_URL=${{ vars.MOBILE_API_BASE_URL }}
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk "maintenx-${TAG}.apk"
+          gh release create "$TAG" "maintenx-${TAG}.apk" \
+            --title "MaintenX mobile ${TAG#mobile-}" \
+            --notes "Android APK built against ${{ vars.MOBILE_API_BASE_URL }}. Debug-signed: uninstall any earlier MaintenX build before installing."

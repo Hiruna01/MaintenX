@@ -1,0 +1,87 @@
+name: Deploy
+
+# Runs only after CI has passed on a push to main, so nothing reaches production that the
+# test suite has not seen. Order matters and is the point of this file:
+#   1. apply the EF Core migrations to Supabase — the ONLY route a migration has to the
+#      production database; nobody runs `dotnet ef database update` against it from a laptop;
+#   2. then ask Render to deploy the API and the agent (their auto-deploy is off), so new
+#      code never starts against an old schema.
+# The web client deploys itself through Vercel's Git integration.
+#
+# Secrets live in the `production` GitHub environment, never in this file:
+#   PRODUCTION_DATABASE_URL       Supabase session pooler, Npgsql key/value form
+#   RENDER_API_DEPLOY_HOOK_URL    Render → maintenx-api → Settings → Deploy Hook
+#   RENDER_AGENT_DEPLOY_HOOK_URL  Render → maintenx-agent → Settings → Deploy Hook
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Re-run by hand (e.g. after rotating a secret) — still migrates first.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two deploys at once, and never cancel one mid-migration.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: migrate Supabase
+    # workflow_run fires on every CI completion; only a passing CI on a PUSH to main deploys
+    # (a pull request's CI run must never touch production).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The commit CI tested, not whatever main points at by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore the EF Core tool
+        run: dotnet tool restore
+
+      - name: Apply migrations
+        # `dotnet ef` boots Program.cs up to builder.Build() to find the DbContext, and
+        # Program.cs refuses to start without JWT settings. These three are placeholders that
+        # satisfy that check and sign nothing — no token is ever issued by this process. The
+        # one real credential is the database's, from the environment secret.
+        env:
+          ASPNETCORE_ENVIRONMENT: Production
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          JWT_SECRET: migration-only-placeholder-never-used-to-sign
+          JWT_ISSUER: migration-only
+          JWT_AUDIENCE: migration-only
+        run: dotnet ef database update --project api/CampusFacilities.Api.csproj --configuration Release
+
+  deploy:
+    name: deploy to Render
+    needs: migrate
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Trigger the API and agent deploys
+        env:
+          API_HOOK: ${{ secrets.RENDER_API_DEPLOY_HOOK_URL }}
+          AGENT_HOOK: ${{ secrets.RENDER_AGENT_DEPLOY_HOOK_URL }}
+        # The hook URLs carry their own key, so they are secrets. --fail turns a refused
+        # hook into a failed job rather than a green one that deployed nothing.
+        run: |
+          curl --fail --silent --show-error -X POST "$API_HOOK" > /dev/null
+          curl --fail --silent --show-error -X POST "$AGENT_HOOK" > /dev/null
+          echo "Deploys requested. Render builds them now; watch the dashboard or /health."

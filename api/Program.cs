@@ -687,9 +687,18 @@ app.MapGet("/health", () => Results.Ok(new
 })).AllowAnonymous();
 
 // ---------------------------------------------------------------------------
-// Development-only demo data. Idempotent — safe to run on every start.
+// Demo data. Idempotent — safe to run on every start.
 // ---------------------------------------------------------------------------
-if (app.Environment.IsDevelopment())
+// Always in Development; anywhere else only when Seed:DemoData (or SEED_DEMO_DATA) says so —
+// the deployed demo needs the seeded estate, the planted repeat failure and the demo
+// accounts, and without the seed a fresh database has no Admin at all (registration only
+// ever creates Reporters). Same shape as the Swagger switch above. This writes DATA only:
+// migrations reach a deployed database through CI, never from here.
+var seedDemoData = app.Configuration.GetValue<bool?>("Seed:DemoData")
+    ?? app.Configuration.GetValue<bool?>("SEED_DEMO_DATA")
+    ?? false;
+
+if (app.Environment.IsDevelopment() || seedDemoData)
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();

@@ -25,6 +25,16 @@ key is required, and the api job's database is a throwaway container reachable o
 that job. If a job ever needs a real credential it goes in GitHub repository secrets as
 `${{ secrets.NAME }}`, never in the file.
 
+**Two more workflows, and they are the only ones that use secrets** (GitHub environment
+`production`, referenced as `${{ secrets.NAME }}`): `deploy.yml` runs after a passing CI on a
+push to `main` — it applies the EF migrations to Supabase with `dotnet ef database update`
+(the tool pinned in `.config/dotnet-tools.json`), **then** calls the Render deploy hooks, so
+new code never starts against an old schema. **That job is the only route a migration has to
+the production database** — never `dotnet ef` against it from a laptop — and because the old
+API is still serving while it runs, a migration must be additive (drop or rename in a later
+release). `mobile-release.yml` builds the APK on a `mobile-v*` tag against the repository
+variable `MOBILE_API_BASE_URL` and attaches it to a GitHub Release. See DEPLOYMENT below.
+
 Not covered by CI, on purpose: the live agent evals (`agent/evals/`) — they call a real LLM
 provider and cost money. Run them by hand; see Evals under AGENT SERVICE.
 
@@ -84,6 +94,10 @@ file, run `git add --renormalize .` once. Do not commit a file with CRLF line en
 - **Swagger** is served in Development, and anywhere else only when `Swagger:Enabled` (or
   `SWAGGER_ENABLED`) is true — so a deployed API can show evaluators its documentation
   without pretending to be a development environment. Off by default outside Development.
+- **The demo seeder follows the same switch**: always in Development, elsewhere only when
+  `Seed:DemoData` (or `SEED_DEMO_DATA`) is true. The deployed demo sets it, because without
+  the seed a fresh database has no Admin at all — registration only ever creates Reporters.
+  It writes data, never schema: the API never calls `Migrate()`.
 
 ## AUTH — hand-rolled, not ASP.NET Core Identity
 
@@ -2469,8 +2483,10 @@ compile exactly like the app; files are `src/**/*.test.{js,jsx}` beside what the
 ## MOBILE — Flutter, `mobile/`
 
 Flutter + Riverpod + go_router. Targets **Android and iOS**; the platform folders are
-generated with `flutter create` and otherwise left alone — the one exception is the iOS
-usage strings, see QR scanning and Reports below. Run everything from `mobile/`:
+generated with `flutter create` and otherwise left alone — the exceptions are the iOS
+usage strings (see QR scanning and Reports below) and the `INTERNET` permission in the
+**main** Android manifest: Flutter's template puts it in the debug and profile manifests
+only, so without it a release APK can make no request at all. Run everything from `mobile/`:
 `flutter analyze`, `flutter test`, `flutter run`.
 
 - **`android/` and `ios/` are the only platform folders that belong in the repo.** A
@@ -2478,6 +2494,9 @@ usage strings, see QR scanning and Reports below. Run everything from `mobile/`:
   is a personal convenience — regenerate it with `flutter create .` when you want it, and
   do not commit it. They are not product targets, they need toolchains the team does not
   all have, and a hand-edited entitlement or manifest in one of them rots unnoticed.
+- **`ApiClient`'s request timeout is 60 s**, not 15: the deployed API sleeps on Render's free
+  plan and takes up to a minute to wake, and a shorter timeout fails the first request after
+  a quiet spell. Uploads keep their own 90 s.
 - **HTTP to a local API needs one flag on Android.** Android 9+ blocks cleartext traffic,
   so `http://10.0.2.2:5138` from an emulator fails with what looks like the API being down
   until `android:usesCleartextTraffic="true"` is set on the debug manifest.
@@ -3034,6 +3053,33 @@ live in `ImageUploadRules`, shared by any future photo upload.
 - **Prefer the simplest implementation a third-year student can explain in a viva.**
 
 ---
+
+## DEPLOYMENT — free tier, runbook in `docs/guide/DEPLOYMENT.md`
+
+API and agent on **Render** (`render.yaml`: the API as Docker from `api/Dockerfile`, the agent
+on Render's native Python), web on **Vercel** (`web/vercel.json` rewrites every path to
+`index.html` for React Router), the APK on a GitHub Release, and **two Supabase projects**:
+a database project in Singapore beside Render (`DATABASE_URL`, migrated by CI) and the
+existing photo project, unchanged (`SUPABASE_URL` / `SUPABASE_SERVICE_KEY`). The API already
+treats the two as unrelated settings; nothing in code assumes they are one project. Every secret is a host environment variable; `render.yaml` holds names, `sync: false`
+or `generateValue: true`, never a value.
+
+- **Supabase through the SESSION POOLER** (`aws-0-<region>.pooler.supabase.com:5432`,
+  username `postgres.<ref>`), Npgsql key/value form, `SSL Mode=Require;Maximum Pool Size=5`.
+  The direct host is IPv6-only on the free plan and neither Render nor GitHub's runners have
+  IPv6. **No `EnableRetryOnFailure`**: the services open their own transactions, and the
+  retrying strategy throws on them.
+- **The database project's Data API is switched off.** EF's tables sit in `public` with no row-level
+  security; left on, the anon key would read `Users`.
+- **The agent is reached over its public URL**, guarded by `AGENT_SHARED_SECRET` both ways
+  (Render's free instances take no private-network traffic). Render generates the secret on
+  the API and copies it to the agent (`fromService`); nobody handles it.
+- **Free Render services sleep after ~15 min and take ~30–60 s to wake.** Everything already
+  tolerates it: the agent's cold start fits in the 360 s agent timeout, the runner re-queues
+  unfinished runs at startup, and the sweep and timetable sync run a pass at startup. Keep at
+  most ONE service warm with an external pinger — two would exceed the 750 free instance hours.
+- **The image is the Debian `aspnet:8.0`**, not Alpine or chiseled: `Asia/Colombo` is resolved
+  at startup and needs tzdata and ICU. It listens on Render's `PORT`.
 
 ## Secrets
 

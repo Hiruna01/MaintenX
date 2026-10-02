@@ -1,0 +1,104 @@
+# Render Blueprint — the API and the agent service, both on the free plan.
+# Applied once from the Render dashboard (New → Blueprint, pick this repo). See
+# docs/guide/DEPLOYMENT.md for the full runbook.
+#
+# NO SECRET VALUES IN THIS FILE. Every secret is either `sync: false` (Render asks for it
+# when the Blueprint is applied, and it lives only in Render's environment) or
+# `generateValue: true` (Render generates it; nobody ever handles it).
+#
+# autoDeploy is OFF for both services: .github/workflows/deploy.yml applies the EF
+# migrations to Supabase FIRST and only then calls each service's deploy hook, so new code
+# never starts against an old schema.
+#
+# region sits beside the Supabase DATABASE project (created in Southeast Asia / Singapore —
+# see docs/guide/DEPLOYMENT.md). The photo bucket is a separate, existing project and its
+# region does not matter here. A service cannot move region later.
+
+services:
+  # ---------------------------------------------------------------------------
+  # ASP.NET Core API — Docker, because Render has no native .NET runtime.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: maintenx-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: ./api
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      # Supabase session pooler, Npgsql key/value form (not the dashboard's postgres:// URI).
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ISSUER
+        value: MaintenX.Api
+      - key: JWT_AUDIENCE
+        value: MaintenX.Clients
+      # Generated here, copied into the agent service below — the same value both ways.
+      - key: AGENT_SHARED_SECRET
+        generateValue: true
+      # https://maintenx-agent.onrender.com (the agent's public URL; no trailing slash).
+      - key: AGENT_SERVICE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: photos
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON_BASE64
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      # The Vercel production origin, exactly: https://<project>.vercel.app
+      - key: Cors__AllowedOrigins__0
+        sync: false
+      - key: SWAGGER_ENABLED
+        value: "true"
+      # Seeds the demo estate and the four demo accounts on start (idempotent).
+      - key: SEED_DEMO_DATA
+        value: "true"
+      - key: Seed__Passwords__Reporter
+        sync: false
+      - key: Seed__Passwords__Technician
+        sync: false
+      - key: Seed__Passwords__FacilitiesManager
+        sync: false
+      - key: Seed__Passwords__Admin
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # Python agent service — native Python runtime. No database credentials, ever.
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: maintenx-agent
+    runtime: python
+    plan: free
+    region: singapore
+    rootDir: agent
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # https://maintenx-api.onrender.com (the API's public URL; no trailing slash).
+      - key: API_BASE_URL
+        sync: false
+      - key: AGENT_SHARED_SECRET
+        fromService:
+          type: web
+          name: maintenx-api
+          envVarKey: AGENT_SHARED_SECRET
+      - key: LLM_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: google/gemini-3.8-flash

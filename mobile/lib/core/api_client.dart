@@ -32,12 +32,16 @@ class ApiClient {
     required this.baseUrl,
     required TokenStorage tokenStorage,
     http.Client? httpClient,
-    this.timeout = const Duration(seconds: 15),
+    this.timeout = const Duration(seconds: 60),
     this.uploadTimeout = const Duration(seconds: 90),
   })  : _tokenStorage = tokenStorage,
         _http = httpClient ?? http.Client();
 
   final String baseUrl;
+
+  /// 60 s, not 15: the deployed API is on Render's free plan, which sleeps when idle and
+  /// takes up to about a minute to wake. A shorter timeout makes the first request after a
+  /// quiet spell fail on the phone while the API is still starting.
   final Duration timeout;
 
   /// Longer than [timeout]: a 5 MB photo over a campus mobile connection is legitimately

@@ -225,6 +225,15 @@ flutter run
 
 Start order for a full local run: database → API → agent service → web/mobile.
 
+## Deployment
+
+Free tier throughout: the API and the agent service on **Render** (`render.yaml`, the API as
+Docker via `api/Dockerfile`), the web client on **Vercel** (`web/vercel.json`), Postgres and
+photo Storage on **Supabase**, and the Android APK attached to a **GitHub Release** by
+`.github/workflows/mobile-release.yml`. Migrations reach Supabase only through
+`.github/workflows/deploy.yml`, after CI passes. Step-by-step runbook, every environment
+variable name per service, and rollback: [`docs/guide/DEPLOYMENT.md`](docs/guide/DEPLOYMENT.md).
+
 ## Team
 
 | Name | Registration no. | Role |

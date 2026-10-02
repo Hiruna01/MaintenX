@@ -1,0 +1,8 @@
+# Build output from a local machine must not leak into the image's build.
+bin/
+obj/
+# Local secrets. User-secrets live outside the repo; this file may hold a connection string.
+appsettings.Development.json
+Properties/launchSettings.json
+*.http
+.DS_Store

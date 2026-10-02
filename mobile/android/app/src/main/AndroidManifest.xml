@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required for a RELEASE build to make any request at all. Flutter's template puts
+         this in the debug and profile manifests only, so without this line the release APK
+         reaches neither the API nor the photo bucket. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="maintenx_mobile"
         android:name="${applicationName}"

@@ -1,0 +1,173 @@
+== session check (every signed-in request)
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.00..1.14 rows=1 width=119) (actual time=0.015..0.015 rows=1.00 loops=1)
+   Buffers: shared hit=1
+   ->  Seq Scan on "Users" u  (cost=0.00..1.14 rows=1 width=119) (actual time=0.013..0.014 rows=1.00 loops=1)
+         Filter: ("Id" = 5)
+         Rows Removed by Filter: 2
+         Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=80
+ Planning Time: 0.721 ms
+ Execution Time: 0.041 ms
+(10 rows)
+
+== assets page (list, 20 rows by name)
+                                                      QUERY PLAN                                                      
+----------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1.20..1.22 rows=8 width=1126) (actual time=0.019..0.020 rows=8.00 loops=1)
+   Buffers: shared hit=7
+   ->  Sort  (cost=1.20..1.22 rows=8 width=1126) (actual time=0.019..0.019 rows=8.00 loops=1)
+         Sort Key: "Name", "Id"
+         Sort Method: quicksort  Memory: 26kB
+         Buffers: shared hit=7
+         ->  Seq Scan on "Assets" a  (cost=0.00..1.08 rows=8 width=1126) (actual time=0.005..0.005 rows=8.00 loops=1)
+               Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=105
+ Planning Time: 0.227 ms
+ Execution Time: 0.029 ms
+(12 rows)
+
+== assets count
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=1.10..1.11 rows=1 width=4) (actual time=0.009..0.009 rows=1.00 loops=1)
+   Buffers: shared hit=1
+   ->  Seq Scan on "Assets" a  (cost=0.00..1.08 rows=8 width=0) (actual time=0.003..0.003 rows=8.00 loops=1)
+         Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.038 ms
+ Execution Time: 0.018 ms
+(8 rows)
+
+== asset by tag (QR scan)
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.00..1.10 rows=1 width=1126) (actual time=0.003..0.003 rows=1.00 loops=1)
+   Buffers: shared hit=1
+   ->  Seq Scan on "Assets" a  (cost=0.00..1.10 rows=1 width=1126) (actual time=0.003..0.003 rows=1.00 loops=1)
+         Filter: (("AssetTag")::text = 'PRJ-MAB101-01'::text)
+         Buffers: shared hit=1
+ Planning Time: 0.025 ms
+ Execution Time: 0.008 ms
+(7 rows)
+
+== service history of one asset
+                                                       QUERY PLAN                                                       
+------------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=1.21..1.21 rows=1 width=1084) (actual time=0.009..0.009 rows=4.00 loops=1)
+   Sort Key: "ServicedOn", "Id"
+   Sort Method: quicksort  Memory: 25kB
+   Buffers: shared hit=4
+   ->  Seq Scan on "ServiceRecords" s  (cost=0.00..1.20 rows=1 width=1084) (actual time=0.003..0.004 rows=4.00 loops=1)
+         Filter: ("AssetId" = 1)
+         Rows Removed by Filter: 12
+         Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=88
+ Planning Time: 0.227 ms
+ Execution Time: 0.013 ms
+(12 rows)
+
+== one reporter own reports, newest first
+                                                       QUERY PLAN                                                       
+------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1.32..1.33 rows=1 width=1182) (actual time=0.040..0.044 rows=17.00 loops=1)
+   Buffers: shared hit=4
+   ->  Sort  (cost=1.32..1.33 rows=1 width=1182) (actual time=0.040..0.041 rows=17.00 loops=1)
+         Sort Key: "CreatedAt" DESC, "Id" DESC
+         Sort Method: quicksort  Memory: 29kB
+         Buffers: shared hit=4
+         ->  Seq Scan on "Reports" r  (cost=0.00..1.31 rows=1 width=1182) (actual time=0.012..0.016 rows=17.00 loops=1)
+               Filter: ("ReporterId" = 3)
+               Rows Removed by Filter: 8
+               Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=114
+ Planning Time: 0.380 ms
+ Execution Time: 0.057 ms
+(14 rows)
+
+== report detail with room and asset
+                                                               QUERY PLAN                                                                
+-----------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=2.45..3.57 rows=1 width=2812) (actual time=0.070..0.072 rows=1.00 loops=1)
+   Buffers: shared hit=3
+   ->  Hash Right Join  (cost=2.45..3.57 rows=1 width=2812) (actual time=0.069..0.071 rows=1.00 loops=1)
+         Hash Cond: (a."Id" = r."AssetId")
+         Buffers: shared hit=3
+         ->  Seq Scan on "Assets" a  (cost=0.00..1.08 rows=8 width=1126) (actual time=0.004..0.004 rows=1.00 loops=1)
+               Buffers: shared hit=1
+         ->  Hash  (cost=2.44..2.44 rows=1 width=1686) (actual time=0.052..0.053 rows=1.00 loops=1)
+               Buckets: 1024  Batches: 1  Memory Usage: 9kB
+               Buffers: shared hit=2
+               ->  Hash Join  (cost=1.32..2.44 rows=1 width=1686) (actual time=0.043..0.047 rows=1.00 loops=1)
+                     Hash Cond: (r0."Id" = r."RoomId")
+                     Buffers: shared hit=2
+                     ->  Seq Scan on "Rooms" r0  (cost=0.00..1.09 rows=9 width=504) (actual time=0.012..0.013 rows=9.00 loops=1)
+                           Buffers: shared hit=1
+                     ->  Hash  (cost=1.31..1.31 rows=1 width=1182) (actual time=0.016..0.016 rows=1.00 loops=1)
+                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                           Buffers: shared hit=1
+                           ->  Seq Scan on "Reports" r  (cost=0.00..1.31 rows=1 width=1182) (actual time=0.007..0.009 rows=1.00 loops=1)
+                                 Filter: ("Id" = 23)
+                                 Rows Removed by Filter: 24
+                                 Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=57
+ Planning Time: 0.636 ms
+ Execution Time: 0.131 ms
+(26 rows)
+
+== agent steps of one workflow (audit trail)
+                                                     QUERY PLAN                                                      
+---------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=7.44..7.48 rows=18 width=635) (actual time=0.045..0.047 rows=18.00 loops=1)
+   Sort Key: "Id"
+   Sort Method: quicksort  Memory: 37kB
+   Buffers: shared hit=6
+   ->  Seq Scan on "AgentSteps" s  (cost=0.00..7.06 rows=18 width=635) (actual time=0.022..0.037 rows=18.00 loops=1)
+         Filter: ("WorkflowId" = 18)
+         Rows Removed by Filter: 67
+         Buffers: shared hit=6
+ Planning:
+   Buffers: shared hit=94
+ Planning Time: 0.483 ms
+ Execution Time: 0.061 ms
+(12 rows)
+
+== approval queue page
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1.17..1.18 rows=1 width=2916) (actual time=0.020..0.021 rows=2.00 loops=1)
+   Buffers: shared hit=1
+   ->  Sort  (cost=1.17..1.18 rows=1 width=2916) (actual time=0.020..0.020 rows=2.00 loops=1)
+         Sort Key: "CreatedAt", "Id"
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=1
+         ->  Seq Scan on "WorkOrders" w  (cost=0.00..1.16 rows=1 width=2916) (actual time=0.015..0.016 rows=2.00 loops=1)
+               Filter: (("Status")::text = 'AwaitingApproval'::text)
+               Rows Removed by Filter: 11
+               Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=119
+ Planning Time: 0.780 ms
+ Execution Time: 0.039 ms
+(14 rows)
+
+== verification sweep (Pending and due)
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Seq Scan on "VerificationChecks" v  (cost=0.00..1.14 rows=1 width=4) (actual time=0.015..0.015 rows=0.00 loops=1)
+   Filter: ((("Status")::text = 'Pending'::text) AND ("DueAt" <= now()))
+   Rows Removed by Filter: 8
+   Buffers: shared hit=1
+ Planning:
+   Buffers: shared hit=64
+ Planning Time: 0.548 ms
+ Execution Time: 0.021 ms
+(8 rows)
+

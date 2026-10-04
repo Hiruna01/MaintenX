@@ -201,6 +201,7 @@ public class WorkflowRunner : BackgroundService
             validationResult: succeeded ? "Ok" : call.Ok ? "SafeFailure" : "CallFailed",
             errorMessage: call.Error ?? call.Response?.Error,
             attempts: call.Response?.Attempts,
+            usage: call.Response?.ReportedUsage,
             cancellationToken: cancellationToken);
     }
 
@@ -226,6 +227,7 @@ public class WorkflowRunner : BackgroundService
             validationResult: result.Succeeded ? "Ok" : "SafeFailure",
             errorMessage: result.Error,
             attempts: result.Attempts,
+            usage: result.Usage,
             cancellationToken: cancellationToken);
 
     /// <summary>
@@ -303,6 +305,7 @@ public class WorkflowRunner : BackgroundService
                 validationResult: validationResult,
                 errorMessage: error,
                 attempts: planner.Attempts,
+                usage: planner.Usage,
                 cancellationToken: cancellationToken);
         }
 

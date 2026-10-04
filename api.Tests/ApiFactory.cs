@@ -146,6 +146,17 @@ public class ApiFactory : WebApplicationFactory<Program>
                 services.Remove(worker);
             }
 
+            // Every test registers and signs in its accounts through the rate-limited auth
+            // endpoints, all from one in-process "address", so the real budgets would turn the
+            // suite into 429s. The budgets are effectively off here; RateLimitTests puts small
+            // ones back on its own factory (ConfigureTestServices runs after this).
+            services.RemoveAll<RateLimitSettings>();
+            services.AddSingleton(new RateLimitSettings
+            {
+                AuthAttemptsPerMinute = int.MaxValue,
+                ReportsPerHour = int.MaxValue
+            });
+
             services.RemoveAll<DbContextOptions<AppDbContext>>();
             services.RemoveAll<DbContextOptions>();
             services.RemoveAll<AppDbContext>();

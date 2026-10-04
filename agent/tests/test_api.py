@@ -100,6 +100,10 @@ def test_every_agent_reports_its_attempts_and_its_own_time(client):
     assert raw["strategy"]["attempts"] == 1
     assert isinstance(raw["diagnosis"]["duration_ms"], int)
     assert isinstance(raw["strategy"]["duration_ms"], int)
+    # The stub reports no tokens, and none is null on the wire — never a made-up zero.
+    assert raw["usage"] is None
+    assert raw["diagnosis"]["usage"] is None
+    assert raw["strategy"]["usage"] is None
     # A resumed run follows the plan the API already stored: it is not planned again.
     assert raw["plan"] is None
 

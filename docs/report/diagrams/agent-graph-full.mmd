@@ -1,0 +1,46 @@
+%% The LangGraph compiled by build_graph() in agent/graph.py: five nodes, one per agent, and
+%% three routing functions. Condition labels are the Python expressions in _route_from_start,
+%% _route_after_plan and _route_after_clarify, evaluated top to bottom (the first true branch
+%% wins). Every routing decision reads the request or a VALIDATED agent output, never free
+%% text. Compiled without a checkpointer: no state survives between /run calls.
+%% Export: npx -p @mermaid-js/mermaid-cli mmdc -i agent-graph.mmd -o agent-graph.png -s 3 -b white
+
+flowchart TD
+    START(["START<br/>POST /run with a RunRequest<br/>(X-Agent-Secret required)"])
+    R1{"_route_from_start<br/>request = state['request']"}
+    PL["plan<br/>PlannerAgent<br/>tools: none"]
+    R0{"_route_after_plan<br/>plan = state['plan']"}
+    CL["clarify<br/>ClarifierAgent<br/>tools: get_room, get_asset"]
+    R2{"_route_after_clarify<br/>response = state['response']"}
+    DI["diagnose<br/>DiagnosticAgent<br/>tools: get_asset, get_asset_service_history,<br/>get_related_open_reports"]
+    ST["strategize<br/>ResolutionStrategist<br/>tools: get_asset, get_asset_service_history,<br/>get_open_work_orders"]
+    VE["verify<br/>VerificationAgent<br/>tools: get_work_order, get_asset_service_history,<br/>get_related_open_reports"]
+    END_(["END<br/>main.py assembles the RunResponse<br/>(plan, top-level result, diagnosis, strategy, verification)"])
+
+    START --> R1
+    R1 -- "1 · request.verification is not None" --> VE
+    R1 -- "2 · request.revision_note is not None<br/>(a manager sent the proposal back)" --> ST
+    R1 -- "3 · request.clarification_answers or request.reopened<br/>(resume, or a repair that did not hold)" --> DI
+    R1 -- "4 · otherwise: a fresh report" --> PL
+
+    PL --> R0
+    R0 -- "plan ok and plan.output.includes_clarifier" --> CL
+    R0 -- "plan ok and the clarifier left out" --> DI
+    R0 -- "planner safe-failed: no plan<br/>(full pipeline, asking is the safe default)" --> CL
+
+    CL --> R2
+    R2 -- "response.status is ok<br/>and not response.output.questions" --> DI
+    R2 -- "otherwise: questions asked, or safe_failure<br/>HUMAN PAUSE 1" --> END_
+
+    DI --> ST
+    ST --> END_
+    VE --> END_
+
+    classDef router fill:#FFF7E0,stroke:#B7791F,color:#15171C
+    classDef agent fill:#E8E6FC,stroke:#5B50E8,color:#15171C
+    classDef planner fill:#F3E8FF,stroke:#6B46C1,color:#15171C
+    classDef terminal fill:#EEF0F3,stroke:#15171C,color:#15171C
+    class R1,R0,R2 router
+    class CL,DI,ST,VE agent
+    class PL planner
+    class START,END_ terminal

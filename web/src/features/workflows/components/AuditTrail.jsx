@@ -4,7 +4,7 @@ import { useState } from 'react';
 
 import { formatInstant } from '../../../components/ui/format';
 import { Pill } from '../../../components/ui/Pill';
-import { attemptsLabel, describeStep, durationLabel, prettyJson } from '../../reports/services/agentSteps';
+import { attemptsLabel, describeStep, durationLabel, prettyJson, tokensLabel } from '../../reports/services/agentSteps';
 import { answerTypeLabel } from '../../reports/services/reportsApi';
 import styles from '../workflows.module.css';
 
@@ -109,6 +109,7 @@ export function AuditTrail({ steps, showTally = true }) {
                   <span className={styles.trailMeta}>
                     {durationLabel(step, info.kind) ? <span>{durationLabel(step, info.kind)}</span> : null}
                     {attemptsLabel(step) ? <span>{attemptsLabel(step)}</span> : null}
+                    {tokensLabel(step) ? <span>{tokensLabel(step)}</span> : null}
                     <span>{formatInstant(step.createdAt)}</span>
                   </span>
                 </header>

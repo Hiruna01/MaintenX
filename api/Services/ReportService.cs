@@ -325,7 +325,8 @@ public class ReportService : IReportService
         var steps = stepRows
             .Select(s => new AgentStepDto(
                 s.Id, s.WorkflowId, s.AgentName, s.ToolCallsJson, s.DurationMs,
-                s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt, s.Attempts))
+                s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt, s.Attempts,
+                s.PromptTokens, s.CompletionTokens))
             .ToList();
 
         // The newest strategist AGENT RUN — its tool calls carry the same name, and the

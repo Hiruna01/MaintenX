@@ -25,6 +25,13 @@ error appended, and on a second failure return a safe failure.
   * It never raises. Every network error, timeout, malformed body and validation failure
     comes back as `LlmJsonResult(ok=False)`.
   * It never hangs. Every request carries a timeout, and there are exactly two attempts.
+
+## Token usage
+
+Each result carries the tokens the provider REPORTED in the chat-completions `usage`
+field, both attempts added together. It is read, never estimated: a reply without the
+field (STUB_MODE, a provider that does not send it) leaves `usage` None, and a malformed
+field is ignored rather than raised on — usage is observability and must never fail a call.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ from pydantic import BaseModel, ValidationError
 
 from config import Settings, get_settings
 from prompts import render_prompt
+from schemas import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +55,20 @@ MAX_ATTEMPTS = 2
 
 Message = dict[str, str]
 
-# A responder turns a message list into the raw text the model replied with. Swapping it
-# is how STUB_MODE avoids the network and how tests drive malformed replies.
-Responder = Callable[[Sequence[Message], type[BaseModel]], Awaitable[str]]
+
+
+@dataclass(frozen=True)
+class LlmReply:
+    """What the real provider call returns: the reply text and the usage it reported."""
+
+    text: str
+    usage: TokenUsage | None = None
+
+
+# A responder turns a message list into the raw text the model replied with — or an
+# LlmReply when it also has the provider's token usage. Swapping it is how STUB_MODE avoids
+# the network and how tests drive malformed replies.
+Responder = Callable[[Sequence[Message], type[BaseModel]], Awaitable["str | LlmReply"]]
 
 
 @dataclass(frozen=True)
@@ -65,6 +84,8 @@ class LlmJsonResult:
     data: BaseModel | None
     error: str | None
     attempts: int
+    # Provider-reported tokens over every attempt that got a reply; None when none did.
+    usage: TokenUsage | None = None
 
 
 class LlmClient:
@@ -101,11 +122,17 @@ class LlmClient:
             {"role": "user", "content": user},
         ]
         last_error: str | None = None
+        usage: TokenUsage | None = None
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             raw: str | None = None
             try:
-                raw = await self._responder(messages, schema)
+                reply = await self._responder(messages, schema)
+                if isinstance(reply, LlmReply):
+                    raw = reply.text
+                    usage = _add_usage(usage, reply.usage)
+                else:
+                    raw = reply
             except Exception as exc:  # noqa: BLE001 — a provider may raise anything.
                 # Timeouts, DNS failures, 500s from the provider, a body missing
                 # "choices" — all the same to the caller: this attempt produced nothing.
@@ -114,7 +141,9 @@ class LlmClient:
             else:
                 parsed, error = _parse_and_validate(raw, schema)
                 if error is None:
-                    return LlmJsonResult(ok=True, data=parsed, error=None, attempts=attempt)
+                    return LlmJsonResult(
+                        ok=True, data=parsed, error=None, attempts=attempt, usage=usage
+                    )
 
                 last_error = error
                 logger.warning(
@@ -128,13 +157,17 @@ class LlmClient:
                 messages = _with_retry_turn(messages, raw, last_error or "unknown error")
 
         logger.error("LLM produced no valid output after %s attempts: %s", MAX_ATTEMPTS, last_error)
-        return LlmJsonResult(ok=False, data=None, error=last_error, attempts=MAX_ATTEMPTS)
+        return LlmJsonResult(
+            ok=False, data=None, error=last_error, attempts=MAX_ATTEMPTS, usage=usage
+        )
 
     # ------------------------------------------------------------------
     # Responders
     # ------------------------------------------------------------------
 
-    async def _http_responder(self, messages: Sequence[Message], schema: type[BaseModel]) -> str:
+    async def _http_responder(
+        self, messages: Sequence[Message], schema: type[BaseModel]
+    ) -> LlmReply:
         """
         The real provider call. Note the absence of `response_format` — see module docstring.
         """
@@ -155,7 +188,7 @@ class LlmClient:
             response.raise_for_status()
             body = response.json()
 
-        return body["choices"][0]["message"]["content"]
+        return LlmReply(text=body["choices"][0]["message"]["content"], usage=_read_usage(body))
 
     async def _stub_responder(self, messages: Sequence[Message], schema: type[BaseModel]) -> str:
         """
@@ -168,6 +201,42 @@ class LlmClient:
                 f"{schema.__name__} has no stub_example(); add one to use it in STUB_MODE."
             )
         return json.dumps(example())
+
+
+# ----------------------------------------------------------------------
+# Usage helpers
+# ----------------------------------------------------------------------
+
+
+def _read_usage(body: Any) -> TokenUsage | None:
+    """
+    The provider's `usage` block, or None when it is missing or not two whole non-negative
+    numbers. Never raises: a provider that reports usage oddly must not cost us the reply.
+    """
+    usage = body.get("usage") if isinstance(body, dict) else None
+    if not isinstance(usage, dict):
+        return None
+
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    # bool is an int in Python; `true` is not a token count.
+    for count in (prompt, completion):
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return None
+
+    return TokenUsage(prompt_tokens=prompt, completion_tokens=completion)
+
+
+def _add_usage(total: TokenUsage | None, more: TokenUsage | None) -> TokenUsage | None:
+    """Adds one attempt's usage to the running total. None plus None stays None."""
+    if more is None:
+        return total
+    if total is None:
+        return more
+    return TokenUsage(
+        prompt_tokens=total.prompt_tokens + more.prompt_tokens,
+        completion_tokens=total.completion_tokens + more.completion_tokens,
+    )
 
 
 # ----------------------------------------------------------------------

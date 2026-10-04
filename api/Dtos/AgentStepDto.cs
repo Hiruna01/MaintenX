@@ -15,4 +15,9 @@ public record AgentStepDto(
 
     // LLM attempts behind an agent-level step: 1, or 2 when the one retry was needed. Null on
     // a tool-call row and on a step whose agent did not report it. See AgentStep.Attempts.
-    int? Attempts = null);
+    int? Attempts = null,
+
+    // Tokens the provider reported for an agent-level step; null when none were reported.
+    // See AgentStep.PromptTokens.
+    int? PromptTokens = null,
+    int? CompletionTokens = null);

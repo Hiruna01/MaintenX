@@ -1,0 +1,31 @@
+Default limits: 10 sign-in attempts a minute per address, 10 reports an hour per user.
+-- 15 sign-in attempts (wrong password) from one address
+attempt  1: 401 in 90.4 ms
+attempt  2: 401 in 37.0 ms
+attempt  3: 401 in 34.7 ms
+attempt  4: 401 in 32.9 ms
+attempt  5: 401 in 33.5 ms
+attempt  6: 401 in 33.1 ms
+attempt  7: 401 in 34.6 ms
+attempt  8: 401 in 33.6 ms
+attempt  9: 401 in 33.0 ms
+attempt 10: 401 in 33.4 ms
+attempt 11: 429 in 2.2 ms, Retry-After 60 s
+attempt 12: 429 in 0.5 ms, Retry-After 60 s
+attempt 13: 429 in 0.5 ms, Retry-After 60 s
+attempt 14: 429 in 0.4 ms, Retry-After 60 s
+attempt 15: 429 in 0.4 ms, Retry-After 60 s
+sign-in from another address: 200 in 43.0 ms
+-- 12 reports from one reporter (the agent is deliberately unreachable here)
+report  1: 201 in 109.2 ms
+report  2: 201 in 6.5 ms
+report  3: 201 in 5.2 ms
+report  4: 201 in 3.0 ms
+report  5: 201 in 2.9 ms
+report  6: 201 in 3.0 ms
+report  7: 201 in 3.5 ms
+report  8: 201 in 3.2 ms
+report  9: 201 in 2.7 ms
+report 10: 201 in 2.4 ms
+report 11: 429 in 0.9 ms, Retry-After 3600 s
+report 12: 429 in 0.8 ms, Retry-After 3600 s

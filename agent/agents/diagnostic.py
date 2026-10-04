@@ -118,6 +118,7 @@ class DiagnosticAgent:
                 error=result.error,
                 tool_calls=tool_calls,
                 attempts=result.attempts,
+                usage=result.usage,
             )
 
         output = result.data
@@ -129,6 +130,7 @@ class DiagnosticAgent:
             output=output,
             tool_calls=tool_calls,
             attempts=result.attempts,
+            usage=result.usage,
         )
 
     async def _gather_context(

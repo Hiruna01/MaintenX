@@ -3,6 +3,23 @@
 Everything here is on a free plan. Nothing secret is in the repo: every value below is a
 NAME, and the value lives in the host's environment (Render, Vercel, GitHub).
 
+## Live
+
+| What | Where |
+|---|---|
+| Web client | https://mainten-x-gray.vercel.app |
+| API | https://maintenx-api.onrender.com (Swagger at `/swagger`, liveness at `/health`) |
+| Agent service | https://maintenx-agent.onrender.com — `/health` only; `/run` refuses anyone without the shared secret |
+| Android APK | GitHub → Releases (`mobile-v*` tags) |
+
+**Deployed 2026-10-02.** Checked that day: API and agent `/health` → 200 (the agent reports
+`stub_mode: false` and the OpenRouter model); agent `POST /run` with no secret → 401; API
+`GET /api/users` with no token → 401; Swagger → 200; the web build points at the Render API;
+signing in on the web as the seeded Admin lists the four seeded accounts, and creating an
+account works (so CORS, auth and database writes are live). **Not yet run against the
+deployment:** First deployment step 7 (a report through the agents, timetable sync, a photo
+upload, the sweep) and step 8 (the APK). Record them here when they are.
+
 ```
 Browser ─► Vercel: React build (VITE_API_BASE_URL baked in at build time)
 Phone APK ─┐            │
@@ -143,6 +160,7 @@ projects.
 | `SWAGGER_ENABLED` | `true` |
 | `SEED_DEMO_DATA` | `true` |
 | `Seed__Passwords__Reporter` / `__Technician` / `__FacilitiesManager` / `__Admin` | secret |
+| `LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD`, `LLM_OUTPUT_PRICE_PER_MILLION_TOKENS_USD` | optional — the model's price from its OpenRouter page, both or neither. Unset, Agent monitoring shows tokens without a cost |
 
 `PORT` is set by Render itself; the Dockerfile listens on it. Every other key in
 `.env.example` (thresholds, SLA, verification, scheduling) keeps its default unless set.
@@ -209,7 +227,14 @@ not exist yet. That failure is expected.
   fix forward. Never run `dotnet ef` against it from a laptop.
 
 **4. Render Blueprint (needs 3 — the schema must exist before the API's first start).**
-Render → New → Blueprint → this repo. It reads `render.yaml`, creates both services and asks
+Render → **New → Blueprint** → this repo. **Not New → Web Service**: that form creates one
+service by hand and ignores `render.yaml` — no second service, no generated secrets, the
+wrong health check path (`/healthz`), auto-deploy on. If you did start one there, delete it
+first (it also spends free hours). Done by hand anyway, each service needs exactly what
+`render.yaml` says: the API — Docker, Dockerfile path `./api/Dockerfile`, build context
+`./api`, health check `/health`, auto-deploy off; the agent — Python, root directory `agent`,
+build `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`,
+health check `/health`, auto-deploy off, and `AGENT_SHARED_SECRET` the identical value on both. It reads `render.yaml`, creates both services and asks
 for every `sync: false` value. The two `onrender.com` URLs are `https://<service name>.onrender.com`
 unless the name is taken; if Render changes one, correct `AGENT_SERVICE_URL` / `API_BASE_URL`
 afterwards. For `Cors__AllowedOrigins__0`, enter the Vercel URL you expect; step 6 corrects it.
@@ -227,7 +252,8 @@ Then copy each service's **Deploy Hook** (Settings) into the `production` enviro
 
 **5. Vercel (needs 4 — the API URL).** Add New → Project → this repo. Root Directory `web`,
 framework Vite, Node.js 22.x. Environment variable `VITE_API_BASE_URL` (Production) = the API's
-URL. Deploy.
+URL. Deploy. Vercel names the URL after the project; this one is
+`https://mainten-x-gray.vercel.app` — that exact origin is what step 6 needs.
 - *Verify:* sign in; open `/assets`, then **reload** the page (the rewrite in `vercel.json`
   must serve it, not a 404); the browser's network tab shows requests going to `onrender.com`,
   not `localhost`.
@@ -263,6 +289,20 @@ git tag mobile-v0.1.0 && git push origin mobile-v0.1.0
 also keeps its hourly sweep and timetable sync touching the database, which stops Supabase
 pausing the project after a week idle. The agent still sleeps; its cold start fits inside
 the API's 360 s agent timeout.
+
+## Running the phone app against the deployment
+
+The API address is a compile-time `--dart-define`. Without one, `flutter run` uses
+`http://10.0.2.2:5138` — the emulator's address for the laptop, i.e. the LOCAL API. For the
+deployed one:
+
+```bash
+flutter run --dart-define=API_BASE_URL=https://maintenx-api.onrender.com
+```
+
+The two have separate databases and accounts: sign in with the Render seed passwords, and a
+report filed there appears on the Vercel site, never on `localhost:5173`. The release APK is
+always built against the deployed API.
 
 ## Every later deployment
 

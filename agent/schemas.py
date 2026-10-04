@@ -105,6 +105,21 @@ class AgentStatus(str, Enum):
     safe_failure = "safe_failure"
 
 
+class TokenUsage(BaseModel):
+    """
+    The tokens the PROVIDER reported for one agent's model calls — both attempts added
+    together when it took the retry. Observability, like `attempts`: the API stores it on the
+    agent's step and works out cost from it in C#. Nothing here is counted or estimated by us.
+
+    An envelope carries None, never zeros, when no reply reported usage — STUB_MODE, a
+    provider that does not send the field, or a call that failed before any reply. Null is
+    not zero: "not reported" is not "free".
+    """
+
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+
+
 class ClarifyingQuestion(BaseModel):
     """
     One question put to the reporter. Every answer is a closed control or a short
@@ -374,6 +389,7 @@ class DiagnosticResult(BaseModel):
     # on the agent's step. duration_ms is stamped by graph.py around the agent's run.
     attempts: int = 0
     duration_ms: int = 0
+    usage: TokenUsage | None = None
 
 
 class Strategy(str, Enum):
@@ -531,6 +547,7 @@ class StrategistResult(BaseModel):
     # on the agent's step. duration_ms is stamped by graph.py around the agent's run.
     attempts: int = 0
     duration_ms: int = 0
+    usage: TokenUsage | None = None
 
 
 class VerificationOutcome(str, Enum):
@@ -707,6 +724,7 @@ class VerificationResult(BaseModel):
     # on the agent's step. duration_ms is stamped by graph.py around the agent's run.
     attempts: int = 0
     duration_ms: int = 0
+    usage: TokenUsage | None = None
 
 
 class PlanAgent(str, Enum):
@@ -837,6 +855,7 @@ class PlannerResult(BaseModel):
     tool_calls: list[ToolCallOutcome] = Field(default_factory=list)
     attempts: int = 0
     duration_ms: int = 0
+    usage: TokenUsage | None = None
 
 
 class ToolCallOutcome(BaseModel):
@@ -928,6 +947,7 @@ class RunResponse(BaseModel):
     # same observability fields every envelope carries.
     attempts: int = 0
     duration_ms: int = 0
+    usage: TokenUsage | None = None
 
     # The planner's plan, on a fresh report run — the first thing the graph does. None on a
     # resumed or reopened run, which follows the plan the API already stored, and on a

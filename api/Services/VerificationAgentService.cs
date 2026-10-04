@@ -198,6 +198,8 @@ public class VerificationAgentService : IVerificationAgentService
             PayloadJson = verdict?.OutputJson,
             DurationMs = verdict?.DurationMs ?? call.DurationMs,
             Attempts = verdict?.Attempts,
+            PromptTokens = verdict?.Usage?.PromptTokens,
+            CompletionTokens = verdict?.Usage?.CompletionTokens,
             ValidationResult = validationResult,
             ErrorMessage = Truncate(error, MaxStepErrorLength)
         });

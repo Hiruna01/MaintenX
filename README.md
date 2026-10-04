@@ -72,6 +72,8 @@ All variables are listed in [`.env.example`](.env.example) with empty values.
 | `SUPABASE_STORAGE_BUCKET` | api  | Public Storage bucket for photos (default `photos`)   |
 | `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` | api | Base64 of the timetable service account key — server-side only |
 | `GOOGLE_CALENDAR_ID`   | api     | The "Campus Timetable" Google Calendar's ID            |
+| `LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD`, `LLM_OUTPUT_PRICE_PER_MILLION_TOKENS_USD` | api | Optional. The model's price, for the estimated cost on Agent monitoring. Both or neither |
+| `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_REPORTS_PER_HOUR` | api | Optional. Sign-in attempts per address per minute, reports per user per hour (default 10 each) |
 
 Never place `SUPABASE_SERVICE_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, `LLM_API_KEY`, or
 `JWT_SECRET` in the web or mobile client.
@@ -197,7 +199,7 @@ names from `.env.example` as fallbacks, so either naming style is fine.
 
 _TODO: confirm each command once the projects are scaffolded._
 
-**API** — `http://localhost:5000`
+**API** — `http://localhost:5138`
 
 ```bash
 dotnet run --project api
@@ -217,22 +219,50 @@ cd agent && .venv/bin/uvicorn main:app --reload --port 8000
 npm run dev --prefix web
 ```
 
-**Mobile client**
+**Mobile client** — run from `mobile/`. The API address is fixed at build time by
+`--dart-define`; without one the app uses `http://10.0.2.2:5138`, the Android emulator's
+address for your laptop, i.e. the **local** API.
 
 ```bash
 flutter run
+```
+
+Against the **deployed** API instead (its own database and accounts — the Render seed
+passwords, not your local ones):
+
+```bash
+flutter run --dart-define=API_BASE_URL=https://maintenx-api.onrender.com
 ```
 
 Start order for a full local run: database → API → agent service → web/mobile.
 
 ## Deployment
 
-Free tier throughout: the API and the agent service on **Render** (`render.yaml`, the API as
-Docker via `api/Dockerfile`), the web client on **Vercel** (`web/vercel.json`), Postgres and
-photo Storage on **Supabase**, and the Android APK attached to a **GitHub Release** by
-`.github/workflows/mobile-release.yml`. Migrations reach Supabase only through
-`.github/workflows/deploy.yml`, after CI passes. Step-by-step runbook, every environment
-variable name per service, and rollback: [`docs/guide/DEPLOYMENT.md`](docs/guide/DEPLOYMENT.md).
+Live since 2026-10-02, on free tiers throughout:
+
+| What | Where |
+|---|---|
+| Web client | https://mainten-x-gray.vercel.app |
+| API | https://maintenx-api.onrender.com (Swagger at `/swagger`, liveness at `/health`) |
+| Agent service | https://maintenx-agent.onrender.com — `/health` only; `/run` refuses anyone without the shared secret |
+| Android APK | GitHub → Releases (`mobile-v*` tags) |
+
+- The API and the agent run on **Render** (`render.yaml`; the API as Docker via
+  `api/Dockerfile`), the web client on **Vercel** (`web/vercel.json`), and the APK is
+  attached to a **GitHub Release** by `.github/workflows/mobile-release.yml`.
+- **Two Supabase projects**: a database project in Singapore beside Render, and the
+  existing project that holds the `photos` bucket.
+- **Merging to `main` deploys.** CI runs, then `.github/workflows/deploy.yml` applies the
+  migrations to Supabase and only then redeploys the two Render services; Vercel rebuilds
+  the web client on its own. Migrations never run from a laptop.
+- **Free Render services sleep after ~15 minutes idle**, so the first request after a quiet
+  spell can take up to a minute.
+- The deployed system has its own database and demo accounts (`admin@campus.test`,
+  `manager@campus.test`, `technician@campus.test`, `reporter@campus.test`), whose passwords
+  are Render environment variables — not the local ones.
+
+Runbook, every environment variable name per service, GitHub setup and rollback:
+[`docs/guide/DEPLOYMENT.md`](docs/guide/DEPLOYMENT.md).
 
 ## Team
 

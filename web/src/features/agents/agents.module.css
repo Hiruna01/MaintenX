@@ -1,0 +1,287 @@
+/* Agent monitoring — the per-agent view of runs, failures, latency and tokens. */
+
+.page {
+  color: var(--mx-ink);
+}
+
+.rangeHint,
+.hintError {
+  margin: -1rem 0 1.25rem;
+  font-size: 0.75rem;
+  color: var(--mx-mute);
+}
+
+.hintError {
+  color: var(--mx-red);
+  font-weight: 540;
+}
+
+/* ---------- Headline figures ---------- */
+
+.headlines {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  animation: mx-rise 440ms 60ms var(--mx-ease) both;
+}
+
+@media (max-width: 1080px) {
+  .headlines {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .headlines {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.headline {
+  --headline-accent: var(--mx-ink);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 1.25rem 1.35rem;
+  border-radius: var(--mx-r-xl);
+  background: var(--mx-surface);
+  box-shadow: var(--mx-shadow-card);
+}
+
+.headline-blue {
+  --headline-accent: var(--mx-blue);
+}
+.headline-red {
+  --headline-accent: var(--mx-red);
+}
+.headline-violet {
+  --headline-accent: var(--mx-violet);
+}
+.headline-amber {
+  --headline-accent: var(--mx-amber);
+}
+
+.headlineLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--mx-graphite);
+}
+
+.headlineLabel::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--headline-accent);
+}
+
+.headlineValue {
+  font-family: var(--mx-mono);
+  font-size: 2.2rem;
+  font-weight: 500;
+  letter-spacing: -0.05em;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.headlineDetail {
+  font-size: 0.8125rem;
+  color: var(--mx-mute);
+}
+
+/* ---------- Layout ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+  margin: 1.25rem 0;
+}
+
+@media (max-width: 1080px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Per-agent table ---------- */
+
+.tableScroll {
+  overflow-x: auto;
+  margin: 0 -0.25rem;
+}
+
+.table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.table th,
+.table td {
+  padding: 0.75rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table thead th {
+  font-size: 0.6875rem;
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mx-mute);
+  border-bottom: 1px solid var(--mx-hairline);
+}
+
+.table tbody tr + tr {
+  border-top: 1px solid var(--mx-hairline-soft);
+}
+
+.table tbody th {
+  font-weight: 580;
+  color: var(--mx-ink);
+  white-space: nowrap;
+}
+
+.num {
+  display: block;
+  font-family: var(--mx-mono);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* A table cell holding one figure. Not .num: display: block on a <td> takes it out of the
+   table's column layout. */
+.numCell {
+  font-family: var(--mx-mono);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.sub {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.6875rem;
+  color: var(--mx-mute);
+}
+
+/* ---------- Chart ---------- */
+
+.chart {
+  margin: 0 -0.25rem;
+}
+
+.tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 12px;
+  background: var(--mx-ink);
+  color: #fff;
+  font-family: var(--mx-sans);
+  font-size: 0.75rem;
+  box-shadow: var(--mx-shadow-float);
+}
+
+.tooltip span {
+  color: #c9ccd3;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--mx-graphite);
+}
+
+.legendPrompt,
+.legendCompletion {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--mx-iris);
+}
+
+.legendCompletion {
+  margin-left: 0.75rem;
+  background: #b7b1f5;
+}
+
+/* ---------- Run lists ---------- */
+
+.runs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.85rem 0.25rem;
+}
+
+.run + .run {
+  border-top: 1px solid var(--mx-hairline-soft);
+}
+
+.runHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.runName {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.5rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 580;
+  color: var(--mx-ink);
+  text-decoration: none;
+}
+
+.runName:hover {
+  color: var(--mx-iris);
+}
+
+.runWorkflow {
+  font-family: var(--mx-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--mx-mute);
+  white-space: nowrap;
+}
+
+.runFigures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.5rem;
+  margin: 0.2rem 0 0;
+}
+
+.runFigures dt {
+  font-size: 0.6875rem;
+  color: var(--mx-mute);
+}
+
+.runFigures dd {
+  margin: 0;
+  font-family: var(--mx-mono);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}

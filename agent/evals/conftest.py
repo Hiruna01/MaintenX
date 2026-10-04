@@ -5,7 +5,8 @@ The evals assert on the model's behaviour, but a pass or fail on its own is weak
 for a report: a reader needs to see the reply. When `EVAL_RECORD_PATH` is set, every
 `LlmClient.complete_json` call made during an eval is appended to that file as one JSON line:
 the test it ran under, the schema it was validated against, ok / safe failure, how many
-attempts it took, how long it took, and the validated output (or the error).
+attempts it took, how long it took, the tokens the provider reported (null when it reported
+none), and the validated output (or the error).
 
 Recording only. It wraps the real method and returns its result unchanged, so it cannot
 change what an eval asserts. Prompts are NOT recorded — they are in `prompts/*.md` already,
@@ -51,6 +52,7 @@ def record_llm_replies(request, monkeypatch):
                 "ok": result.ok,
                 "attempts": result.attempts,
                 "duration_ms": elapsed_ms,
+                "usage": result.usage.model_dump() if result.usage is not None else None,
                 "output": output,
                 "error": result.error,
             }, ensure_ascii=False) + "\n")

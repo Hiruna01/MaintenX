@@ -1,0 +1,10 @@
+Deployed check 2026-10-04T13:35:39+0530 with curl, from a laptop in Sri Lanka; Render (Singapore) and Vercel.
+API cold start (first request after the free instance had been idle): 200 in 33.53 s (connect 0.05 s, TLS 0.13 s, first byte 33.53 s), measured at 13:35.
+Agent /health: first request 200 42.571916 s
+   then 20 sequential: codes ['200'], median 253 ms, p95 276 ms, min 201, max 277
+API /health: first request 200 0.409274 s
+   then 20 sequential: codes ['200'], median 259 ms, p95 313 ms, min 212, max 322
+API protected endpoint, no token (401): first request 401 0.229026 s
+   then 20 sequential: codes ['401'], median 257 ms, p95 282 ms, min 190, max 287
+Web app (Vercel): first request 200 0.855366 s
+   then 20 sequential: codes ['200'], median 281 ms, p95 559 ms, min 238, max 570

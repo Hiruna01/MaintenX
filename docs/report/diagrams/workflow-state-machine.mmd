@@ -1,80 +1,44 @@
-%% The workflow state machine, transcribed edge for edge from the Table dictionary in
-%% api/Services/WorkflowTransitions.cs (23 entries). States are exactly the members of
-%% api/Models/WorkflowState.cs; edge labels are exactly the members of
-%% api/Services/WorkflowTrigger.cs. Nothing here is not in the table.
-%% Edges that nothing in the code currently fires are listed in 03-architecture.md §3.4.3.
-%% Export: npx @mermaid-js/mermaid-cli -i workflow-state-machine.mmd -o workflow-state-machine.png -s 3 -b white
+%% The workflow state machine, SIMPLIFIED for the report (Figure 3.3): the main path and the
+%% two human pauses only. The complete table (22 transitions, including Failed and the edges
+%% nothing fires yet) is in workflow-state-machine-full.mmd and api/Services/WorkflowTransitions.cs.
 
 stateDiagram-v2
     direction TB
 
-    [*] --> Submitted : created by WorkflowService.StartAsync (not a transition)
+    [*] --> Submitted : report filed
 
-    Submitted --> AwaitingClarification : ClarifierAsked
-    Submitted --> Diagnosing : ClarifierFoundNothing
-    Submitted --> Failed : AgentFailed
+    Submitted --> AwaitingClarification : questions asked
+    Submitted --> Diagnosing : no questions needed
+    AwaitingClarification --> Diagnosing : reporter answered
 
-    AwaitingClarification --> Diagnosing : ReporterAnswered
+    Diagnosing --> Strategizing : diagnosed
 
-    Diagnosing --> Strategizing : Diagnosed
-    Diagnosing --> Failed : AgentFailed
+    Strategizing --> WorkOrderRaised : auto-approved
+    Strategizing --> AwaitingManagerApproval : needs approval
 
-    Strategizing --> WorkOrderRaised : WorkOrderAutoApproved
-    Strategizing --> AwaitingManagerApproval : WorkOrderNeedsApproval
-    Strategizing --> Failed : AgentFailed
+    AwaitingManagerApproval --> WorkOrderRaised : approved
+    AwaitingManagerApproval --> Strategizing : revision requested
+    AwaitingManagerApproval --> Closed : rejected
 
-    AwaitingManagerApproval --> WorkOrderRaised : ManagerApproved
-    AwaitingManagerApproval --> Closed : ManagerRejected
-    AwaitingManagerApproval --> Strategizing : RevisionRequested
+    WorkOrderRaised --> Completed : job completed
+    Completed --> AwaitingVerification : 5 days later
 
-    WorkOrderRaised --> InProgress : WorkStarted
-    WorkOrderRaised --> Completed : WorkCompleted
-    InProgress --> Completed : WorkCompleted
-
-    Completed --> AwaitingVerification : VerificationDue
-
-    AwaitingVerification --> Closed : RepairVerified
-    AwaitingVerification --> Diagnosing : RepairReopened
-    AwaitingVerification --> AwaitingManagerApproval : RepairEscalated
-
-    Failed --> WorkOrderRaised : WorkOrderAutoApproved
-    Failed --> AwaitingManagerApproval : WorkOrderNeedsApproval
+    AwaitingVerification --> Closed : repair held
+    AwaitingVerification --> Diagnosing : repair failed
 
     Closed --> [*]
 
     note right of AwaitingClarification
-        HUMAN PAUSE 1: waiting on the reporter.
-        Only POST /api/reports/{id}/clarifications
-        (ClarificationService) moves it on.
-    end note
-
-    note right of Strategizing
-        WAITING ON A PERSON: the runner stops here
-        with the strategist's proposal. A manager
-        raising the order (WorkOrderService.CreateAsync)
-        picks the trigger via the approval gate.
+        Human pause 1: the reporter
+        answers on the phone
     end note
 
     note left of AwaitingManagerApproval
-        HUMAN PAUSE 2: waiting on a
-        FacilitiesManager to approve,
-        reject or request a revision.
+        Human pause 2: over Rs 15,000
+        or a replacement needs a manager
     end note
 
-    note right of InProgress
-        Unreachable today: nothing fires
-        WorkStarted (no start endpoint).
-    end note
-
-    note left of Failed
-        Not in DEVELOPMENT_GUIDE §8. A dead or
-        safe-failed agent ends here; a manager
-        can still raise an order by hand.
-    end note
-
-    classDef waiting fill:#E8E6FC,stroke:#5B50E8,stroke-width:2px,color:#15171C
-    classDef terminal fill:#EEF0F3,stroke:#15171C,color:#15171C
-    classDef failed fill:#FDECEC,stroke:#B42318,color:#15171C
-    class AwaitingClarification,AwaitingManagerApproval,Strategizing waiting
-    class Closed terminal
-    class Failed failed
+    classDef pause fill:#E8E6FC,stroke:#5B50E8,stroke-width:2px,color:#15171C
+    classDef done fill:#EEF0F3,stroke:#15171C,color:#15171C
+    class AwaitingClarification,AwaitingManagerApproval pause
+    class Closed done

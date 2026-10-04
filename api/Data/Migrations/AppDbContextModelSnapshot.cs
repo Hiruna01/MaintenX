@@ -38,6 +38,9 @@ namespace CampusFacilities.Api.Data.Migrations
                     b.Property<int?>("Attempts")
                         .HasColumnType("integer");
 
+                    b.Property<int?>("CompletionTokens")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -50,6 +53,9 @@ namespace CampusFacilities.Api.Data.Migrations
 
                     b.Property<string>("PayloadJson")
                         .HasColumnType("jsonb");
+
+                    b.Property<int?>("PromptTokens")
+                        .HasColumnType("integer");
 
                     b.Property<string>("ToolCallsJson")
                         .HasColumnType("jsonb");

@@ -1,26 +1,26 @@
 %% System architecture: every runtime component and every connection between them.
 %% Each edge is labelled with protocol and authentication, read from the code:
-%%   JWT bearer ............ api/Program.cs (AddJwtBearer), web/src/services/apiClient.js, mobile/lib/core/api_client.dart
+%%   JWT bearer ............ api/Program.cs (AddJwtBearer + OnTokenValidated), web/src/services/apiClient.js, mobile/lib/core/api_client.dart
 %%   Npgsql credentials .... api/Program.cs (ConnectionStrings:DefaultConnection / DATABASE_URL)
 %%   service-role key ...... api/Services/SupabaseStorageService.cs (Authorization: Bearer + apikey)
 %%   service account ....... api/Services/GoogleCalendarClient.cs (CredentialFactory.FromJson<ServiceAccountCredential>, calendar.readonly)
 %%   /run shared secret .... api/Program.cs (IAgentClient, X-Agent-Secret), agent/main.py (require_agent_secret)
-%%   shared-secret header .. agent/tools.py (X-Agent-Secret), api/Middleware/AgentSecretFilter.cs
-%%   LLM bearer key ........ agent/llm_client.py (_http_responder)
-%% Export: npx @mermaid-js/mermaid-cli -i system-architecture.mmd -o system-architecture.png -s 3 -b white
+%%   tool shared secret .... agent/tools.py (X-Agent-Secret), api/Middleware/AgentSecretFilter.cs
+%%   LLM bearer key ........ agent/llm_client.py
+%% Export: npx -p @mermaid-js/mermaid-cli mmdc -i system-architecture.mmd -o system-architecture.png -s 3 -b white
 
 flowchart LR
     subgraph CLIENTS["Untrusted clients: hold only a user's JWT"]
         direction TB
-        FL["Flutter app<br/>(mobile/)<br/>Reporter · Technician"]
-        RE["React SPA<br/>(web/)<br/>Manager · Admin · Reporter"]
+        FL["Flutter app (mobile/)<br/>Riverpod · go_router · flutter_secure_storage<br/>Reporter · Technician<br/>QR scan · camera / gallery"]
+        RE["React SPA (web/)<br/>Context API · React Router<br/>FacilitiesManager · Admin<br/>approval queue · workflow monitoring"]
     end
 
     subgraph BOUNDARY["Trust boundary: the only client-facing entry point is the API"]
         direction TB
-        API["ASP.NET Core Web API (.NET 8)<br/>(api/)<br/>controllers · services · WorkflowRunner<br/>VerificationSweepService · TimetableSyncWorker"]
-        PG[("PostgreSQL 16<br/>(Supabase-hosted or local)")]
-        AG["Python agent service<br/>FastAPI + LangGraph (agent/)<br/>no database credentials"]
+        API["ASP.NET Core Web API (.NET 8) (api/)<br/>controllers · services · DTOs · EF Core<br/>approval gate · WorkflowTransitions · tool router<br/>WorkflowRunner · VerificationSweepService<br/>VerificationAgentRunner · TimetableSyncWorker"]
+        PG[("PostgreSQL<br/>15 tables · 18 migrations<br/>workflow state in jsonb")]
+        AG["Python agent service (agent/)<br/>FastAPI + LangGraph<br/>Planner · Clarifier · Diagnostic<br/>Strategist · Verification<br/>no database credentials"]
     end
 
     subgraph EXTERNAL["Third-party services"]
@@ -34,10 +34,10 @@ flowchart LR
     RE -- "HTTPS REST (JSON)<br/>JWT bearer: Authorization header" --> API
 
     API -- "TCP · Npgsql / EF Core<br/>connection-string credentials" --> PG
-    API -- "HTTPS REST: object upload<br/>service-role key (Bearer + apikey)" --> SB
+    API -- "HTTPS REST: object upload (metadata stripped)<br/>service-role key (Bearer + apikey)" --> SB
     API -- "HTTPS: Calendar v3 events.list<br/>service account, calendar.readonly" --> GC
-    API -- "HTTP POST /run (JSON)<br/>shared-secret header X-Agent-Secret" --> AG
-    AG -- "HTTP POST /api/internal/tools/{toolName}<br/>shared-secret header X-Agent-Secret" --> API
+    API -- "HTTP POST /run (JSON)<br/>shared secret X-Agent-Secret" --> AG
+    AG -- "HTTP POST /api/internal/tools/{toolName}<br/>shared secret X-Agent-Secret<br/>hardcoded allow-list of 7 read-only tools" --> API
     AG -- "HTTPS POST /chat/completions<br/>Bearer LLM_API_KEY" --> LLM
 
     FL -. "HTTPS GET public object URL<br/>(display a stored photo, no credential)" .-> SB

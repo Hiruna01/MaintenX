@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom';
 
+import AgentMonitoringPage from '../features/agents/pages/AgentMonitoringPage';
 import AssetCreatePage from '../features/assets/pages/AssetCreatePage';
 import AssetDetailPage from '../features/assets/pages/AssetDetailPage';
 import AssetEditPage from '../features/assets/pages/AssetEditPage';
@@ -103,6 +104,7 @@ export function AppRoutes() {
       {/* Estate-wide numbers: FacilitiesManager and Admin, the two roles the endpoint names. */}
       <Route element={<ProtectedRoute allowedRoles={METRICS_ROLES} />}>
         <Route path="/metrics" element={<MetricsPage />} />
+        <Route path="/agent-monitoring" element={<AgentMonitoringPage />} />
       </Route>
 
       {/* Catch-all. */}

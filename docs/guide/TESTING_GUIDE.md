@@ -158,6 +158,10 @@ cd web && npm run dev
 cd mobile && flutter run --dart-define=API_BASE_URL=http://localhost:5138
 ```
 
+(To test against the deployed system instead, skip terminals 1–3 and use
+`--dart-define=API_BASE_URL=https://maintenx-api.onrender.com` and the web client at
+https://mainten-x-gray.vercel.app — see `docs/guide/DEPLOYMENT.md`.)
+
 ### ✅ Check that it's alive
 
 ```bash
@@ -357,6 +361,8 @@ Repeat A1–A8 (or continue from A8 before answering). In A9, answer instead:
 | C7 | Stop the agent service (Ctrl+C), then file a report | The workflow ends in **`Failed`** with the reason. The report page offers the manager **Raise work order**, and the workflow page offers **Run the agents again** |
 | C8 | Web **Metrics** (manager or Admin) | Reopen rate, clarification figures, repeat failures. Every number comes from the API, and a month with no data shows as a gap |
 | C9 | Web **Assets** → `PRJ-MAB101-01` | Service history oldest-first with every note in full, a failure summary showing *repeat failure*, the warranty pill, and **Print label** |
+| C10 | Web **Agent monitoring** (manager or Admin), after a report has run through the agents | Each agent's runs, failures, retries, median and p95 latency and tokens. Runs from stub mode, or from before token tracking, say "not reported", never 0. With an LLM price set (README, environment variables) each run shows an estimated cost |
+| C11 | Run `for i in $(seq 1 11); do curl -s -o /dev/null -w "%{http_code} " -X POST localhost:5138/api/auth/login -H 'Content-Type: application/json' -d '{"email":"nobody@campus.test","password":"WrongPass1"}'; done` | Ten **401**s, then **429**. The 429 carries `Retry-After` and says when to try again. Wait a minute before signing in for real from the same machine |
 
 ---
 
@@ -501,4 +507,9 @@ cd web && npm run lint && npm run build
 cd mobile && flutter analyze && flutter test
 ```
 
-Live model evals cost money and are never run by CI: `cd agent && RUN_LIVE_EVALS=1 .venv/bin/pytest evals/ -v`.
+Live model evals cost money and are never run by CI. Record the replies and token counts as
+evidence with:
+
+```bash
+cd agent && EVAL_RECORD_PATH=../docs/report/evidence/live-evals-$(date +%F)-replies.jsonl RUN_LIVE_EVALS=1 .venv/bin/pytest evals/ -v
+```

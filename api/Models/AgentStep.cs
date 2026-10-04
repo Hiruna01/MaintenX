@@ -32,6 +32,19 @@ public class AgentStep
     /// </summary>
     public int? Attempts { get; set; }
 
+    /// <summary>
+    /// The tokens the provider REPORTED for an agent-level step's model calls, both attempts
+    /// added together (AddAgentStepTokenUsage). Null on a tool-call row and an approval step,
+    /// which make no model call, and whenever nothing was reported — STUB_MODE, a provider that
+    /// does not send usage, a call that failed, or a step recorded before the columns existed.
+    /// Null is not zero: AgentMetricsService counts how many runs reported usage, and costs
+    /// only those.
+    /// </summary>
+    public int? PromptTokens { get; set; }
+
+    /// <inheritdoc cref="PromptTokens"/>
+    public int? CompletionTokens { get; set; }
+
     /// <summary>Short outcome tag, e.g. "Ok", "NotFound", "RejectedUnknownTool".</summary>
     [MaxLength(100)]
     public string? ValidationResult { get; set; }

@@ -677,6 +677,49 @@ public class WorkflowRunnerTests : IClassFixture<AgentStubApiFactory>
         Assert.Equal("Find out whether it is dead or cuts out.", plan.Steps[0].Purpose);
     }
 
+    /// <summary>An agent envelope with a "usage" block added — its last closing brace replaced.</summary>
+    private static string WithUsage(string envelope, string usageJson)
+    {
+        var trimmed = envelope.TrimEnd();
+        return $"{trimmed[..^1]}, \"usage\": {usageJson}}}";
+    }
+
+    [Fact]
+    public async Task EachAgentsReportedTokens_AreStoredOnItsOwnStep_AndUsageNotReportedIsNull_NotZero()
+    {
+        var scene = await _factory.SceneAsync();
+        var workflowId = await WorkflowOfNewReportAsync(scene);
+
+        // The planner, the clarifier (top level) and the diagnostic report usage; the
+        // strategist sends a malformed block, which is "not reported", never zero and never a
+        // failed run.
+        var plan = WithUsage(PlanEnvelope(FullPlanSteps), """{"prompt_tokens": 410, "completion_tokens": 62}""");
+        var diagnosis = WithUsage(TimedDiagnosis, """{"prompt_tokens": 1830, "completion_tokens": 240}""");
+        var proposal = WithUsage(TimedProposal, """{"prompt_tokens": "lots", "completion_tokens": 90}""");
+        var reply = $$"""
+            {"workflow_id": 1, "agent": "clarifier", "status": "ok", "error": null, "tool_calls": [],
+             "attempts": 1, "duration_ms": 400, "output": {"questions": []},
+             "usage": {"prompt_tokens": 620, "completion_tokens": 35},
+             "plan": {{plan}}, "diagnosis": {{diagnosis}}, "strategy": {{proposal}}}
+            """;
+
+        _factory.Agent.Replies.Enqueue(Reply(reply));
+        await Runner().ProcessAsync(workflowId, CancellationToken.None);
+
+        var detail = await PollAsync(scene, workflowId);
+
+        Assert.Equal(
+            new[]
+            {
+                ("planner", (int?)410, (int?)62),
+                ("clarifier", 620, 35),
+                ("diagnostic", 1830, 240),
+                ("strategist", null, null)
+            },
+            detail.Steps.Select(s => (s.AgentName, s.PromptTokens, s.CompletionTokens)));
+        Assert.All(detail.Steps, s => Assert.Equal("Ok", s.ValidationResult));
+    }
+
     [Fact]
     public async Task APlanWithoutTheClarifier_GoesStraightToDiagnosis_ThroughItsOwnTrigger_AndAsksNobodyAnything()
     {

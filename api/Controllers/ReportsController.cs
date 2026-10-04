@@ -3,6 +3,7 @@ using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.JsonWebTokens;
 
 namespace CampusFacilities.Api.Controllers;
@@ -167,9 +168,11 @@ public class ReportsController : ControllerBase
     /// so this is an ordinary create, not the 202 that POST /api/workflows returns.
     /// </summary>
     [HttpPost]
+    [EnableRateLimiting(RateLimitSettings.ReportsPolicy)]
     [ProducesResponseType(typeof(ReportDto), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<ReportDto>> Create(
         CreateReportDto dto,
         CancellationToken cancellationToken)

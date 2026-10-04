@@ -102,6 +102,7 @@ class PlannerAgent:
                 output=None,
                 error=result.error,
                 attempts=result.attempts,
+                usage=result.usage,
             )
 
         output = result.data
@@ -112,6 +113,7 @@ class PlannerAgent:
             status=AgentStatus.ok,
             output=output,
             attempts=result.attempts,
+            usage=result.usage,
         )
 
     @staticmethod

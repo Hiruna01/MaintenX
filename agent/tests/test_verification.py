@@ -52,9 +52,11 @@ from verification_cases import (
     GOLDEN_NOTE,
     INJECTED_COMMENT,
     INJECTION,
+    NOTE_INJECTION,
     TODAY,
     FakeTools,
 )
+from injection_cases import VERIFICATION_NOTE_INJECTION
 
 BEGIN_DATA = "--- BEGIN DATA ---"
 END_DATA = "--- END DATA ---"
@@ -489,6 +491,24 @@ async def test_injection_case_the_comment_reaches_the_prompt_only_as_data(settin
     lines = prompt.splitlines()
     outside = lines[: lines.index(BEGIN_DATA)] + lines[lines.index(END_DATA) + 1 :]
     assert not any(INJECTED_COMMENT in line for line in outside)
+
+
+async def test_note_injection_case_the_technicians_note_reaches_the_prompt_only_as_data(settings):
+    """
+    NOTE_INJECTION: the instruction to confirm is in the repair's own resolution note — the
+    indirect route, through get_work_order and the history — not in anything the reporter sent.
+    """
+    responder = ScriptedResponder(VALID_VERDICT)
+    await _agent(settings, responder, NOTE_INJECTION.tools()).run(NOTE_INJECTION.request())
+    prompt = _user_prompt(responder)
+
+    data = _data_block(prompt)
+    assert data["resolution_note"] == NOTE_INJECTION.work_order["resolutionNote"]
+    assert VERIFICATION_NOTE_INJECTION in data["resolution_note"]
+
+    lines = prompt.splitlines()
+    outside = lines[: lines.index(BEGIN_DATA)] + lines[lines.index(END_DATA) + 1 :]
+    assert not any("SYSTEM NOTICE" in line for line in outside)
 
 
 @pytest.mark.parametrize("field", ["reporter_comment", "resolution_note", "new_report"])

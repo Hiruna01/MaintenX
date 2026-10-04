@@ -60,7 +60,7 @@ public class VerificationAgentRunnerTests
         {"workflow_id": 1, "agent": "verification", "status": "ok", "error": null, "tool_calls": [],
          "output": {"questions": []}, "attempts": 2, "duration_ms": 1234,
          "verification": {"agent": "verification", "status": "ok", "error": null, "tool_calls": [],
-            "attempts": 2, "duration_ms": 1234,
+            "attempts": 2, "duration_ms": 1234, "usage": {"prompt_tokens": 2210, "completion_tokens": 180},
             "output": {"outcome": "escalate", "confidence": "high",
                        "reason": "Fourth visit for the same thermal fault.",
                        "evidence": ["2026-09-02: temporary fix", "Reporter: not fixed"]}}}
@@ -152,6 +152,7 @@ public class VerificationAgentRunnerTests
             Assert.Equal("Ok", step.ValidationResult);
             Assert.Equal(1234, step.DurationMs);
             Assert.Equal(2, step.Attempts);
+            Assert.Equal((2210, 180), (step.PromptTokens, step.CompletionTokens));
             using var payload = JsonDocument.Parse(step.PayloadJson!);
             Assert.Equal("escalate", payload.RootElement.GetProperty("outcome").GetString());
             Assert.Equal(2, payload.RootElement.GetProperty("evidence").GetArrayLength());

@@ -25,6 +25,15 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:5138
 flutter run --dart-define=API_BASE_URL=http://localhost:5138
 ```
 
+Or against the deployed API (a different database, and the Render seed passwords):
+
+```bash
+flutter run --dart-define=API_BASE_URL=https://maintenx-api.onrender.com
+```
+
+The release APK on GitHub Releases is built against the deployed API
+(`MOBILE_API_BASE_URL`, see `.github/workflows/mobile-release.yml`) and needs no flag.
+
 `API_BASE_URL` is a compile-time define read by `String.fromEnvironment` in
 `lib/core/env.dart`, so it is baked into the binary — there is no `.env` shipped in the
 app bundle. Nothing secret goes in it: a `--dart-define` is readable from the compiled

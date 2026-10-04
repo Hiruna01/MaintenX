@@ -50,6 +50,25 @@ describe('apiClient.request', () => {
     expect(getToken()).toBeNull();
   });
 
+  it('shows a 429 as the API worded it, and keeps the session — a rate limit is not an expired token', async () => {
+    setToken('token-xyz');
+    stubFetch(() =>
+      jsonResponse(
+        {
+          title: 'Too many requests.',
+          detail: 'You have filed the most reports allowed in an hour. Try again in 12 minutes.',
+        },
+        429,
+      ),
+    );
+
+    await expect(request('/api/reports', { method: 'POST', body: {} })).rejects.toMatchObject({
+      status: 429,
+      message: 'You have filed the most reports allowed in an hour. Try again in 12 minutes.',
+    });
+    expect(getToken()).toBe('token-xyz');
+  });
+
   it('returns null for a 204', async () => {
     stubFetch(() => new Response(null, { status: 204 }));
 

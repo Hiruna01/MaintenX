@@ -13,9 +13,41 @@ Every file in this folder was produced on 30 September 2026 from `main` at `dca3
 | React web client | Vitest 5 + Testing Library, jsdom | **47 / 47 passed** | `web-tests-2026-09-30.txt` |
 | Flutter mobile client | `flutter analyze`, `flutter test` | **No issues; 114 / 114 passed** | `mobile-tests-2026-09-30.txt` |
 
+**Added 3 October 2026** (`LIVE_EVALS_2026-10-03.md`): the live evals again, now with the tokens the provider reported (run 1, 18 / 18); three new **indirect** prompt-injection cases, where the instruction arrives inside a technician's note read through a tool (run 2, 21 / 21); every injection case repeated to **5 runs each (45 / 45)**; and a **regression check** showing a bad prompt edit caught by the evals (3 / 3 runs) and a deleted rule caught by CI. The suites were re-run the same day, after the token tracking, the indirect-injection tests and the rate limits were added:
+
+| Layer | Result | Evidence file |
+|---|---|---|
+| Backend, SQLite mode | **770 / 770 passed** (34 s) | `api-tests-sqlite-2026-10-03.txt` |
+| Backend, **PostgreSQL** mode (all 18 migrations applied) | **770 / 770 passed** (53 s) | `api-tests-postgres-2026-10-03.txt` |
+| Agent service (deterministic) | **259 / 259 passed** | `agent-tests-2026-10-03.txt` |
+| React web client | **60 / 60 passed** | `web-tests-2026-10-03.txt` |
+| Flutter mobile client | **No issues; 114 / 114 passed** | `mobile-tests-2026-10-03.txt` |
+
+**1,203 automated tests** in all. The 30 September files above are kept unchanged as the earlier record.
+
+**Added 4 October 2026**, for the Agentic AI Evaluation Report (Chapter 9):
+
+| What | Result | Evidence file |
+|---|---|---|
+| **Safe failure, live**: all 21 evals run with a deliberately invalid `LLM_API_KEY` | **22 / 22 calls ended as safe failures** (401, retried once, no output, reason recorded, 0.3–0.4 s); every eval failed on its `status is ok` assertion, none on an exception; the key appears nowhere | `live-evals-2026-10-04-safe-failure-*` |
+| **Live end-to-end workflows** read back from the local database | #18 (30 Sep): planner → clarifier → diagnostic → strategist → approval required → manager approved → completed → reporter yes → verification agent `confirm` → Closed. #20 (1 Oct): agent service down → `CallFailed`, workflow `Failed` with the reason. #22 (3 Oct): under threshold, auto-approved, 10,921 tokens | `live-workflows-2026-10-04.txt` |
+
 **Environment:** .NET SDK 8.0.423 · Node 26.5.1 · Python 3.14.6 · Flutter 3.47.2 (stable) · PostgreSQL 18 (local) and PostgreSQL 16 (CI service container) · LLM `google/gemini-3.8-flash`.
 
 **CI** (`.github/workflows/ci.yml`, every push and PR to `main`): api (build, then xUnit on a PostgreSQL 16 container with migrations), agent (pytest, `STUB_MODE`), web (lint, `npm test`, build) and mobile (`flutter analyze`, `flutter test`). The live evals are deliberately not in CI, because they cost money.
+
+**Performance, 4 October 2026** (`performance-2026-10-04/`, scripts in `docs/performance/`), for the Performance Report (Chapter 10). Release-build API against a copy of the seeded database, k6 2.3.0 on the same Apple M5 laptop:
+
+| What | Result | Files |
+|---|---|---|
+| Baseline, one user, 100 requests per endpoint | median 0.1–4.2 ms, 0 failures | `baseline-summary.json` |
+| Concurrency 1 / 10 / 25 / 50 / 100 / 200 users, 60 s each | peak ~6,000 req/s; **0 failures of 1,844,476**; p95 124 ms at 200 users | `load-*vus-summary.json` |
+| Sign-in at 1 / 10 / 50 users | ~30 ms each alone, ~230 /s max, 0 failures | `login-*vus-summary.json` |
+| Rate limits at their real values | 11th sign-in and 11th report → 429 in under 2.2 ms | `rate-limit-check.txt` |
+| Database: EXPLAIN ANALYZE, with and without sequential scans | 0.006–0.10 ms; every lookup can use its index except the asset list sorted by name | `explain-analyze*.txt` |
+| Database under 25-user load (query logging on) | 343,068 queries: p50 1 ms, p95 5 ms, p99 11 ms; 25% are the session check | `db-command-times-25vus.json` |
+| Report burst, stub (20) and real model (5) | all 201 within 139 ms; stub queue drained in 337 ms; real: 5th report's questions after 89 s | `burst-*` |
+| Deployed check (curl) | cold start API 33.5 s, agent 42.6 s; warm ~250 ms | `deployed-check.txt` |
 
 ## Reproduce
 

@@ -1,0 +1,95 @@
+%% The workflow state machine, transcribed edge for edge from the Table dictionary in
+%% api/Services/WorkflowTransitions.cs (22 entries, keyed by (state, trigger)). States are
+%% exactly the members of api/Models/WorkflowState.cs; edge labels are exactly the members of
+%% api/Services/WorkflowTrigger.cs. Nothing here is not in the table.
+%% Edges no code path currently fires are listed in 03-architecture.md §3.12.
+%% Export: npx -p @mermaid-js/mermaid-cli mmdc -i workflow-state-machine.mmd -o workflow-state-machine.png -s 3 -b white
+
+stateDiagram-v2
+    direction TB
+
+    [*] --> Submitted : created by WorkflowService.StartAsync (not a transition)
+
+    Submitted --> AwaitingClarification : ClarifierAsked
+    Submitted --> Diagnosing : ClarifierFoundNothing
+    Submitted --> Diagnosing : PlannedWithoutClarification
+    Submitted --> Failed : AgentFailed
+
+    AwaitingClarification --> Diagnosing : ReporterAnswered
+
+    Diagnosing --> Strategizing : Diagnosed
+    Diagnosing --> Failed : AgentFailed
+
+    Strategizing --> WorkOrderRaised : WorkOrderAutoApproved
+    Strategizing --> AwaitingManagerApproval : WorkOrderNeedsApproval
+    Strategizing --> Failed : AgentFailed
+
+    AwaitingManagerApproval --> WorkOrderRaised : ManagerApproved
+    AwaitingManagerApproval --> Closed : ManagerRejected
+    AwaitingManagerApproval --> Strategizing : RevisionRequested
+
+    WorkOrderRaised --> InProgress : WorkStarted
+    WorkOrderRaised --> Completed : WorkCompleted
+    InProgress --> Completed : WorkCompleted
+
+    Completed --> AwaitingVerification : VerificationDue
+
+    AwaitingVerification --> Closed : RepairVerified
+    AwaitingVerification --> Diagnosing : RepairReopened
+    AwaitingVerification --> AwaitingManagerApproval : RepairEscalated
+
+    Failed --> WorkOrderRaised : WorkOrderAutoApproved
+    Failed --> AwaitingManagerApproval : WorkOrderNeedsApproval
+
+    Closed --> [*]
+
+    note right of Submitted
+        The planner runs here. Leaving the clarifier
+        out is PlannedWithoutClarification: a different
+        fact from ClarifierFoundNothing, same state.
+    end note
+
+    note right of AwaitingClarification
+        HUMAN PAUSE 1: waiting on the reporter.
+        Only POST /api/reports/{id}/clarifications
+        (ClarificationService) moves it on.
+    end note
+
+    note right of Strategizing
+        The runner raises the proposal through the
+        approval gate (WorkOrderService.CreateAsync),
+        which picks the trigger. When it cannot, a
+        manager raises one. A revision re-runs the
+        strategist alone and resubmits the same Draft.
+    end note
+
+    note left of AwaitingManagerApproval
+        HUMAN PAUSE 2: a FacilitiesManager
+        approves, rejects (with a reason) or
+        requests revision (with a note).
+    end note
+
+    note right of InProgress
+        Never reached: nothing fires
+        WorkStarted (no start endpoint).
+    end note
+
+    note right of AwaitingVerification
+        The sweep moves it here DelayDays after
+        completion. The REPORTER's answer fires
+        RepairVerified or RepairReopened.
+        Nothing fires RepairEscalated yet.
+    end note
+
+    note left of Failed
+        A dead or safe-failed agent ends here.
+        A manager can still raise an order, and
+        Run the agents again starts a new run.
+    end note
+
+    classDef waiting fill:#E8E6FC,stroke:#5B50E8,stroke-width:2px,color:#15171C
+    classDef terminal fill:#EEF0F3,stroke:#15171C,color:#15171C
+    classDef failed fill:#FDECEC,stroke:#B42318,color:#15171C
+    class AwaitingClarification,AwaitingManagerApproval waiting
+    class Closed terminal
+    class Failed failed

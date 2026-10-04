@@ -44,6 +44,11 @@ public record AgentRunResponse(
     [property: JsonPropertyName("attempts")] int? Attempts = null,
     [property: JsonPropertyName("duration_ms")] int? DurationMs = null,
 
+    // The tokens the provider reported for that same agent's model calls. Raw JSON, read only
+    // through ReportedUsage: a reply without it, or with an odd shape, is "not reported" —
+    // never zero, and never an exception in a background worker.
+    [property: JsonPropertyName("usage")] JsonElement Usage = default,
+
     // The verification agent's envelope — the only field a verification run fills. Absent on
     // every report run. Read only through VerificationResult().
     [property: JsonPropertyName("verification")] JsonElement Verification = default)
@@ -83,6 +88,9 @@ public record AgentRunResponse(
     public bool ClarifierRan => string.Equals(Agent, ClarifierAgentName, StringComparison.Ordinal);
 
     public bool IsSafeFailure => string.Equals(Status, SafeFailureStatus, StringComparison.Ordinal);
+
+    /// <summary>The top-level agent's reported token usage, or null when it reported none.</summary>
+    public AgentTokenUsage? ReportedUsage => AgentTokenUsage.Read(Usage);
 
     /// <summary>
     /// How many questions the clarifier asked. Read defensively: this is the one place the
@@ -217,7 +225,8 @@ public record AgentRunResponse(
                         && !string.Equals(status, SafeFailureStatus, StringComparison.Ordinal);
 
         results.Add(new DownstreamAgentResult(
-            agentName, succeeded, outputJson, error, IntProperty(envelope, "attempts"), IntProperty(envelope, "duration_ms")));
+            agentName, succeeded, outputJson, error,
+            IntProperty(envelope, "attempts"), IntProperty(envelope, "duration_ms"), UsageProperty(envelope)));
     }
 
     /// <summary>
@@ -242,7 +251,8 @@ public record AgentRunResponse(
             OutputJson: hasOutput ? output.GetRawText() : null,
             Error: StringProperty(Plan, "error"),
             Attempts: IntProperty(Plan, "attempts"),
-            DurationMs: IntProperty(Plan, "duration_ms"));
+            DurationMs: IntProperty(Plan, "duration_ms"),
+            Usage: UsageProperty(Plan));
     }
 
     /// <summary>
@@ -285,7 +295,8 @@ public record AgentRunResponse(
             Error: StringProperty(Verification, "error")
                    ?? (succeeded || !hasOutput ? null : "The verification agent's output carried no outcome."),
             Attempts: IntProperty(Verification, "attempts"),
-            DurationMs: IntProperty(Verification, "duration_ms"));
+            DurationMs: IntProperty(Verification, "duration_ms"),
+            Usage: UsageProperty(Verification));
     }
 
     private static int? IntProperty(JsonElement element, string name) =>
@@ -294,6 +305,9 @@ public record AgentRunResponse(
         && value.TryGetInt32(out var number)
             ? number
             : null;
+
+    private static AgentTokenUsage? UsageProperty(JsonElement envelope) =>
+        envelope.TryGetProperty("usage", out var usage) ? AgentTokenUsage.Read(usage) : null;
 
     private static string? StringProperty(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
@@ -338,7 +352,8 @@ public record DownstreamAgentResult(
 
     // What the agent reported about itself; null when it did not say.
     int? Attempts = null,
-    int? DurationMs = null);
+    int? DurationMs = null,
+    AgentTokenUsage? Usage = null);
 
 /// <summary>
 /// The planner's result out of a /run reply. <see cref="Output"/> is the plan as the agent
@@ -351,7 +366,8 @@ public record PlannerAgentResult(
     string? OutputJson,
     string? Error,
     int? Attempts,
-    int? DurationMs);
+    int? DurationMs,
+    AgentTokenUsage? Usage = null);
 
 /// <summary>
 /// The verification agent's result out of a /run reply. <see cref="OutputJson"/> is its output
@@ -366,4 +382,39 @@ public record VerificationAgentResult(
     string? EvidenceJson,
     string? Error,
     int? Attempts,
-    int? DurationMs);
+    int? DurationMs,
+    AgentTokenUsage? Usage = null);
+
+/// <summary>
+/// The tokens the PROVIDER reported for one agent's model calls — both attempts added
+/// together by the agent service when it took the retry. Stored on AgentStep as
+/// PromptTokens / CompletionTokens and costed in C# by AgentMetricsService; never estimated.
+/// </summary>
+public record AgentTokenUsage(int PromptTokens, int CompletionTokens)
+{
+    /// <summary>
+    /// Reads an agent envelope's `usage` object. Null — "not reported", which is not zero —
+    /// when it is absent, null, or not two whole non-negative numbers. Never throws: the
+    /// caller is a background worker, and usage is observability, not something a run can
+    /// fail over.
+    /// </summary>
+    public static AgentTokenUsage? Read(JsonElement usage)
+    {
+        if (usage.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        return Count(usage, "prompt_tokens") is { } prompt && Count(usage, "completion_tokens") is { } completion
+            ? new AgentTokenUsage(prompt, completion)
+            : null;
+    }
+
+    private static int? Count(JsonElement usage, string name) =>
+        usage.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt32(out var count)
+        && count >= 0
+            ? count
+            : null;
+}

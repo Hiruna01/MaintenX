@@ -53,6 +53,14 @@ const OUTCOMES = {
   [VALIDATION_RESULTS.Rejected]: { tone: 'failed', label: 'Plan rejected', failed: true },
 };
 
+/**
+ * The tone and label for an agent run's ValidationResult — the same words the audit trail
+ * uses, for a page that lists runs without their payloads. An unknown tag is neutral, by name.
+ */
+export function validationOutcome(result) {
+  return OUTCOMES[result] ?? { tone: 'neutral', label: result ?? 'Not recorded', failed: false };
+}
+
 /** The AgentName the API records the approval gate and a manager's decisions under. */
 export const APPROVAL_STEP_NAME = 'approval';
 
@@ -157,6 +165,17 @@ export function attemptsLabel(step) {
   if (typeof step.attempts !== 'number' || step.attempts <= 0) return null;
   if (step.attempts === 1) return '1 attempt';
   return `${step.attempts} attempts — retried ${step.attempts - 1 === 1 ? 'once' : `${step.attempts - 1} times`}`;
+}
+
+/**
+ * "1,180 in · 60 out tokens" for an agent run whose provider reported usage; null for a tool
+ * call, an approval step, and a run that reported none (stub mode, a failed call, a step from
+ * before the columns). Null is not zero, so nothing is shown rather than "0 tokens". The two
+ * counts are the API's, formatted; nothing is added up or costed here.
+ */
+export function tokensLabel(step) {
+  if (typeof step.promptTokens !== 'number' || typeof step.completionTokens !== 'number') return null;
+  return `${step.promptTokens.toLocaleString()} in · ${step.completionTokens.toLocaleString()} out tokens`;
 }
 
 /** The agents a plan payload delegates to, in order, or null when the payload is not a plan. */

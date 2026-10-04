@@ -6,6 +6,7 @@ using CampusFacilities.Api.Models;
 using CampusFacilities.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -125,6 +126,72 @@ if (agentSettings.TimeoutSeconds <= 0)
 }
 
 builder.Services.AddSingleton(agentSettings);
+
+// ---------------------------------------------------------------------------
+// LLM pricing — what LLM_MODEL costs per million tokens, for the agent monitoring page's
+// ESTIMATED cost. Not a secret. Optional: unset, the page says the price is not configured
+// and shows tokens only. Both or neither, and never negative — see LlmPricingSettings.
+// ---------------------------------------------------------------------------
+var llmPricing = new LlmPricingSettings
+{
+    InputPricePerMillionTokensUsd = builder.Configuration.GetValue<decimal?>("Llm:InputPricePerMillionTokensUsd")
+        ?? builder.Configuration.GetValue<decimal?>("LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD"),
+    OutputPricePerMillionTokensUsd = builder.Configuration.GetValue<decimal?>("Llm:OutputPricePerMillionTokensUsd")
+        ?? builder.Configuration.GetValue<decimal?>("LLM_OUTPUT_PRICE_PER_MILLION_TOKENS_USD")
+};
+
+if ((llmPricing.InputPricePerMillionTokensUsd is null) != (llmPricing.OutputPricePerMillionTokensUsd is null))
+{
+    throw new InvalidOperationException(
+        "Set both LLM prices (LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD and " +
+        "LLM_OUTPUT_PRICE_PER_MILLION_TOKENS_USD) or neither — half a price would cost the prompt and call the reply free.");
+}
+
+if (llmPricing.InputPricePerMillionTokensUsd < 0 || llmPricing.OutputPricePerMillionTokensUsd < 0)
+{
+    throw new InvalidOperationException("An LLM price per million tokens cannot be negative.");
+}
+
+builder.Services.AddSingleton(llmPricing);
+
+// ---------------------------------------------------------------------------
+// Rate limits — sign-in attempts per address, reports per user. See RateLimitSettings. From
+// configuration, falling back to the RATE_LIMIT_* names, then to the class's defaults; a
+// budget below 1 would refuse every request, so startup refuses it instead.
+// ---------------------------------------------------------------------------
+var rateLimits = new RateLimitSettings
+{
+    AuthAttemptsPerMinute = builder.Configuration.GetValue<int?>("RateLimiting:AuthAttemptsPerMinute")
+        ?? builder.Configuration.GetValue<int?>("RATE_LIMIT_AUTH_PER_MINUTE")
+        ?? RateLimitSettings.DefaultAuthAttemptsPerMinute,
+    ReportsPerHour = builder.Configuration.GetValue<int?>("RateLimiting:ReportsPerHour")
+        ?? builder.Configuration.GetValue<int?>("RATE_LIMIT_REPORTS_PER_HOUR")
+        ?? RateLimitSettings.DefaultReportsPerHour
+};
+
+if (rateLimits.AuthAttemptsPerMinute < 1 || rateLimits.ReportsPerHour < 1)
+{
+    throw new InvalidOperationException(
+        "Rate limits (RateLimiting:AuthAttemptsPerMinute / RATE_LIMIT_AUTH_PER_MINUTE, " +
+        "RateLimiting:ReportsPerHour / RATE_LIMIT_REPORTS_PER_HOUR) must be at least 1.");
+}
+
+builder.Services.AddSingleton(rateLimits);
+builder.Services.AddRateLimiter(RateLimitRules.Configure);
+
+// Render's proxy terminates the connection, so the address the API sees is the proxy's and
+// every caller would share one sign-in budget. The client's address is the LAST entry of
+// X-Forwarded-For — the one the proxy appended — so ForwardLimit is 1: anything a client
+// wrote into the header itself sits further left and is ignored. Only the address is taken,
+// never the scheme, so nothing else about the request changes. The proxy's address is not
+// fixed, hence no known-proxy list.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor;
+    options.ForwardLimit = 1;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 
 // ---------------------------------------------------------------------------
 // Approval routing
@@ -460,6 +527,7 @@ builder.Services.AddScoped<IVerificationService, VerificationService>();
 
 // Estate-wide metrics — counts and arithmetic only, no agent.
 builder.Services.AddScoped<IAnalyticsService, AnalyticsService>();
+builder.Services.AddScoped<IAgentMetricsService, AgentMetricsService>();
 
 // The sweep on a timer — once at startup, then every Verification:SweepIntervalMinutes.
 // A singleton like every hosted service, so it opens a scope per pass and resolves
@@ -645,6 +713,9 @@ else
 // First in the pipeline so it wraps everything after it.
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
+// Before anything reads the caller's address — the sign-in rate limit is keyed on it.
+app.UseForwardedHeaders();
+
 app.UseSerilogRequestLogging(options =>
 {
     // RequestPath excludes the query string, and nothing here touches the body, so a
@@ -677,6 +748,11 @@ app.UseCors("Clients");
 // decide WHAT they may do. Reversed, every [Authorize] endpoint returns 401.
 app.UseAuthentication();
 app.UseAuthorization();
+
+// After authorization: the reports budget is per signed-in user, so the token has been read
+// and an anonymous caller already answered 401. Only endpoints with [EnableRateLimiting]
+// are limited.
+app.UseRateLimiter();
 
 app.MapControllers();
 

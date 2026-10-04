@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import {
+  Activity,
   BarChart3,
   Boxes,
   Building2,
@@ -60,7 +61,10 @@ const GROUPS = [
   },
   {
     label: 'Insight',
-    items: [{ to: '/metrics', label: 'Metrics', icon: BarChart3, roles: METRICS_ROLES }],
+    items: [
+      { to: '/metrics', label: 'Metrics', icon: BarChart3, roles: METRICS_ROLES },
+      { to: '/agent-monitoring', label: 'Agent monitoring', icon: Activity, roles: METRICS_ROLES },
+    ],
   },
 ];
 

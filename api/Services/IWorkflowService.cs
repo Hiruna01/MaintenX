@@ -50,6 +50,7 @@ public interface IWorkflowService
         string? validationResult,
         string? errorMessage,
         int? attempts = null,
+        AgentTokenUsage? usage = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

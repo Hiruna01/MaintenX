@@ -10,7 +10,7 @@ import Sidebar from './Sidebar';
 
 // The redesigned screens lay their own panels on the canvas; every other screen still sits on
 // one white stage, so its existing styles read as they did under the old top bar.
-const CANVAS_ROUTES = [/^\/dashboard\/?$/, /^\/assets(\/|$)/, /^\/reports(\/|$)/, /^\/workflows(\/|$)/, /^\/workorders(\/|$)/, /^\/approvals\/?$/, /^\/verifications(\/|$)/, /^\/metrics\/?$/, /^\/estate\/?$/, /^\/users(\/|$)/];
+const CANVAS_ROUTES = [/^\/dashboard\/?$/, /^\/assets(\/|$)/, /^\/reports(\/|$)/, /^\/workflows(\/|$)/, /^\/workorders(\/|$)/, /^\/approvals\/?$/, /^\/verifications(\/|$)/, /^\/metrics\/?$/, /^\/agent-monitoring\/?$/, /^\/estate\/?$/, /^\/users(\/|$)/];
 
 /** The signed-in frame: sidebar on the left, the page on the right. */
 export function AppShell({ children }) {

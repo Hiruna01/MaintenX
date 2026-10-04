@@ -1,0 +1,112 @@
+%% One fault end to end: report → plan → clarify → diagnose → propose → approve → repair →
+%% verify → reopen. Every call, status code and transition is read from the code; the same
+%% path is exercised by api.Tests/WorkflowEndToEndTests.cs (IAgentClient stubbed, clock movable).
+%% Export: npx -p @mermaid-js/mermaid-cli mmdc -i e2e-sequence.mmd -o e2e-sequence.png -s 3 -b white
+
+sequenceDiagram
+    autonumber
+    actor F as Flutter app<br/>(Reporter / Technician)
+    actor M as React SPA<br/>(FacilitiesManager)
+    participant API as ASP.NET Core API
+    participant DB as PostgreSQL
+    participant W as WorkflowRunner<br/>(queue + BackgroundService)
+    participant AG as Agent service<br/>POST /run (graph.py)
+    participant LLM as LLM provider
+    participant SW as Sweep + VerificationAgentRunner
+
+    rect rgb(238, 240, 243)
+    Note over F,LLM: 1. Report filed, planned and clarified in the background
+    F->>API: POST /api/reports {description, roomId, assetId from QR scan} (JWT)
+    API->>DB: ONE transaction: Report(Submitted) + AgentWorkflow(Submitted)
+    API->>W: enqueue(workflowId), after the commit
+    API-->>F: 201 Created (does not wait for the agents)
+    loop ClarifierWait: every 2 s, up to 3 min
+        F->>API: GET /api/reports/{id}
+    end
+    W->>AG: POST /run {workflow_id, description, room_id, asset_id} (X-Agent-Secret)
+    AG->>AG: _route_from_start → plan
+    AG->>LLM: PlannerAgent → PlannerOutput (steps, rationale)
+    AG->>AG: _route_after_plan → clarify (plan includes the clarifier)
+    AG->>API: POST /api/internal/tools/get_room, get_asset (X-Agent-Secret)
+    API->>DB: one AgentStep per tool call (Ok / NotFound)
+    AG->>LLM: ClarifierAgent → ClarifierOutput (at most 2 questions)
+    AG-->>W: 200 RunResponse {plan, questions}
+    W->>DB: planner step + PlanJson (checked by PlanRules)
+    W->>DB: clarifier step + ClarificationQuestion rows, Report → AwaitingClarification
+    W->>DB: Move(ClarifierAsked): Submitted → AwaitingClarification
+    Note over W: HUMAN PAUSE 1: the run ends, nothing is left waiting
+    end
+
+    rect rgb(232, 230, 252)
+    Note over F,LLM: 2. Reporter answers, then diagnosis, proposal and the approval gate
+    F->>API: POST /api/reports/{id}/clarifications {answers} (the whole form, once)
+    API->>DB: answers + Report → Clarified + Move(ReporterAnswered) → Diagnosing (one save)
+    API->>W: enqueue(workflowId), after the save
+    API-->>F: 204 No Content
+    W->>AG: POST /run {..., clarification_answers}
+    AG->>AG: _route_from_start → diagnose
+    AG->>API: get_asset, get_asset_service_history, get_related_open_reports
+    AG->>LLM: DiagnosticAgent → DiagnosticOutput
+    AG->>API: get_asset, get_asset_service_history, get_open_work_orders
+    AG->>LLM: ResolutionStrategist → StrategistOutput
+    AG-->>W: 200 RunResponse {diagnosis, strategy}
+    W->>DB: diagnostic step, Move(Diagnosed) → Strategizing, Report → Diagnosed
+    W->>DB: strategist step
+    W->>API: RaiseFromProposalAsync → WorkOrderService.CreateAsync (the approval gate)
+    API->>API: ApprovalBasisFor: estimate > Approval:CostThreshold OR EscalateReplacement
+    API->>DB: WorkOrder(AwaitingApproval) + Move(WorkOrderNeedsApproval) + approval step (ApprovalRequired)
+    Note over API,DB: HUMAN PAUSE 2: AwaitingManagerApproval. Report → WorkOrderRaised
+    end
+
+    rect rgb(255, 247, 224)
+    Note over M,DB: 3. The manager decides, assigns and books
+    M->>API: GET /api/workorders/approvals (order, diagnosis, proposal, history, failure summary)
+    alt approve
+        M->>API: POST /api/workorders/{id}/approve
+        API->>DB: claim (UPDATE ... WHERE Status = 'AwaitingApproval'), Approved, DueAt (SLA), Move(ManagerApproved) → WorkOrderRaised, approval step
+        API-->>M: 204 No Content
+    else request revision
+        M->>API: POST /api/workorders/{id}/request-revision {note}
+        API->>DB: order → Draft + RevisionNote, Move(RevisionRequested) → Strategizing
+        API->>W: enqueue: strategist alone with revision_note, then resubmit the same order
+    else reject
+        M->>API: POST /api/workorders/{id}/reject {reason}
+        API->>DB: Rejected, Move(ManagerRejected) → Closed, Report → Closed
+    end
+    M->>API: PUT /api/workorders/{id}/assign {technicianId}
+    M->>API: GET /api/workorders/slots/available (timetable + buffer + technician diary)
+    M->>API: POST /api/workorders/{id}/schedule {startsAt, endsAt} (re-checked, Serializable)
+    API-->>M: 201 Created
+    end
+
+    rect rgb(230, 246, 236)
+    Note over F,DB: 4. The technician completes the job in ONE transaction
+    opt completion photo
+        F->>API: POST /api/workorders/{id}/photo (multipart), before completing
+        API-->>F: 201 Created {photoUrl}
+    end
+    F->>API: POST /api/workorders/{id}/complete {outcome, actualCost, resolutionNote ≥ 20 chars}
+    API->>DB: BEGIN
+    API->>DB: WorkOrder → Completed, ServiceRecord appended, Move(WorkCompleted) → Completed
+    API->>DB: VerificationCheck(Pending, DueAt = CompletedAt + DelayDays)
+    API->>DB: COMMIT
+    API-->>F: 204 No Content
+    end
+
+    rect rgb(253, 236, 236)
+    Note over F,SW: 5. After DelayDays (default 5) the reporter is asked, and says "no"
+    SW->>DB: Move(VerificationDue) Completed → AwaitingVerification, check → AwaitingReporterResponse
+    F->>API: GET /api/verifications?status=AwaitingReporterResponse
+    F->>API: POST /api/verifications/{id}/confirm {confirmed: false, comment}
+    API->>DB: check → Reopened + AgentQueuedAt, Move(RepairReopened) → Diagnosing, ReopenedWorkOrderId (one save)
+    API->>W: enqueue(workflowId)
+    API-->>F: 204 No Content
+    W->>AG: POST /run {reopened: true, asset_id}
+    AG->>API: tool calls now return the appended ServiceRecord
+    AG->>LLM: a fresh diagnosis (the first one is not passed in)
+    W->>DB: second diagnostic + strategist steps APPENDED, a new proposal raised through the gate
+    SW->>AG: POST /run {verification: {work_order_id, reporter_confirmed: false, reporter_comment}}
+    AG->>API: get_work_order, get_asset_service_history, get_related_open_reports
+    AG->>LLM: VerificationAgent → VerificationOutput (confirm / reopen / escalate)
+    SW->>DB: verification step + AgentOutcome, AgentReason, AgentEvidenceJson (advice, never Status)
+    end

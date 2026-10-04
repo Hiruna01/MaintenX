@@ -49,6 +49,7 @@ from schemas import (
     MAX_VERIFICATION_REASON,
     AgentStatus,
     RunRequest,
+    TokenUsage,
     ToolCallOutcome,
     VerificationInput,
     VerificationOutput,
@@ -137,7 +138,7 @@ class VerificationAgent:
                 request.workflow_id,
                 result.error,
             )
-            return self._safe_failure(result.error, tool_calls, result.attempts)
+            return self._safe_failure(result.error, tool_calls, result.attempts, result.usage)
 
         output = result.data
         assert isinstance(output, VerificationOutput)
@@ -148,10 +149,15 @@ class VerificationAgent:
             output=output,
             tool_calls=tool_calls,
             attempts=result.attempts,
+            usage=result.usage,
         )
 
     def _safe_failure(
-        self, error: str | None, tool_calls: list[ToolCallOutcome], attempts: int = 0
+        self,
+        error: str | None,
+        tool_calls: list[ToolCallOutcome],
+        attempts: int = 0,
+        usage: TokenUsage | None = None,
     ) -> VerificationResult:
         # No output rather than a placeholder: no verdict is not a verdict to confirm. The
         # check keeps the status the reporter's answer gave it, and a human reads the rest.
@@ -162,6 +168,7 @@ class VerificationAgent:
             error=error,
             tool_calls=tool_calls,
             attempts=attempts,
+            usage=usage,
         )
 
     async def _gather_input(

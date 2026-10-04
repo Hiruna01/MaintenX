@@ -20,7 +20,7 @@ describe('Sidebar', () => {
     const links = linkLabels(ROLES.Reporter);
 
     expect(links).toEqual(expect.arrayContaining(['Dashboard', 'Assets', 'Verification']));
-    for (const hidden of ['Reports', 'Work orders', 'Approvals', 'Workflows', 'Metrics', 'Users']) {
+    for (const hidden of ['Reports', 'Work orders', 'Approvals', 'Workflows', 'Metrics', 'Agent monitoring', 'Users']) {
       expect(links).not.toContain(hidden);
     }
   });
@@ -31,19 +31,20 @@ describe('Sidebar', () => {
     expect(links).toContain('Work orders');
     expect(links).not.toContain('Approvals');
     expect(links).not.toContain('Verification');
+    expect(links).not.toContain('Agent monitoring');
   });
 
   it('offers a FacilitiesManager the approval queue and metrics, but not user management', () => {
     const links = linkLabels(ROLES.FacilitiesManager);
 
-    expect(links).toEqual(expect.arrayContaining(['Approvals', 'Metrics', 'Reports', 'Workflows']));
+    expect(links).toEqual(expect.arrayContaining(['Approvals', 'Metrics', 'Agent monitoring', 'Reports', 'Workflows']));
     expect(links).not.toContain('Users');
   });
 
   it('offers an Admin users and buildings, but not the approval queue', () => {
     const links = linkLabels(ROLES.Admin);
 
-    expect(links).toEqual(expect.arrayContaining(['Users', 'Buildings & rooms', 'Metrics']));
+    expect(links).toEqual(expect.arrayContaining(['Users', 'Buildings & rooms', 'Metrics', 'Agent monitoring']));
     expect(links).not.toContain('Approvals');
   });
 });

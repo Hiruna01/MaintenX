@@ -155,6 +155,7 @@ async def run(request: RunRequest) -> RunResponse:
             error=verdict.error,
             attempts=verdict.attempts,
             duration_ms=verdict.duration_ms,
+            usage=verdict.usage,
             verification=verdict,
         )
 
@@ -169,6 +170,7 @@ async def run(request: RunRequest) -> RunResponse:
             error=first.error,
             attempts=first.attempts,
             duration_ms=first.duration_ms,
+            usage=first.usage,
             plan=final_state.get("plan"),
             diagnosis=final_state["diagnosis"],
             strategy=final_state["strategy"],

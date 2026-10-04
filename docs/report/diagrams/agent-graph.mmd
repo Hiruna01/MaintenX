@@ -1,40 +1,48 @@
-%% The LangGraph compiled by build_graph() in agent/graph.py. Condition labels are the
-%% exact Python expressions in _route_from_start and _route_after_clarify, evaluated top
-%% to bottom (the first true branch wins). Compiled without a checkpointer: no state
-%% survives between /run calls.
-%% Export: npx @mermaid-js/mermaid-cli -i agent-graph.mmd -o agent-graph.png -s 3 -b white
+%%{init: {'theme': 'base', 'themeVariables': {'fontFamily': 'Arial, Helvetica, sans-serif', 'fontSize': '15px', 'lineColor': '#6B7280', 'primaryTextColor': '#15171C'}}}%%
+%% The agent graph (agent/graph.py), SIMPLIFIED for the report (Figure 3.2): five agents, the
+%% routing decisions in plain words, and where each run hands back to the API. The version with
+%% the exact Python routing conditions is agent-graph-full.mmd.
 
 flowchart TD
-    START(["START<br/>POST /run with a RunRequest"])
-    R1{"_route_from_start(state)<br/>request = state['request']"}
-    CL["clarify<br/>ClarifierAgent.run(request)"]
-    R2{"_route_after_clarify(state)<br/>response = state['response']"}
-    DI["diagnose<br/>DiagnosticAgent.run(request)"]
-    ST["strategize<br/>ResolutionStrategist.run(request, state['diagnosis'])"]
-    VE["verify<br/>VerificationAgent.run(request)"]
-    END_(["END<br/>main.py assembles the RunResponse"])
+    START(["API calls POST /run"])
+    ROUTE{"What does the<br/>request carry?"}
 
-    START --> R1
-    R1 -- "1 · request.verification is not None" --> VE
-    R1 -- "2 · request.clarification_answers or request.reopened" --> DI
-    R1 -- "3 · otherwise" --> CL
+    PLAN["<b>Planner</b><br/><i>no tools</i>"]
+    NEED{"Does the plan include<br/>the clarifier?"}
+    CLAR["<b>Clarifier</b><br/><i>room · asset</i>"]
+    ASKED{"Any questions<br/>to ask?"}
+    DIAG["<b>Diagnostic</b><br/><i>asset · service history · open reports</i>"]
+    STRAT["<b>Resolution Strategist</b><br/><i>asset · service history · open work orders</i>"]
+    VERIFY["<b>Verification</b><br/><i>work order · service history · open reports</i>"]
 
-    CL --> R2
-    R2 -- "response.status is AgentStatus.ok<br/>and not response.output.questions" --> DI
-    R2 -- "otherwise: questions asked, or safe_failure<br/>(human pause 1)" --> END_
+    PAUSE(["Pause: wait for<br/>the reporter's answers"])
+    GATE(["Back to the API:<br/>C# approval gate"])
+    VERDICT(["Back to the API:<br/>verdict stored as advice"])
 
-    DI --> ST
-    ST --> END_
-    VE --> END_
+    START --> ROUTE
+    ROUTE -- "new report" --> PLAN
+    ROUTE -- "answers, or a<br/>reopened repair" --> DIAG
+    ROUTE -- "manager's<br/>revision note" --> STRAT
+    ROUTE -- "repair to verify" --> VERIFY
 
-    NOTE["The verify path exists and is tested (agent/tests/test_verification.py),<br/>but the API never sends a 'verification' field: api/Dtos/AgentRunRequest.cs has none."]
-    VE -.- NOTE
+    PLAN --> NEED
+    NEED -- "yes (or no valid plan)" --> CLAR
+    NEED -- "no" --> DIAG
+    CLAR --> ASKED
+    ASKED -- "yes" --> PAUSE
+    ASKED -- "no" --> DIAG
 
-    classDef router fill:#FFF7E0,stroke:#B7791F,color:#15171C
-    classDef agent fill:#E8E6FC,stroke:#5B50E8,color:#15171C
+    DIAG --> STRAT
+    STRAT --> GATE
+    VERIFY --> VERDICT
+
+    classDef agent fill:#E8E6FC,stroke:#5B50E8,stroke-width:1.5px,color:#15171C
+    classDef planner fill:#F3E8FF,stroke:#6B46C1,stroke-width:1.5px,color:#15171C
+    classDef decision fill:#FFF7E0,stroke:#B7791F,color:#15171C
     classDef terminal fill:#EEF0F3,stroke:#15171C,color:#15171C
-    classDef note fill:#FFFFFF,stroke:#9CA3AF,color:#374151,stroke-dasharray: 4 3
-    class R1,R2 router
-    class CL,DI,ST,VE agent
-    class START,END_ terminal
-    class NOTE note
+    classDef pause fill:#FFFFFF,stroke:#5B50E8,stroke-width:2px,stroke-dasharray: 5 3,color:#15171C
+    class CLAR,DIAG,STRAT,VERIFY agent
+    class PLAN planner
+    class ROUTE,NEED,ASKED decision
+    class START,GATE,VERDICT terminal
+    class PAUSE pause

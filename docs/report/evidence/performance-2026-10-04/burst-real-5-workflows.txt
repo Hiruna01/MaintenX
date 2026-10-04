@@ -1,0 +1,9 @@
+ wf |         state         |    filed     | first_tool_ms | last_step_ms |            agent_runs            |  pt  |  ct  
+----+-----------------------+--------------+---------------+--------------+----------------------------------+------+------
+ 54 | AwaitingClarification | 13:32:19.043 |          5901 |        19666 | planner:5861ms clarifier:13779ms | 2306 | 2203
+ 57 | AwaitingClarification | 13:32:19.043 |         26260 |        35211 | planner:6561ms clarifier:8956ms  | 2306 | 1632
+ 55 | AwaitingClarification | 13:32:19.043 |         41651 |        56692 | planner:6414ms clarifier:15045ms | 2306 | 2650
+ 53 | AwaitingClarification | 13:32:19.043 |         63094 |        72465 | planner:6376ms clarifier:9374ms  | 2306 | 1623
+ 56 | AwaitingClarification | 13:32:19.043 |         79325 |        89029 | planner:6835ms clarifier:9705ms  | 2306 | 1737
+(5 rows)
+

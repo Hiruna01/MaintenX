@@ -137,6 +137,26 @@ file, run `git add --renormalize .` once. Do not commit a file with CRLF line en
 - Request logging (Serilog) must never capture request bodies — only method/path/status/
   duration — specifically so a login or register payload's password never reaches a log
   sink. Don't add body logging to `UseSerilogRequestLogging`.
+- **Rate limits — ASP.NET Core's built-in limiter, two policies** (`RateLimitSettings`,
+  `RateLimitRules`; `[EnableRateLimiting]` on the actions). `auth` on login AND register, per
+  client ADDRESS, `RateLimiting:AuthAttemptsPerMinute` / `RATE_LIMIT_AUTH_PER_MINUTE` (default
+  10): guessing a password, or minting Reporters in bulk. `reports` on `POST /api/reports`, per
+  signed-in USER (`sub`), `RateLimiting:ReportsPerHour` / `RATE_LIMIT_REPORTS_PER_HOUR`
+  (default 10): every report starts an agent run, so filing is what lands on the LLM bill.
+  Fixed windows, no queue; startup refuses a budget below 1. A refusal is a **429** with
+  `Retry-After` (seconds, rounded up) and a ProblemDetails whose `detail` says when to retry —
+  both clients show `detail` as written, and a 429 does not end a session. `UseRateLimiter`
+  sits AFTER `UseAuthorization`, so an anonymous report is still a 401.
+- **The address is the LAST `X-Forwarded-For` entry** (`UseForwardedHeaders`, first in the
+  pipeline after the exception middleware; `ForwardLimit = 1`, no known-proxy list): behind
+  Render's proxy every caller would otherwise share the proxy's address and one budget. The
+  proxy appends the real address, so a value a client writes in front is ignored. Only the
+  address is taken, never the scheme. Locally there is no proxy, so a caller can set the
+  header itself — a local-only gap. `ApiFactory` switches both budgets off (every test signs
+  in through these endpoints); `RateLimitTests` puts small ones back and pins per-address,
+  per-user, the shared login/register budget, the spoofed entry ignored, the 429 body and a
+  refused report not written — verified to fail with the reports attribute removed, with
+  `UseForwardedHeaders` removed and with register outside the budget.
 
 ---
 
@@ -488,6 +508,13 @@ and 14 service records.
   from before the field — does the old rule apply: the first agent recorded gets the whole
   call's time and the rest **0**, shown as "timed with the run" (`CallTiming` in the runner).
   What they SAY moves nothing; that they RAN is a transition.
+- **Each step records the tokens the provider REPORTED** — every envelope carries `usage`
+  (`prompt_tokens`, `completion_tokens`, both attempts added by the agent), read only through
+  `AgentTokenUsage.Read` and stored as `AgentStep.PromptTokens` / `CompletionTokens`
+  (`AddAgentStepTokenUsage`; the verification runner too). **Null is not zero**: absent,
+  malformed (a string, a negative) or STUB_MODE is null, never a failed run. Pinned by
+  `EachAgentsReportedTokens_AreStoredOnItsOwnStep_AndUsageNotReportedIsNull_NotZero`, verified
+  to fail with the downstream usage dropped.
 
 ### THE PLAN — `PlanJson`, proposed by the planner, checked in C#
 
@@ -1499,6 +1526,32 @@ only to learn that it ran.
   calls counted as clarifier runs, a failed run counted, `>` for the day-90 visit, an
   exclusive `toDate`, and the zero guard removed (a 500).
 
+### Agent monitoring — `GET /api/analytics/agents`
+
+`AgentMetricsDto`, `IAgentMetricsService` / `AgentMetricsService` (`AddScoped`), on
+`AnalyticsController`, **FacilitiesManager and Admin** (the metrics' role list), the same
+optional inclusive UTC-day range on `AgentStep.CreatedAt` (reversed → 400). Our own
+LangSmith-style view, read off the steps the runners already write — **no agent is called**.
+
+- **Runs are AGENT-LEVEL steps only**: the five names in `AgentMetricsService.AgentNames` AND
+  `AgentAnalysis.IsAgentRunStep` — a tool call under an agent's name is not a run, and an
+  approval step is not an agent. One projected query (never `PayloadJson`), the rest in C#.
+- Per agent (always all five, pipeline order) and in total: runs split by `ValidationResult`
+  (`Failed` = SafeFailure + CallFailed + Rejected, and its rate), retries over runs that
+  reported attempts, **latency over TIMED runs only** — not `CallFailed` (that time is the
+  call's, usually the timeout) and not 0 ("timed with the run") — as `MetricRules.MedianMs`
+  and the nearest-rank `PercentileMs` (p95), tokens over runs that REPORTED usage. Plus a
+  30-day daily series, the 10 slowest and the 10 most-token runs, each linking a workflow.
+- **Null is not zero everywhere**: nothing timed → null latency; nothing reported → null
+  tokens; a day with no runs is a real 0, a day whose runs reported nothing is null.
+- **Cost is an ESTIMATE in C#** from `LlmPricingSettings` — `Llm:InputPricePerMillionTokensUsd`
+  / `LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD` and the output pair, `decimal`, both or neither
+  (startup refuses half, or a negative). Unset is normal: every cost is null and the page
+  says "price not configured". Rounded to six places once, after summing. Not secrets; not
+  in `render.yaml` — set them in the dashboard if wanted.
+- Pinned by `AgentMetricsTests`, verified to fail with the tool-call filter dropped and with
+  CallFailed time counted as latency.
+
 ---
 
 ## AGENT SERVICE — Python, `agent/`
@@ -1599,6 +1652,13 @@ agent/config.py        settings read from the environment
   `LlmJsonResult(ok=False)`.
 - A safe failure is a normal **200** with empty output and `status: "safe_failure"` — never a
   500 and never a stack trace. The caller is a background worker recording a workflow step.
+- **Token usage is READ, never estimated.** The real responder returns an `LlmReply` (text +
+  the provider's `usage`); `LlmJsonResult.usage` adds both attempts' tokens (a safe failure
+  still reports what it spent) and every envelope carries it as `usage: TokenUsage | None`.
+  A missing or malformed block is None and the reply still counts — usage must never fail a
+  call. A responder returning a bare string (every scripted test) reports None. Pinned by
+  `tests/test_usage.py`, verified to fail with the retry's tokens overwritten and with a bool
+  accepted as a count. The eval recorder writes it into the JSONL too.
 
 ### There is no chat interface — enforce it, don't just intend it
 
@@ -1788,8 +1848,10 @@ nothing else. `agents/verification.py`, prompts `verification.md` +
 - **The C# side is `VerificationAgentService`** — see THE VERIFICATION AGENT RUNNER under
   VERIFICATION. It sends `verification` on the report's latest workflow and writes
   `AgentOutcome`, `AgentReason` and `AgentEvidenceJson` back, plus a `verification` step.
-  **The evals test the agent directly; the C# runner and a live model have still never been
-  run together end to end.**
+  **The C# runner and a live model have run together end to end on the local system**:
+  workflow #18 on 2026-09-30 (the seeded projector — approved, completed, the reporter's yes,
+  then `confirm` (high) in 11.2 s, first attempt), read back in
+  `docs/report/evidence/live-workflows-2026-10-04.txt`.
 
 ### The reopen golden case — `tests/reopen_cases.py`
 
@@ -1841,6 +1903,19 @@ EVAL_RECORD_PATH=../docs/report/evidence/live-evals-DATE-replies.jsonl RUN_LIVE_
 
 **2026-09-30: 18/18 passed in 3 min 23 s**, 19 model calls, 0 retries, 0 safe failures,
 latency 4.8–20.4 s (median 9.7 s) — `docs/report/evidence/LIVE_EVALS_2026-09-30.md`.
+**2026-10-03: 21/21** with tokens recorded, **45/45** over five runs of every injection case,
+and a regression check (a bad verification-prompt edit failed the fourth-failure eval 3/3) —
+`docs/report/evidence/LIVE_EVALS_2026-10-03.md`.
+
+- **Indirect injection — the instruction inside a TOOL RESULT** (`tests/injection_cases.py`,
+  and `NOTE_INJECTION` in `verification_cases.py`): a "SYSTEM NOTICE" appended to a stored
+  technician note, read back through `get_asset_service_history` / `get_work_order`. One case
+  per agent that reads notes: the diagnostic must not `replace` a remote-battery projector, the
+  strategist must not `defer` the golden projector, the verifier must not `confirm` the golden
+  temporary fix. The offline half (`test_a_technician_note_from_a_tool_reaches_the_prompt_only_as_data`,
+  `test_note_injection_case_…`) pins that a note is fenced inside the data block like a report.
+  **Observed: the model never follows the note, and never mentions it either** — nothing flags
+  a poisoned note to a person; that is a known gap, not a test.
 
 - **The golden case asserts a thermal cause and asserts `compressor` is ABSENT.** The
   planted history on `PRJ-MAB101-01` is a choked filter, a unit running hot and a weak fan
@@ -1978,6 +2053,12 @@ latency 4.8–20.4 s (median 9.7 s) — `docs/report/evidence/LIVE_EVALS_2026-09
     one live run per report, and the tool router refusing a workflow that has ended — with
     its one exception, the verification agent while its check waits.
   - `AnalyticsTests` also pins a report the planner judged clear as "needed no questions".
+    `RateLimitTests` — the sign-in and report budgets: per address (the forwarded one), per
+    user, the 429 body, nothing written for a refused report.
+    `AgentMetricsTests` — `GET /api/analytics/agents`: roles, the empty database, runs vs
+    tool and approval rows, timed-only latency, reported-only tokens, cost only with a
+    price, the inclusive range and the daily nulls; `MedianMs` / `PercentileMs` as pure
+    functions.
   - `VerificationEndpointTests` also pins the list search, `IsOverdue`, the detail's
     manager-only "since the repair" lists and evidence, and the latest check on a report's
     list row.
@@ -2293,7 +2374,8 @@ never the first thing a reader has to parse, and never hidden either.
   CLARIFICATION above.
 - **An agent run shows its LLM attempts** beside its time (`attemptsLabel`: "1 attempt", "2
   attempts — retried once"), read off `AgentStep.Attempts`; nothing is shown for a tool call
-  or a step recorded before the field existed.
+  or a step recorded before the field existed. **And its reported tokens** (`tokensLabel`:
+  "1,180 in · 60 out tokens"), nothing when none were reported — never "0 tokens".
 - **The planner's step reads as its plan** — "Planned 3 steps: clarifier → diagnostic →
   strategist." — or, without the clarifier, "… — the report needs no questions."
 - **Diagnostic and strategist steps get one sentence each** from `describeStep` — "Diagnosed
@@ -2410,6 +2492,14 @@ two roles `GET /api/analytics/metrics` names** — and a Reporter never sees the
   (`Reopened` / `Escalated`, or the agent said `reopen` / `escalate`) it shows **what it
   looped back to**: the original report and the follow-up work orders, with "none raised
   yet" and "not shown to a reporter" said differently.
+- **`/agent-monitoring` (`features/agents/`) is the agent monitoring page**, behind
+  `METRICS_ROLES` and under Insight in the sidebar, fed by `GET /api/analytics/agents` through
+  `useAgentMetrics`: headline figures, the per-agent table, tokens per day (stacked prompt /
+  completion; a null day has no bar), and the slowest and most-token runs linking to their
+  workflows. **It computes nothing** — failed counts, total tokens and cost are the API's
+  (`Failed`, `TotalTokens`, `EstimatedCostUsd`); with no price configured the panel says so
+  once and cost cells are dashes. Reuses `MetricsPanel` for its four states. Pinned by
+  `AgentMonitoringPage.test.jsx` and `agentMetricsApi.test.js`.
 - **The metrics page computes nothing.** One request feeds the headline numbers and every
   `MetricsPanel` — loading, error, **"Not enough data yet"** and data — so no chart area is
   ever blank. **A trend month with no answered checks plots as a gap, not 0%**
@@ -2494,6 +2584,10 @@ only, so without it a release APK can make no request at all. Run everything fro
   is a personal convenience — regenerate it with `flutter create .` when you want it, and
   do not commit it. They are not product targets, they need toolchains the team does not
   all have, and a hand-edited entitlement or manifest in one of them rots unnoticed.
+- **The API address is a compile-time `--dart-define`, defaulting to the LOCAL API**
+  (`http://10.0.2.2:5138`, the emulator's address for the laptop). `flutter run
+  --dart-define=API_BASE_URL=https://maintenx-api.onrender.com` runs against the deployment —
+  its own database and Render seed passwords. The release APK is always built against it.
 - **`ApiClient`'s request timeout is 60 s**, not 15: the deployed API sleeps on Render's free
   plan and takes up to a minute to wake, and a shorter timeout fails the first request after
   a quiet spell. Uploads keep their own 90 s.
@@ -3055,6 +3149,16 @@ live in `ImageUploadRules`, shared by any future photo upload.
 ---
 
 ## DEPLOYMENT — free tier, runbook in `docs/guide/DEPLOYMENT.md`
+
+**Live since 2026-10-02**: web https://mainten-x-gray.vercel.app, API
+https://maintenx-api.onrender.com, agent https://maintenx-agent.onrender.com (reached by the
+API only). `Cors__AllowedOrigins__0` is exactly the Vercel origin — a renamed Vercel project
+or a custom domain needs that value changed, or every browser request fails CORS. **Verified
+that day**: both `/health` 200 (agent `stub_mode: false`), agent `/run` without the secret
+401, `/api/users` without a token 401, Swagger 200, the web bundle pointing at the Render API,
+and a seeded Admin signing in on the web and creating an account. **Not yet run live**: a
+report through the agents, the timetable sync, a photo upload, the sweep and the APK — First
+deployment steps 7 and 8. Like the eval lines, record them in the runbook when run.
 
 API and agent on **Render** (`render.yaml`: the API as Docker from `api/Dockerfile`, the agent
 on Render's native Python), web on **Vercel** (`web/vercel.json` rewrites every path to

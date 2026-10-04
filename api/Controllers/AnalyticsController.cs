@@ -28,11 +28,16 @@ public class AnalyticsController : ControllerBase
 
     private readonly IAnalyticsService _analyticsService;
     private readonly IVerificationService _verificationService;
+    private readonly IAgentMetricsService _agentMetricsService;
 
-    public AnalyticsController(IAnalyticsService analyticsService, IVerificationService verificationService)
+    public AnalyticsController(
+        IAnalyticsService analyticsService,
+        IVerificationService verificationService,
+        IAgentMetricsService agentMetricsService)
     {
         _analyticsService = analyticsService;
         _verificationService = verificationService;
+        _agentMetricsService = agentMetricsService;
     }
 
     /// <summary>
@@ -64,6 +69,35 @@ public class AnalyticsController : ControllerBase
         }
 
         return Ok(await _analyticsService.GetMetricsAsync(fromDate, toDate, cancellationToken));
+    }
+
+    /// <summary>
+    /// How the agents themselves are doing — runs, failures, retries, latency and the tokens
+    /// the provider reported, per agent and per day, with the slowest and costliest runs and
+    /// an ESTIMATED cost when a price is configured. See AgentMetricsDto.
+    ///
+    /// The same optional UTC-day range as the metrics, both ends inclusive, on the step's
+    /// CreatedAt; a range that ends before it starts is a 400. FacilitiesManager and Admin,
+    /// like the metrics: the figures are about every report's runs.
+    /// </summary>
+    [HttpGet("agents")]
+    [Authorize(Roles = MetricsRoles)]
+    [ProducesResponseType(typeof(AgentMetricsDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<AgentMetricsDto>> GetAgentMetrics(
+        [FromQuery] DateOnly? fromDate,
+        [FromQuery] DateOnly? toDate,
+        CancellationToken cancellationToken = default)
+    {
+        if (fromDate is not null && toDate is not null && fromDate > toDate)
+        {
+            ModelState.AddModelError(nameof(fromDate), "fromDate must be on or before toDate.");
+            return ValidationProblem(ModelState);
+        }
+
+        return Ok(await _agentMetricsService.GetAgentMetricsAsync(fromDate, toDate, cancellationToken));
     }
 
     /// <summary>

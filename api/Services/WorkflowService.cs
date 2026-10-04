@@ -166,6 +166,7 @@ public class WorkflowService : IWorkflowService
         string? validationResult,
         string? errorMessage,
         int? attempts = null,
+        AgentTokenUsage? usage = null,
         CancellationToken cancellationToken = default)
     {
         if (!await ExistsAsync(workflowId, cancellationToken))
@@ -184,7 +185,9 @@ public class WorkflowService : IWorkflowService
             // Capped at the column's length: an agent's error text can be a long validation
             // report, and a varchar overflow would lose the whole row, not just the tail.
             ErrorMessage = Truncate(errorMessage, MaxErrorLength),
-            Attempts = attempts
+            Attempts = attempts,
+            PromptTokens = usage?.PromptTokens,
+            CompletionTokens = usage?.CompletionTokens
         });
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -406,5 +409,6 @@ public class WorkflowService : IWorkflowService
 
     private static AgentStepDto ToStepDto(AgentStep s) =>
         new(s.Id, s.WorkflowId, s.AgentName, s.ToolCallsJson, s.DurationMs,
-            s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt, s.Attempts);
+            s.ValidationResult, s.ErrorMessage, s.PayloadJson, s.CreatedAt, s.UpdatedAt, s.Attempts,
+            s.PromptTokens, s.CompletionTokens);
 }

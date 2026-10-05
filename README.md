@@ -6,17 +6,18 @@ agents that advise and deterministic C# that decides.**
 SE3090 Software Engineering Frameworks — Assignment 1 · SLIIT · Year 3, Semester 1, 2026
 
 <!-- System image: save the screenshot as assets/maintenx-overview.png and it appears here. -->
+
 <p align="center">
   <img src="assets/MaintenX_Campus_Maintenance_Showcase.png" alt="MaintenX: the web dashboard and the mobile app" width="850">
 </p>
 
-| | |
-|---|---|
-| Web client | https://mainten-x-gray.vercel.app |
-| API health | https://maintenx-api.onrender.com/health |
-| API documentation (Swagger) | https://maintenx-api.onrender.com/swagger |
-| Android APK | [GitHub Releases](https://github.com/Hiruna01/MaintenX/releases) (`mobile-v*` tags) |
-| Repository | https://github.com/Hiruna01/MaintenX |
+|                             |                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| Web client                  | https://mainten-x-gray.vercel.app                                                    |
+| API health                  | https://maintenx-api.onrender.com/health                                             |
+| API documentation (Swagger) | https://maintenx-api.onrender.com/swagger                                            |
+| Android APK                 | [GitHub Releases](https://github.com/Hiruna01/MaintenX/releases) (`mobile-v*` tags) |
+| Repository                  | https://github.com/Hiruna01/MaintenX                                                 |
 
 > The deployed services run on free plans and sleep after about 15 minutes idle. The first
 > request after a quiet spell takes 30–45 seconds; everything after that is normal.
@@ -66,12 +67,12 @@ person is a bounded form.
 
 ## 2. Users and features
 
-| Role | Who | Client | Can do |
-|---|---|---|---|
-| **Reporter** | Students and staff | Mobile | Sign up, report a fault (QR scan, photo), answer the agent's questions, confirm whether a repair held |
-| **Technician** | Maintenance staff | Mobile | See assigned jobs with the asset's history and the diagnosis, complete a job with a photo |
-| **Facilities Manager** | Head of maintenance | Web | Approve, reject or send back work orders; assign and schedule around the timetable; monitor workflows, agents and metrics |
-| **Admin** | System administrator | Web | Manage assets, buildings, rooms and user accounts |
+| Role                         | Who                  | Client | Can do                                                                                                                    |
+| ---------------------------- | -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------- |
+| **Reporter**           | Students and staff   | Mobile | Sign up, report a fault (QR scan, photo), answer the agent's questions, confirm whether a repair held                     |
+| **Technician**         | Maintenance staff    | Mobile | See assigned jobs with the asset's history and the diagnosis, complete a job with a photo                                 |
+| **Facilities Manager** | Head of maintenance  | Web    | Approve, reject or send back work orders; assign and schedule around the timetable; monitor workflows, agents and metrics |
+| **Admin**              | System administrator | Web    | Manage assets, buildings, rooms and user accounts                                                                         |
 
 Roles are not a seniority ladder: an Admin cannot approve a work order. Anyone can register
 on the phone, always as a Reporter; staff accounts are created by an Admin.
@@ -93,15 +94,15 @@ on the phone, always as a Reporter; staff accounts are created by an Admin.
 
 ## 3. Technology and why
 
-| Part | Technology | Why |
-|---|---|---|
-| API | ASP.NET Core Web API (.NET 8), EF Core, JWT | Mandated. One layered project (controllers, services, DTOs, models, data) that holds every business rule |
-| Database | PostgreSQL (16 in CI, Supabase in deployment) | Mandated. `jsonb` for agent output, real constraints, transactions |
-| Agent service | Python 3.12, FastAPI, LangGraph, Pydantic | An explicit graph whose routing is plain Python; a separate process with **no database credentials** |
-| Web | React 18 + Vite (JavaScript), React Router, Context | Built-in state is enough when the API owns the data; no Redux or other store |
-| Mobile | Flutter, Riverpod, go_router, flutter_secure_storage | Android and iOS from one codebase; the token kept in the Keychain or encrypted storage |
-| Integrations | Google Calendar API, Supabase Storage, an OpenAI-compatible LLM (OpenRouter) | The campus timetable, photos, and agent inference |
-| Delivery | GitHub Actions, Render, Vercel, GitHub Releases | Free plans; migrations always run before the new code |
+| Part          | Technology                                                                   | Why                                                                                                       |
+| ------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| API           | ASP.NET Core Web API (.NET 8), EF Core, JWT                                  | Mandated. One layered project (controllers, services, DTOs, models, data) that holds every business rule  |
+| Database      | PostgreSQL (16 in CI, Supabase in deployment)                                | Mandated.`jsonb` for agent output, real constraints, transactions                                       |
+| Agent service | Python 3.12, FastAPI, LangGraph, Pydantic                                    | An explicit graph whose routing is plain Python; a separate process with**no database credentials** |
+| Web           | React 18 + Vite (JavaScript), React Router, Context                          | Built-in state is enough when the API owns the data; no Redux or other store                              |
+| Mobile        | Flutter, Riverpod, go_router, flutter_secure_storage                         | Android and iOS from one codebase; the token kept in the Keychain or encrypted storage                    |
+| Integrations  | Google Calendar API, Supabase Storage, an OpenAI-compatible LLM (OpenRouter) | The campus timetable, photos, and agent inference                                                         |
+| Delivery      | GitHub Actions, Render, Vercel, GitHub Releases                              | Free plans; migrations always run before the new code                                                     |
 
 Each of these decisions, the options considered and their trade-offs are recorded as
 Architecture Decision Records in Chapter 12 of the report.
@@ -129,13 +130,13 @@ flowchart LR
 
 **The five agents**
 
-| Agent | Job | Output |
-|---|---|---|
-| Planner | Plan the run; decide whether the reporter needs to be asked anything | 2–3 steps and a rationale, re-checked in C# |
-| Clarifier | Ask only what would change the repair | 0–2 bounded questions |
-| Diagnostic | Find likely causes from the service history | 1–3 causes with evidence and confidence |
-| Resolution Strategist | Propose one repair strategy | Strategy, cost estimate, urgency, justification (no approval field) |
-| Verification | Judge whether a completed repair held | confirm / reopen / escalate, recorded as advice |
+| Agent                 | Job                                                                  | Output                                                              |
+| --------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Planner               | Plan the run; decide whether the reporter needs to be asked anything | 2–3 steps and a rationale, re-checked in C#                        |
+| Clarifier             | Ask only what would change the repair                                | 0–2 bounded questions                                              |
+| Diagnostic            | Find likely causes from the service history                          | 1–3 causes with evidence and confidence                            |
+| Resolution Strategist | Propose one repair strategy                                          | Strategy, cost estimate, urgency, justification (no approval field) |
+| Verification          | Judge whether a completed repair held                                | confirm / reopen / escalate, recorded as advice                     |
 
 Every reply is validated against a strict Pydantic schema, retried once with the error, then
 recorded as a **safe failure** rather than an error. Workflow state moves only through a fixed
@@ -251,6 +252,7 @@ dotnet user-secrets set "Supabase:ServiceKey" "YOUR_SERVICE_ROLE_KEY" --project 
 
 The service-role key bypasses every Storage policy: it belongs in user-secrets on the API and
 nowhere else.
+
 </details>
 
 <details>
@@ -280,6 +282,7 @@ dotnet user-secrets set "Google:CalendarId" "YOUR_CALENDAR_ID@group.calendar.goo
 `[Convert]::ToBase64String([IO.File]::ReadAllBytes("key.json"))`. The API syncs at start-up
 and hourly; a Facilities Manager can sync now from the work order page. A sync answering
 `"failureReason": "Rejected"` usually means the calendar is not shared with the service account.
+
 </details>
 
 <details>
@@ -290,6 +293,7 @@ Configuration is layered, each level overriding the one before:
 Environment variables use `__` where a key has `:` (`Seed__Passwords__Reporter`), and the API
 also accepts the flat names in `.env.example` (`DATABASE_URL`, `JWT_SECRET`,
 `AGENT_SHARED_SECRET`, …) when they are exported into its environment.
+
 </details>
 
 ### 2. Agent service (http://localhost:8000)
@@ -341,24 +345,24 @@ built against the deployed API and needs no configuration.
 Every variable is listed, with a one-line comment, in [`.env.example`](.env.example) (the web
 client's single variable is in [`web/.env.example`](web/.env.example)). The main ones:
 
-| Variable | Used by | Purpose |
-|---|---|---|
-| `DATABASE_URL` | api | PostgreSQL connection string (Npgsql key/value form) |
-| `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` | api | Token signing key (32+ characters), issuer and audience |
-| `AGENT_SERVICE_URL` | api | Base URL of the agent service |
-| `AGENT_SHARED_SECRET` | api, agent | Shared secret for API → agent and agent → API calls; empty rejects everything |
-| `API_BASE_URL` | agent | The API's address, for tool calls |
-| `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` | agent | The OpenAI-compatible model provider; the key lives in the agent only |
-| `STUB_MODE` | agent | `true`: fixed valid replies, no model and no network (tests) |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_STORAGE_BUCKET` | api | Photo storage; the service key is server-side only |
-| `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, `GOOGLE_CALENDAR_ID` | api | The campus timetable |
-| `Cors__AllowedOrigins__0` | api | The web client's origin |
-| `SEED_DEMO_DATA`, `Seed__Passwords__*` | api | Demo data outside Development, and the four demo passwords |
-| `SWAGGER_ENABLED` | api | Swagger outside Development |
-| `APPROVAL_COST_THRESHOLD`, `SLA_RESOLUTION_DAYS`, `VERIFICATION_DELAY_DAYS`, … | api | Business settings (defaults Rs 15,000, 7 days, 5 days) |
-| `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_REPORTS_PER_HOUR` | api | Sign-in and report budgets (default 10 each) |
-| `LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD`, `LLM_OUTPUT_…` | api | Optional, for the estimated cost on Agent monitoring |
-| `VITE_API_BASE_URL` | web | The API's address (public by definition) |
+| Variable                                                                              | Used by    | Purpose                                                                         |
+| ------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                      | api        | PostgreSQL connection string (Npgsql key/value form)                            |
+| `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`                                      | api        | Token signing key (32+ characters), issuer and audience                         |
+| `AGENT_SERVICE_URL`                                                                 | api        | Base URL of the agent service                                                   |
+| `AGENT_SHARED_SECRET`                                                               | api, agent | Shared secret for API → agent and agent → API calls; empty rejects everything |
+| `API_BASE_URL`                                                                      | agent      | The API's address, for tool calls                                               |
+| `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`                                      | agent      | The OpenAI-compatible model provider; the key lives in the agent only           |
+| `STUB_MODE`                                                                         | agent      | `true`: fixed valid replies, no model and no network (tests)                  |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_STORAGE_BUCKET`               | api        | Photo storage; the service key is server-side only                              |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64`, `GOOGLE_CALENDAR_ID`                        | api        | The campus timetable                                                            |
+| `Cors__AllowedOrigins__0`                                                           | api        | The web client's origin                                                         |
+| `SEED_DEMO_DATA`, `Seed__Passwords__*`                                            | api        | Demo data outside Development, and the four demo passwords                      |
+| `SWAGGER_ENABLED`                                                                   | api        | Swagger outside Development                                                     |
+| `APPROVAL_COST_THRESHOLD`, `SLA_RESOLUTION_DAYS`, `VERIFICATION_DELAY_DAYS`, … | api        | Business settings (defaults Rs 15,000, 7 days, 5 days)                          |
+| `RATE_LIMIT_AUTH_PER_MINUTE`, `RATE_LIMIT_REPORTS_PER_HOUR`                       | api        | Sign-in and report budgets (default 10 each)                                    |
+| `LLM_INPUT_PRICE_PER_MILLION_TOKENS_USD`, `LLM_OUTPUT_…`                         | api        | Optional, for the estimated cost on Agent monitoring                            |
+| `VITE_API_BASE_URL`                                                                 | web        | The API's address (public by definition)                                        |
 
 Never put `JWT_SECRET`, `SUPABASE_SERVICE_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` or
 `LLM_API_KEY` in the web or mobile client.
@@ -371,34 +375,34 @@ with `POST /api/auth/login`, then use **Authorize** with the returned token.
 
 There are 65 endpoints across 13 controllers. The main ones:
 
-| Area | Endpoint | Role |
-|---|---|---|
-| Auth | `POST /api/auth/register`, `POST /api/auth/login` | Anonymous (registration always creates a Reporter) |
-| Assets | `GET /api/assets`, `GET /api/assets/by-tag/{tag}`, `GET /api/assets/{id}/failure-summary` | Any signed-in user |
-| | `POST`, `PUT`, `DELETE /api/assets/{id}` (delete retires) | Admin |
-| Reports | `POST /api/reports`, `POST /api/reports/{id}/photo`, `GET`/`POST /api/reports/{id}/clarifications` | Reporter (their own) |
-| Work orders | `GET /api/workorders/approvals`, `POST /api/workorders/{id}/approve` · `/reject` · `/request-revision` | Facilities Manager |
-| | `GET /api/workorders/slots/available`, `POST /api/workorders/{id}/schedule` | Facilities Manager |
-| | `POST /api/workorders/{id}/complete`, `POST /api/workorders/{id}/photo` | The assigned Technician |
-| Verification | `GET /api/verifications`, `POST /api/verifications/{id}/confirm` | Reporter (their own) |
-| Workflows | `GET`/`POST /api/workflows` | Manager, Admin |
-| | `POST /api/workflows/verification-sweep` (run the sweep now) | Facilities Manager |
-| Analytics | `GET /api/analytics/metrics`, `GET /api/analytics/agents` | Manager, Admin |
-| Users | `/api/users` (create, edit, deactivate, reset password) | Admin |
-| Health | `GET /health` | Anonymous |
+| Area         | Endpoint                                                                                                         | Role                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Auth         | `POST /api/auth/register`, `POST /api/auth/login`                                                            | Anonymous (registration always creates a Reporter) |
+| Assets       | `GET /api/assets`, `GET /api/assets/by-tag/{tag}`, `GET /api/assets/{id}/failure-summary`                  | Any signed-in user                                 |
+|              | `POST`, `PUT`, `DELETE /api/assets/{id}` (delete retires)                                                  | Admin                                              |
+| Reports      | `POST /api/reports`, `POST /api/reports/{id}/photo`, `GET`/`POST /api/reports/{id}/clarifications`       | Reporter (their own)                               |
+| Work orders  | `GET /api/workorders/approvals`, `POST /api/workorders/{id}/approve` · `/reject` · `/request-revision` | Facilities Manager                                 |
+|              | `GET /api/workorders/slots/available`, `POST /api/workorders/{id}/schedule`                                  | Facilities Manager                                 |
+|              | `POST /api/workorders/{id}/complete`, `POST /api/workorders/{id}/photo`                                      | The assigned Technician                            |
+| Verification | `GET /api/verifications`, `POST /api/verifications/{id}/confirm`                                             | Reporter (their own)                               |
+| Workflows    | `GET`/`POST /api/workflows`                                                                                  | Manager, Admin                                     |
+|              | `POST /api/workflows/verification-sweep` (run the sweep now)                                                   | Facilities Manager                                 |
+| Analytics    | `GET /api/analytics/metrics`, `GET /api/analytics/agents`                                                    | Manager, Admin                                     |
+| Users        | `/api/users` (create, edit, deactivate, reset password)                                                        | Admin                                              |
+| Health       | `GET /health`                                                                                                  | Anonymous                                          |
 
 No token is **401**; a valid token with the wrong role, or someone else's record, is **403**.
 Errors are ProblemDetails JSON.
 
 ## 9. Testing
 
-| Suite | Command | What it covers |
-|---|---|---|
-| API (xUnit) | `dotnet test api.Tests` | Integration tests through the real pipeline on SQLite in memory |
+| Suite             | Command                                                                                                                | What it covers                                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| API (xUnit)       | `dotnet test api.Tests`                                                                                              | Integration tests through the real pipeline on SQLite in memory                                             |
 | API on PostgreSQL | `TEST_DATABASE_URL="Host=localhost;Port=5432;Database=postgres;Username=postgres;Password=…" dotnet test api.Tests` | The same tests on PostgreSQL with every migration applied (one database per test class, dropped afterwards) |
-| Agent (pytest) | `cd agent && pytest` | Offline: stubbed model, network sockets blocked |
-| Web (Vitest) | `cd web && npm run lint && npm test` | Components, hooks, routing and role guards; `fetch` is stubbed |
-| Mobile | `cd mobile && flutter analyze && flutter test` | Widget and unit tests; no camera or network needed |
+| Agent (pytest)    | `cd agent && pytest`                                                                                                 | Offline: stubbed model, network sockets blocked                                                             |
+| Web (Vitest)      | `cd web && npm run lint && npm test`                                                                                 | Components, hooks, routing and role guards;`fetch` is stubbed                                             |
+| Mobile            | `cd mobile && flutter analyze && flutter test`                                                                       | Widget and unit tests; no camera or network needed                                                          |
 
 **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs all four on every push and
 pull request to `main`: the API against a PostgreSQL 16 service container with the migrations
@@ -421,14 +425,14 @@ Set `EVAL_RECORD_PATH=…/replies.jsonl` to record every model reply. Recorded r
 
 ## 10. Deployment
 
-| Part | Where | How |
-|---|---|---|
-| API | Render (Docker, free, Singapore) | `api/Dockerfile`, from [`render.yaml`](render.yaml) |
-| Agent service | Render (Python 3.12, free, Singapore) | From `render.yaml`; reached by the API only |
-| Database | Supabase PostgreSQL (Singapore) | Session pooler; schema built only by the deploy workflow |
-| Photos | Supabase Storage | A separate project with a public `photos` bucket |
-| Web | Vercel | Builds from `main`; [`web/vercel.json`](web/vercel.json) serves the single-page app |
-| Android APK | GitHub Releases | [`mobile-release.yml`](.github/workflows/mobile-release.yml) on a `mobile-v*` tag |
+| Part          | Where                                 | How                                                                                   |
+| ------------- | ------------------------------------- | ------------------------------------------------------------------------------------- |
+| API           | Render (Docker, free, Singapore)      | `api/Dockerfile`, from [`render.yaml`](render.yaml)                                |
+| Agent service | Render (Python 3.12, free, Singapore) | From`render.yaml`; reached by the API only                                          |
+| Database      | Supabase PostgreSQL (Singapore)       | Session pooler; schema built only by the deploy workflow                              |
+| Photos        | Supabase Storage                      | A separate project with a public`photos` bucket                                     |
+| Web           | Vercel                                | Builds from`main`; [`web/vercel.json`](web/vercel.json) serves the single-page app |
+| Android APK   | GitHub Releases                       | [`mobile-release.yml`](.github/workflows/mobile-release.yml) on a `mobile-v*` tag  |
 
 **Merging to `main` deploys.** CI runs; then [`deploy.yml`](.github/workflows/deploy.yml)
 applies the EF Core migrations to Supabase and only then redeploys the two Render services, so
@@ -437,12 +441,12 @@ secret is a host environment variable; `render.yaml` holds names only.
 
 **Test accounts on the deployed system**
 
-| Role | Email | Use it on |
-|---|---|---|
-| Reporter | `reporter@campus.test` | Phone |
-| Technician | `technician@campus.test` | Phone |
-| Facilities Manager | `manager@campus.test` | Web |
-| Admin | `admin@campus.test` | Web |
+| Role               | Email                      | Use it on |
+| ------------------ | -------------------------- | --------- |
+| Reporter           | `reporter@campus.test`   | Phone     |
+| Technician         | `technician@campus.test` | Phone     |
+| Facilities Manager | `manager@campus.test`    | Web       |
+| Admin              | `admin@campus.test`      | Web       |
 
 The passwords are given in the submitted report, not here, because this repository is public.
 
@@ -475,12 +479,12 @@ Chapter 7 of the report covers each of these in detail, with the known limitatio
 Four primary business components, one per student. Each spans the API, the database, React,
 Flutter and one agent.
 
-| Component | Owner | Main work | Agent |
-|---|---|---|---|
-| **A.** Asset registry and orchestration | _[Name, IT number]_ | Assets, service history, failure summary, QR lookup, buildings and rooms, the workflow runner | Diagnostic |
-| **B.** Fault reporting and clarification | _[Name, IT number]_ | Reports, bounded clarification, report lifecycle, photo upload | Clarifier |
-| **C.** Work orders, approval and scheduling | _[Name, IT number]_ | Approval gate, manager decisions, slot finder, completion, SLA, timetable sync | Resolution Strategist |
-| **D.** Verification and analytics | _[Name, IT number]_ | Delayed verification, reporter confirmation, reopen rates and metrics | Verification |
+| Component                                         | Owner                 | Main work                                                                                     | Agent                 |
+| ------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------- | --------------------- |
+| **A.** Asset registry and orchestration     | De Silva T.H.H.D      | Assets, service history, failure summary, QR lookup, buildings and rooms, the workflow runner | Diagnostic            |
+| **B.** Fault reporting and clarification    | K                     | Reports, bounded clarification, report lifecycle, photo upload                                | Clarifier             |
+| **C.** Work orders, approval and scheduling | _[Name, IT number]_ | Approval gate, manager decisions, slot finder, completion, SLA, timetable sync                | Resolution Strategist |
+| **D.** Verification and analytics           | _[Name, IT number]_ | Delayed verification, reporter confirmation, reopen rates and metrics                         | Verification          |
 
 The Planner agent, which coordinates every run, is owned by _[Name]_. Each member's
 contribution statement, key commits, pull requests and tests are in their Individual Report

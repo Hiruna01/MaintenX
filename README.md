@@ -479,12 +479,12 @@ Chapter 7 of the report covers each of these in detail, with the known limitatio
 Four primary business components, one per student. Each spans the API, the database, React,
 Flutter and one agent.
 
-| Component                                         | Owner                 | Main work                                                                                     | Agent                 |
-| ------------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------- | --------------------- |
-| **A.** Asset registry and orchestration     | De Silva T.H.H.D      | Assets, service history, failure summary, QR lookup, buildings and rooms, the workflow runner | Diagnostic            |
-| **B.** Fault reporting and clarification    | K                     | Reports, bounded clarification, report lifecycle, photo upload                                | Clarifier             |
-| **C.** Work orders, approval and scheduling | _[Name, IT number]_ | Approval gate, manager decisions, slot finder, completion, SLA, timetable sync                | Resolution Strategist |
-| **D.** Verification and analytics           | _[Name, IT number]_ | Delayed verification, reporter confirmation, reopen rates and metrics                         | Verification          |
+| Component                                         | Owner            | Main work                                                                                     | Agent                 |
+| ------------------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------- | --------------------- |
+| **A.** Asset registry and orchestration     | De Silva T.H.H.D | Assets, service history, failure summary, QR lookup, buildings and rooms, the workflow runner | Diagnostic            |
+| **B.** Fault reporting and clarification    | Kavinvdi P.P     | Reports, bounded clarification, report lifecycle, photo upload                                | Clarifier             |
+| **C.** Work orders, approval and scheduling | Bodini G.V.E.J   | Approval gate, manager decisions, slot finder, completion, SLA, timetable sync                | Resolution Strategist |
+| **D.** Verification and analytics           | Fernando M.S.T   | Delayed verification, reporter confirmation, reopen rates and metrics                         | Verification          |
 
 The Planner agent, which coordinates every run, is owned by _[Name]_. Each member's
 contribution statement, key commits, pull requests and tests are in their Individual Report
